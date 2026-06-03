@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "dev": "npm.cmd --prefix robot-fleet-dashboard run dev --",
+    "build": "npm.cmd --prefix robot-fleet-dashboard run build --",
+    "lint": "npm.cmd --prefix robot-fleet-dashboard run lint --",
+    "preview": "npm.cmd --prefix robot-fleet-dashboard run preview --"
+  }
+}
