@@ -1,23 +1,32 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import axios from "axios";
 import { AnimatePresence, motion } from "framer-motion";
 
-import RobotCard from "./components/RobotCard";
 import AlertsPanel from "./components/AlertsPanel";
-import TelemetryChart from "./components/TelemetryChart";
-import FleetStats from "./components/FleetStats";
-import Sidebar from "./components/Sidebar";
-import Navbar from "./components/Navbar";
+import AnalyticsPanel from "./components/AnalyticsPanel";
 import FleetHealth from "./components/FleetHealth";
+import FleetStats from "./components/FleetStats";
+import Navbar from "./components/Navbar";
 import PredictiveMaintenancePanel from "./components/PredictiveMaintenancePanel";
+import RobotCard from "./components/RobotCard";
+import Sidebar from "./components/Sidebar";
+import TelemetryChart from "./components/TelemetryChart";
 
 function App() {
   const [robots, setRobots] = useState([]);
   const [maintenance, setMaintenance] = useState([]);
+  const [analytics, setAnalytics] = useState({
+    fleet_health_trend: [],
+    battery_distribution: [],
+    temperature_distribution: [],
+    mission_completion_count: [],
+    robot_status_breakdown: []
+  });
   const [error, setError] = useState("");
   const [socketConnected, setSocketConnected] = useState(false);
   const [lastFetchAt, setLastFetchAt] = useState(0);
   const [lastWsAt, setLastWsAt] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [query, setQuery] = useState("");
@@ -30,7 +39,7 @@ function App() {
 
   const formatRelativeTime = (timestampMs) => {
     if (!timestampMs) return "--";
-    const seconds = Math.max(0, Math.floor((Date.now() - timestampMs) / 1000));
+    const seconds = Math.max(0, Math.floor((nowMs - timestampMs) / 1000));
     if (seconds < 5) return "just now";
     if (seconds < 60) return `${seconds}s ago`;
     const minutes = Math.floor(seconds / 60);
@@ -40,10 +49,23 @@ function App() {
   };
 
   const fetchRobots = async () => {
-    try {
-      const response = await axios.get(`${API_BASE}/robots/status`);
+    const response = await axios.get(`${API_BASE}/robots/status`);
+    setRobots(Array.isArray(response.data) ? response.data : []);
+  };
 
-      setRobots(Array.isArray(response.data) ? response.data : []);
+  const fetchMaintenance = async () => {
+    const response = await axios.get(`${API_BASE}/robots/predictive-maintenance`);
+    setMaintenance(Array.isArray(response.data) ? response.data : []);
+  };
+
+  const fetchAnalytics = async () => {
+    const response = await axios.get(`${API_BASE}/analytics/fleet`);
+    setAnalytics(response.data || {});
+  };
+
+  const refreshAll = async () => {
+    try {
+      await Promise.all([fetchRobots(), fetchMaintenance(), fetchAnalytics()]);
       setLastFetchAt(Date.now());
       setError("");
     } catch (requestError) {
@@ -52,17 +74,9 @@ function App() {
     }
   };
 
-  const fetchMaintenance = async () => {
-    try {
-      const response = await axios.get(
-        `${API_BASE}/robots/predictive-maintenance`
-      );
-
-      setMaintenance(Array.isArray(response.data) ? response.data : []);
-    } catch (requestError) {
-      console.error(requestError);
-    }
-  };
+  const refreshAllEvent = useEffectEvent(async () => {
+    await refreshAll();
+  });
 
   useEffect(() => {
     let socket;
@@ -92,8 +106,7 @@ function App() {
 
       socket.onmessage = async () => {
         setLastWsAt(Date.now());
-        await fetchRobots();
-        await fetchMaintenance();
+        await refreshAllEvent();
       };
 
       socket.onerror = (websocketError) => {
@@ -108,19 +121,18 @@ function App() {
 
         setSocketConnected(false);
         clearInterval(keepAliveTimer);
-
         reconnectTimer = setTimeout(connectWebSocket, 2000);
       };
     };
 
-    fetchRobots();
-    fetchMaintenance();
+    setTimeout(() => {
+      refreshAllEvent();
+    }, 0);
     connectWebSocket();
 
     pollTimer = setInterval(() => {
-      fetchRobots();
-      fetchMaintenance();
-    }, 3000);
+      refreshAllEvent();
+    }, 5000);
 
     return () => {
       unmounted = true;
@@ -131,6 +143,16 @@ function App() {
       if (socket) {
         socket.close();
       }
+    };
+  }, [WS_BASE]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 10000);
+
+    return () => {
+      clearInterval(timer);
     };
   }, []);
 
@@ -155,15 +177,17 @@ function App() {
 
   const filteredRobots = robotsWithInsights.filter((robot) => {
     if (!query) return true;
-    const haystack = `${robot.robot_id} ${robot.status} ${robot.risk_level ?? ""} ${robot.failure_risk ?? ""}`.toLowerCase();
-    return haystack.includes(query.toLowerCase());
+    const haystack =
+      `${robot.robot_id} ${robot.status} ${robot.risk_level ?? ""} ` +
+      `${robot.failure_risk ?? ""} ${robot.mission_type ?? ""} ${robot.mission_id ?? ""}`;
+    return haystack.toLowerCase().includes(query.toLowerCase());
   });
 
   const filteredMaintenance = maintenance
     .filter((item) => {
       if (!query) return true;
-      const haystack = `${item.robot_id} ${item.risk_level} ${(item.reasons || []).join(" ")}`.toLowerCase();
-      return haystack.includes(query.toLowerCase());
+      const haystack = `${item.robot_id} ${item.risk_level} ${(item.reasons || []).join(" ")}`;
+      return haystack.toLowerCase().includes(query.toLowerCase());
     })
     .sort((left, right) => {
       if (right.failure_risk !== left.failure_risk) {
@@ -205,7 +229,7 @@ function App() {
       <div className="content">
         <Navbar
           title="FleetOps AI"
-          subtitle="Predictive fleet monitoring | real-time telemetry"
+          subtitle="Mission dispatch, fleet telemetry, and predictive maintenance"
           socketConnected={socketConnected}
           lastFetchText={formatRelativeTime(lastFetchAt)}
           lastWsText={formatRelativeTime(lastWsAt)}
@@ -215,10 +239,7 @@ function App() {
           filteredCount={filteredRobots.length}
           totalCount={robotsWithInsights.length}
           onOpenSidebar={() => setSidebarOpen(true)}
-          onRefresh={() => {
-            fetchRobots();
-            fetchMaintenance();
-          }}
+          onRefresh={refreshAll}
           error={error}
         />
 
@@ -231,14 +252,7 @@ function App() {
           >
             <FleetStats robots={filteredRobots} maintenance={filteredMaintenance} />
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(12, 1fr)",
-                gap: "14px",
-                marginBottom: "16px"
-              }}
-            >
+            <div className="twoColumnGrid">
               <div className="colSpan7">
                 <TelemetryChart robots={filteredRobots} />
               </div>
@@ -252,7 +266,7 @@ function App() {
           </motion.div>
         )}
 
-        {(showTelemetry || showAnalytics) && (
+        {showTelemetry && (
           <motion.div
             key="telemetry"
             initial={{ opacity: 0, y: 8 }}
@@ -263,6 +277,17 @@ function App() {
           </motion.div>
         )}
 
+        {showAnalytics && (
+          <motion.div
+            key="analytics"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+          >
+            <AnalyticsPanel analytics={analytics} />
+          </motion.div>
+        )}
+
         {showHealth && (
           <motion.div
             key="health"
@@ -270,8 +295,9 @@ function App() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
-            <div style={{ maxWidth: 520 }}>
+            <div style={{ display: "grid", gap: 16 }}>
               <FleetHealth robots={filteredRobots} maintenance={filteredMaintenance} />
+              <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
             </div>
           </motion.div>
         )}
@@ -292,10 +318,10 @@ function App() {
           <div className="glass" style={{ padding: 16, marginBottom: 16 }}>
             <div className="sectionTitle">
               <h2>Waiting for telemetry</h2>
-              <span className="subtle">Connect simulator + backend</span>
+              <span className="subtle">Connect simulator and backend</span>
             </div>
             <div className="subtle">
-              No robots yet. When data arrives, cards will animate in.
+              No robots yet. Fleet cards will render once telemetry arrives.
             </div>
           </div>
         )}
@@ -309,12 +335,12 @@ function App() {
               </button>
             </div>
             <div className="subtle">
-              Try searching by robot id, status, or risk level.
+              Try robot id, mission type, status, or risk level.
             </div>
           </div>
         )}
 
-        {(showDashboard || showTelemetry || showAnalytics) && (
+        {(showDashboard || showTelemetry) && (
           <div className="robotGrid">
             <AnimatePresence initial={false}>
               {filteredRobots.map((robot) => (

@@ -1,9 +1,4 @@
-function Sidebar({
-  open,
-  active,
-  onChange,
-  onToggle
-}) {
+function Sidebar({ open, active, onChange, onToggle }) {
   const items = [
     "Dashboard",
     "Fleet Analytics",
@@ -25,7 +20,7 @@ function Sidebar({
           </div>
 
           <button className="btn" onClick={onToggle} style={{ padding: "8px 10px" }}>
-            ☰
+            Menu
           </button>
         </div>
 
@@ -47,14 +42,14 @@ function Sidebar({
                 }}
               >
                 <span>{item}</span>
-                {isActive && <span className="subtle">●</span>}
+                {isActive && <span className="subtle">Live</span>}
               </div>
             );
           })}
         </nav>
 
         <div className="footerHint">
-          Real-time telemetry | WebSocket updates | Predictive maintenance
+          Mission dispatch, telemetry ingestion, and predictive maintenance.
         </div>
       </div>
     </aside>

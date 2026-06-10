@@ -19,18 +19,11 @@ function Navbar({
     ? "Backend unreachable"
     : socketConnected
     ? "Live"
-    : "Connecting...";
+    : "Connecting";
 
   return (
     <div style={{ marginBottom: 18 }}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr auto",
-          gap: 14,
-          alignItems: "start"
-        }}
-      >
+      <div className="navHeader">
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button
@@ -38,18 +31,16 @@ function Navbar({
               onClick={onOpenSidebar}
               style={{ display: "inline-flex", padding: "8px 10px" }}
             >
-              ☰
+              Menu
             </button>
             <div>
-              <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.4 }}>
-                {title}
-              </h1>
+              <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.4 }}>{title}</h1>
               <div className="subtle">{subtitle}</div>
             </div>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div className="pill">
             <span className={`dot ${dotClass}`} aria-hidden="true" />
             <span>{statusText}</span>
@@ -62,19 +53,11 @@ function Navbar({
         </div>
       </div>
 
-      <div
-        style={{
-          marginTop: 14,
-          display: "grid",
-          gridTemplateColumns: "1fr auto auto",
-          gap: 12,
-          alignItems: "center"
-        }}
-      >
+      <div className="navFilters">
         <div style={{ position: "relative" }}>
           <input
             className="input"
-            placeholder="Search robots or risk signals (id, status, risk level)..."
+            placeholder="Search by robot id, mission, status, or risk level"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
           />
@@ -92,7 +75,7 @@ function Navbar({
               }}
               title="Clear"
             >
-              ×
+              x
             </button>
           )}
         </div>
@@ -116,9 +99,9 @@ function Navbar({
           <div style={{ padding: 12, display: "flex", gap: 10, alignItems: "center" }}>
             <span className="dot dotBad" aria-hidden="true" />
             <div>
-              <div style={{ fontWeight: 700 }}>Can't reach backend</div>
+              <div style={{ fontWeight: 700 }}>Cannot reach backend</div>
               <div className="subtle">
-                Start the API and check `VITE_API_BASE_URL` in `.env`.
+                Start the API and verify `VITE_API_BASE_URL`.
               </div>
             </div>
           </div>
