@@ -1,11 +1,12 @@
 import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
   CartesianGrid,
-  Tooltip
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
 } from "recharts";
 
 const tooltipStyle = {
@@ -17,11 +18,12 @@ const tooltipStyle = {
 function TooltipContent({ active, payload, label }) {
   if (!active || !payload?.length) return null;
 
-  const battery = payload.find((p) => p.dataKey === "battery")?.value;
-  const temperature = payload.find((p) => p.dataKey === "temperature")?.value;
+  const battery = payload.find((point) => point.dataKey === "battery")?.value;
+  const temperature = payload.find((point) => point.dataKey === "temperature")?.value;
+  const speed = payload.find((point) => point.dataKey === "speed")?.value;
 
   return (
-    <div style={{ padding: 10, minWidth: 160 }}>
+    <div style={{ padding: 10, minWidth: 180 }}>
       <div style={{ fontWeight: 700, marginBottom: 6 }}>{label}</div>
       <div className="subtle" style={{ display: "grid", gap: 4 }}>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -31,9 +33,15 @@ function TooltipContent({ active, payload, label }) {
           </span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
-          <span>Temp</span>
+          <span>Temperature</span>
           <span style={{ color: "hsl(var(--chart-2))", fontWeight: 700 }}>
-            {temperature}°C
+            {temperature}C
+          </span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span>Speed</span>
+          <span style={{ color: "hsl(var(--chart-3))", fontWeight: 700 }}>
+            {speed} m/s
           </span>
         </div>
       </div>
@@ -42,19 +50,15 @@ function TooltipContent({ active, payload, label }) {
 }
 
 function TelemetryChart({ robots }) {
-
   const chartData = robots.map((robot) => ({
     name: `R${robot.robot_id}`,
     battery: robot.battery,
-    temperature: robot.temperature
+    temperature: robot.temperature,
+    speed: robot.speed
   }));
 
   return (
-    <div
-      className="glassStrong sheen"
-      style={{ padding: 16 }}
-    >
-
+    <div className="glassStrong sheen" style={{ padding: 16 }}>
       <div className="sectionTitle">
         <h2>Fleet telemetry</h2>
         <span className="subtle">
@@ -62,54 +66,49 @@ function TelemetryChart({ robots }) {
         </span>
       </div>
 
-      <ResponsiveContainer
-        width="100%"
-        height={300}
-      >
-
+      <ResponsiveContainer width="100%" height={320}>
         <LineChart data={chartData}>
-
           <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 6" />
-
           <XAxis
             dataKey="name"
             tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
             axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
             tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
           />
-
           <YAxis
             tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
             axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
             tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
           />
-
           <Tooltip
-            cursor={{ stroke: "rgba(99, 102, 241, 0.25)", strokeWidth: 1 }}
+            cursor={{ stroke: "rgba(33, 211, 146, 0.25)", strokeWidth: 1 }}
             content={<TooltipContent />}
             wrapperStyle={tooltipStyle}
           />
-
+          <Legend />
           <Line
             type="monotone"
             dataKey="battery"
             stroke="hsl(var(--chart-1))"
             strokeWidth={3}
-            dot={false}
+            dot={{ r: 3 }}
           />
-
           <Line
             type="monotone"
             dataKey="temperature"
             stroke="hsl(var(--chart-2))"
             strokeWidth={3}
-            dot={false}
+            dot={{ r: 3 }}
           />
-
+          <Line
+            type="monotone"
+            dataKey="speed"
+            stroke="hsl(var(--chart-3))"
+            strokeWidth={3}
+            dot={{ r: 3 }}
+          />
         </LineChart>
-
       </ResponsiveContainer>
-
     </div>
   );
 }

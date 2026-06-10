@@ -23,6 +23,14 @@ function alertMeta(status) {
     };
   }
 
+  if (status === "CHARGING") {
+    return {
+      dot: "dotInfo",
+      border: "rgba(56, 189, 248, 0.25)",
+      accent: "hsl(var(--info))"
+    };
+  }
+
   return {
     dot: "dotWarn",
     border: "rgba(245, 158, 11, 0.25)",
@@ -32,7 +40,7 @@ function alertMeta(status) {
 
 function AlertsPanel({ robots }) {
   const alerts = robots.filter((robot) =>
-    ["LOW POWER", "OVERHEATING", "OFFLINE", "DEAD"].includes(robot.status)
+    ["LOW POWER", "OVERHEATING", "OFFLINE", "CHARGING", "DEAD"].includes(robot.status)
   );
 
   if (alerts.length === 0) {
@@ -72,10 +80,10 @@ function AlertsPanel({ robots }) {
               </div>
 
               <div className="pill" style={{ borderColor: "rgba(148, 163, 184, 0.18)" }}>
-                <span className="subtle">Battery</span>
+                <span className="subtle">Mission</span>
                 <span style={{ opacity: 0.7 }}>|</span>
                 <span style={{ color: meta.accent, fontWeight: 800 }}>
-                  {robot.battery}%
+                  {robot.mission_type || "Idle"}
                 </span>
               </div>
             </div>

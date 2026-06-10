@@ -2,10 +2,9 @@ function FleetStats({ robots, maintenance }) {
   const totalRobots = robots.length;
   const activeRobots = robots.filter((robot) => robot.status === "ACTIVE").length;
   const lowPowerRobots = robots.filter((robot) => robot.status === "LOW POWER").length;
-  const overheatingRobots = robots.filter(
-    (robot) => robot.status === "OVERHEATING"
-  ).length;
+  const overheatingRobots = robots.filter((robot) => robot.status === "OVERHEATING").length;
   const offlineRobots = robots.filter((robot) => robot.status === "OFFLINE").length;
+  const chargingRobots = robots.filter((robot) => robot.status === "CHARGING").length;
   const deadRobots = robots.filter((robot) => robot.status === "DEAD").length;
 
   const averageBattery =
@@ -15,46 +14,17 @@ function FleetStats({ robots, maintenance }) {
         ).toFixed(1)
       : 0;
 
-  const criticalRiskRobots = maintenance.filter(
-    (item) => item.failure_risk >= 85
-  ).length;
+  const criticalRiskRobots = maintenance.filter((item) => item.failure_risk >= 85).length;
 
   const stats = [
-    {
-      title: "Total Robots",
-      value: totalRobots,
-      color: "hsl(var(--brand))"
-    },
-    {
-      title: "Active Robots",
-      value: activeRobots,
-      color: "hsl(var(--good))"
-    },
-    {
-      title: "Low Power",
-      value: lowPowerRobots,
-      color: "hsl(var(--warn))"
-    },
-    {
-      title: "Overheating",
-      value: overheatingRobots,
-      color: "hsl(var(--bad))"
-    },
-    {
-      title: "Offline",
-      value: offlineRobots,
-      color: "#94a3b8"
-    },
-    {
-      title: "Dead",
-      value: deadRobots,
-      color: "#020617"
-    },
-    {
-      title: "Average Battery",
-      value: `${averageBattery}%`,
-      color: "hsl(var(--good))"
-    },
+    { title: "Total Robots", value: totalRobots, color: "hsl(var(--brand))" },
+    { title: "Active", value: activeRobots, color: "hsl(var(--good))" },
+    { title: "Charging", value: chargingRobots, color: "hsl(var(--info))" },
+    { title: "Low Power", value: lowPowerRobots, color: "hsl(var(--warn))" },
+    { title: "Overheating", value: overheatingRobots, color: "hsl(var(--bad))" },
+    { title: "Offline", value: offlineRobots, color: "#94a3b8" },
+    { title: "Dead", value: deadRobots, color: "#020617" },
+    { title: "Average Battery", value: `${averageBattery}%`, color: "hsl(var(--good))" },
     {
       title: "Critical Risk",
       value: criticalRiskRobots,

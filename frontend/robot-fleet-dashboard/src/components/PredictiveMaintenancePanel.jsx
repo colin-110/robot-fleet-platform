@@ -3,7 +3,7 @@ function riskTone(level) {
     return {
       dot: "dotBad",
       color: "hsl(var(--bad))",
-      border: "rgba(239, 68, 68, 0.25)"
+      border: "rgba(239, 68, 68, 0.28)"
     };
   }
 
@@ -34,11 +34,9 @@ function formatRuntime(minutes) {
   if (minutes === null || minutes === undefined) {
     return "n/a";
   }
-
   if (minutes < 60) {
     return `${minutes.toFixed(1)} min`;
   }
-
   return `${(minutes / 60).toFixed(1)} h`;
 }
 
@@ -62,53 +60,32 @@ function PredictiveMaintenancePanel({ maintenance }) {
             <div
               key={item.robot_id}
               className="glass"
-              style={{
-                padding: 12,
-                borderColor: meta.border
-              }}
+              style={{ padding: 12, borderColor: meta.border }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  gap: 12
-                }}
-              >
+              <div className="maintenanceRow">
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span className={`dot ${meta.dot}`} aria-hidden="true" />
                   <div>
                     <div style={{ fontWeight: 900 }}>Robot R{item.robot_id}</div>
-                    <div className="subtle">
-                      Risk level: {item.risk_level}
-                    </div>
+                    <div className="subtle">Risk level: {item.risk_level}</div>
                   </div>
                 </div>
 
                 <div className="pill" style={{ color: meta.color }}>
-                  <span className="subtle">Risk</span>
+                  <span className="subtle">Failure Risk</span>
                   <span style={{ opacity: 0.7 }}>|</span>
                   <span style={{ fontWeight: 900 }}>{item.failure_risk}%</span>
                 </div>
               </div>
 
-              <div
-                style={{
-                  marginTop: 10,
-                  display: "grid",
-                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                  gap: 10
-                }}
-              >
-                <div className="glass" style={{ padding: 10 }}>
+              <div className="maintenanceMetrics">
+                <div className="glass metricBox">
                   <div className="subtle">Runtime Remaining</div>
-                  <div style={{ fontWeight: 900 }}>
-                    {formatRuntime(item.runtime_remaining_minutes)}
-                  </div>
+                  <div className="metricValue">{formatRuntime(item.runtime_remaining_minutes)}</div>
                 </div>
-                <div className="glass" style={{ padding: 10 }}>
-                  <div className="subtle">Health Score</div>
-                  <div style={{ fontWeight: 900 }}>{item.health_score}%</div>
+                <div className="glass metricBox">
+                  <div className="subtle">Battery Health</div>
+                  <div className="metricValue">{item.battery_health}%</div>
                 </div>
               </div>
 
