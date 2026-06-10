@@ -1,6 +1,38 @@
+function alertMeta(status) {
+  if (status === "DEAD") {
+    return {
+      dot: "dotBlack",
+      border: "rgba(0, 0, 0, 0.5)",
+      accent: "#0f172a"
+    };
+  }
+
+  if (status === "OFFLINE") {
+    return {
+      dot: "dotGray",
+      border: "rgba(100, 116, 139, 0.35)",
+      accent: "#94a3b8"
+    };
+  }
+
+  if (status === "OVERHEATING") {
+    return {
+      dot: "dotBad",
+      border: "rgba(239, 68, 68, 0.25)",
+      accent: "hsl(var(--bad))"
+    };
+  }
+
+  return {
+    dot: "dotWarn",
+    border: "rgba(245, 158, 11, 0.25)",
+    accent: "hsl(var(--warn))"
+  };
+}
+
 function AlertsPanel({ robots }) {
-  const alerts = robots.filter(
-    (robot) => robot.status === "LOW POWER" || robot.status === "OVERHEATING"
+  const alerts = robots.filter((robot) =>
+    ["LOW POWER", "OVERHEATING", "OFFLINE", "DEAD"].includes(robot.status)
   );
 
   if (alerts.length === 0) {
@@ -16,9 +48,7 @@ function AlertsPanel({ robots }) {
 
       <div style={{ display: "grid", gap: 10 }}>
         {alerts.map((robot) => {
-          const isHot = robot.status === "OVERHEATING";
-          const tone = isHot ? "dotBad" : "dotWarn";
-          const accent = isHot ? "hsl(var(--bad))" : "hsl(var(--warn))";
+          const meta = alertMeta(robot.status);
 
           return (
             <div
@@ -30,13 +60,11 @@ function AlertsPanel({ robots }) {
                 justifyContent: "space-between",
                 alignItems: "center",
                 gap: 12,
-                borderColor: isHot
-                  ? "rgba(239, 68, 68, 0.25)"
-                  : "rgba(245, 158, 11, 0.25)"
+                borderColor: meta.border
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span className={`dot ${tone}`} aria-hidden="true" />
+                <span className={`dot ${meta.dot}`} aria-hidden="true" />
                 <div>
                   <div style={{ fontWeight: 800 }}>Robot R{robot.robot_id}</div>
                   <div className="subtle">{robot.status}</div>
@@ -45,8 +73,8 @@ function AlertsPanel({ robots }) {
 
               <div className="pill" style={{ borderColor: "rgba(148, 163, 184, 0.18)" }}>
                 <span className="subtle">Battery</span>
-                <span style={{ opacity: 0.7 }}>•</span>
-                <span style={{ color: accent, fontWeight: 800 }}>
+                <span style={{ opacity: 0.7 }}>|</span>
+                <span style={{ color: meta.accent, fontWeight: 800 }}>
                   {robot.battery}%
                 </span>
               </div>

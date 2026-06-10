@@ -4,7 +4,6 @@ function Sidebar({
   onChange,
   onToggle
 }) {
-
   const items = [
     "Dashboard",
     "Fleet Analytics",
@@ -55,7 +54,7 @@ function Sidebar({
         </nav>
 
         <div className="footerHint">
-          Real-time telemetry · WebSocket updates · Anomaly signals
+          Real-time telemetry | WebSocket updates | Predictive maintenance
         </div>
       </div>
     </aside>

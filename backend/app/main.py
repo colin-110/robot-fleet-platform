@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi import WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
+from sqlalchemy import inspect, text
 
 from app.database import engine
 from app.models import Base
@@ -11,6 +12,44 @@ from app.routes.telemetry import router as telemetry_router
 from app.websocket_manager import manager
 
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_telemetry_timestamp_column():
+
+    inspector = inspect(engine)
+
+    tables = inspector.get_table_names()
+
+    if "telemetry" not in tables:
+        return
+
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("telemetry")
+    }
+
+    if "timestamp" in columns:
+        return
+
+    with engine.begin() as connection:
+
+        connection.execute(
+            text(
+                "ALTER TABLE telemetry "
+                "ADD COLUMN timestamp TIMESTAMP WITH TIME ZONE"
+            )
+        )
+
+        connection.execute(
+            text(
+                "UPDATE telemetry "
+                "SET timestamp = CURRENT_TIMESTAMP "
+                "WHERE timestamp IS NULL"
+            )
+        )
+
+
+_ensure_telemetry_timestamp_column()
 
 app = FastAPI()
 

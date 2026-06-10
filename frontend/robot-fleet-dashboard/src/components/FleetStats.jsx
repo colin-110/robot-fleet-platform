@@ -1,100 +1,79 @@
-function FleetStats({ robots, anomalies }) {
-
+function FleetStats({ robots, maintenance }) {
   const totalRobots = robots.length;
-
-  const activeRobots = robots.filter(
-    (robot) => robot.status === "ACTIVE"
-  ).length;
-
-  const lowPowerRobots = robots.filter(
-    (robot) => robot.status === "LOW POWER"
-  ).length;
-
+  const activeRobots = robots.filter((robot) => robot.status === "ACTIVE").length;
+  const lowPowerRobots = robots.filter((robot) => robot.status === "LOW POWER").length;
   const overheatingRobots = robots.filter(
     (robot) => robot.status === "OVERHEATING"
   ).length;
+  const offlineRobots = robots.filter((robot) => robot.status === "OFFLINE").length;
+  const deadRobots = robots.filter((robot) => robot.status === "DEAD").length;
 
   const averageBattery =
     robots.length > 0
       ? (
-          robots.reduce(
-            (sum, robot) =>
-              sum + robot.battery,
-            0
-          ) / robots.length
+          robots.reduce((sum, robot) => sum + robot.battery, 0) / robots.length
         ).toFixed(1)
       : 0;
 
-  const criticalAnomalies = anomalies.filter(
-    (anomaly) =>
-      anomaly.severity === "CRITICAL"
+  const criticalRiskRobots = maintenance.filter(
+    (item) => item.failure_risk >= 85
   ).length;
 
   const stats = [
-
     {
       title: "Total Robots",
       value: totalRobots,
-      tone: "brand"
+      color: "hsl(var(--brand))"
     },
-
     {
       title: "Active Robots",
       value: activeRobots,
-      tone: "good"
+      color: "hsl(var(--good))"
     },
-
     {
       title: "Low Power",
       value: lowPowerRobots,
-      tone: "warn"
+      color: "hsl(var(--warn))"
     },
-
     {
       title: "Overheating",
       value: overheatingRobots,
-      tone: "bad"
+      color: "hsl(var(--bad))"
     },
-
+    {
+      title: "Offline",
+      value: offlineRobots,
+      color: "#94a3b8"
+    },
+    {
+      title: "Dead",
+      value: deadRobots,
+      color: "#020617"
+    },
     {
       title: "Average Battery",
       value: `${averageBattery}%`,
-      tone: "good"
+      color: "hsl(var(--good))"
     },
-
     {
-      title: "Critical AI Alerts",
-      value: criticalAnomalies,
-      tone: criticalAnomalies > 0 ? "bad" : "good"
+      title: "Critical Risk",
+      value: criticalRiskRobots,
+      color: criticalRiskRobots > 0 ? "hsl(var(--bad))" : "hsl(var(--good))"
     }
   ];
 
   return (
     <div className="kpiGrid">
-      {stats.map((stat) => {
-        const hue =
-          stat.tone === "good"
-            ? "var(--good)"
-            : stat.tone === "warn"
-            ? "var(--warn)"
-            : stat.tone === "bad"
-            ? "var(--bad)"
-            : "var(--brand)";
-
-        return (
-          <div key={stat.title} className="glass kpi sheen">
-            <div className="kpiInner">
-              <div className="kpiLabel">{stat.title}</div>
-              <div
-                className="kpiValue"
-                style={{ color: `hsl(${hue})` }}
-              >
-                {stat.value}
-              </div>
+      {stats.map((stat) => (
+        <div key={stat.title} className="glass kpi sheen">
+          <div className="kpiInner">
+            <div className="kpiLabel">{stat.title}</div>
+            <div className="kpiValue" style={{ color: stat.color }}>
+              {stat.value}
             </div>
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }

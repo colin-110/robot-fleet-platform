@@ -272,6 +272,16 @@ body > #root::after {
   box-shadow: 0 0 0 4px hsla(var(--bad), 0.16);
 }
 
+.dotGray {
+  background: #94a3b8;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.16);
+}
+
+.dotBlack {
+  background: #020617;
+  box-shadow: 0 0 0 4px rgba(2, 6, 23, 0.24);
+}
+
 /* KPI grid */
 .kpiGrid {
   display: grid;

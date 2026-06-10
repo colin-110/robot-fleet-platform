@@ -13,17 +13,13 @@ function Navbar({
   onRefresh,
   error
 }) {
-  const dotClass = error
-    ? "dotBad"
-    : socketConnected
-    ? "dotGood"
-    : "dotWarn";
+  const dotClass = error ? "dotBad" : socketConnected ? "dotGood" : "dotWarn";
 
   const statusText = error
     ? "Backend unreachable"
     : socketConnected
     ? "Live"
-    : "Connecting…";
+    : "Connecting...";
 
   return (
     <div style={{ marginBottom: 18 }}>
@@ -57,7 +53,7 @@ function Navbar({
           <div className="pill">
             <span className={`dot ${dotClass}`} aria-hidden="true" />
             <span>{statusText}</span>
-            <span style={{ opacity: 0.7 }}>•</span>
+            <span style={{ opacity: 0.7 }}>|</span>
             <span className="subtle">WS {lastWsText}</span>
           </div>
           <button className="btn" onClick={onRefresh}>
@@ -78,7 +74,7 @@ function Navbar({
         <div style={{ position: "relative" }}>
           <input
             className="input"
-            placeholder="Search robots / anomalies (id, status, severity)…"
+            placeholder="Search robots or risk signals (id, status, risk level)..."
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
           />
@@ -96,21 +92,21 @@ function Navbar({
               }}
               title="Clear"
             >
-              ✕
+              ×
             </button>
           )}
         </div>
 
         <div className="pill" title="Filtered robots">
           <span className="subtle">Robots</span>
-          <span style={{ opacity: 0.7 }}>•</span>
+          <span style={{ opacity: 0.7 }}>|</span>
           <span style={{ fontWeight: 800 }}>{filteredCount}</span>
           <span className="subtle">/ {totalCount}</span>
         </div>
 
         <div className="pill" title="Last REST poll">
           <span className="subtle">REST</span>
-          <span style={{ opacity: 0.7 }}>•</span>
+          <span style={{ opacity: 0.7 }}>|</span>
           <span className="subtle">{lastFetchText}</span>
         </div>
       </div>
@@ -120,7 +116,7 @@ function Navbar({
           <div style={{ padding: 12, display: "flex", gap: 10, alignItems: "center" }}>
             <span className="dot dotBad" aria-hidden="true" />
             <div>
-              <div style={{ fontWeight: 700 }}>Can’t reach backend</div>
+              <div style={{ fontWeight: 700 }}>Can't reach backend</div>
               <div className="subtle">
                 Start the API and check `VITE_API_BASE_URL` in `.env`.
               </div>
