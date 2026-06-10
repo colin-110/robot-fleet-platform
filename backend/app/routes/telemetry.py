@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 from sqlalchemy.orm import Session
 
@@ -5,7 +7,10 @@ from app.schemas import TelemetryCreate
 from app.models import Telemetry
 from app.database import SessionLocal
 from app.websocket_manager import manager
-from app.ml.anomaly_detector import detect_anomalies
+from app.ml.predictive_maintenance import (
+    build_predictive_maintenance,
+    summarize_robot_history
+)
 
 router = APIRouter()
 
@@ -21,7 +26,8 @@ async def create_telemetry(data: TelemetryCreate):
             robot_id=data.robot_id,
             battery=data.battery,
             temperature=data.temperature,
-            speed=data.speed
+            speed=data.speed,
+            timestamp=datetime.now(timezone.utc)
         )
 
         db.add(telemetry)
@@ -34,7 +40,8 @@ async def create_telemetry(data: TelemetryCreate):
             "robot_id": telemetry.robot_id,
             "battery": telemetry.battery,
             "temperature": telemetry.temperature,
-            "speed": telemetry.speed
+            "speed": telemetry.speed,
+            "timestamp": telemetry.timestamp.isoformat().replace("+00:00", "Z")
         })
 
         return {
@@ -77,38 +84,42 @@ def robot_status():
 
         telemetry = (
             db.query(Telemetry)
-            .order_by(Telemetry.id.desc())
+            .order_by(
+                Telemetry.robot_id.asc(),
+                Telemetry.timestamp.asc(),
+                Telemetry.id.asc()
+            )
             .all()
         )
 
-        latest_robots = {}
+        grouped = {}
 
         for t in telemetry:
 
-            if t.robot_id not in latest_robots:
+            grouped.setdefault(
+                t.robot_id,
+                []
+            ).append(t)
 
-                latest_robots[t.robot_id] = {
-                    "robot_id": t.robot_id,
-                    "battery": t.battery,
-                    "temperature": t.temperature,
-                    "speed": t.speed,
-                    "status": (
-                        "LOW POWER"
-                        if t.battery < 25
-                        else "OVERHEATING"
-                        if t.temperature > 70
-                        else "ACTIVE"
-                    )
-                }
+        robots = []
 
-        return list(latest_robots.values())
+        for robot_id in sorted(grouped):
+
+            summary = summarize_robot_history(
+                grouped[robot_id]
+            )
+
+            if summary is not None:
+                robots.append(summary)
+
+        return robots
 
     finally:
 
         db.close()
-        
-@router.get("/robots/anomalies")
-def robot_anomalies():
+
+@router.get("/robots/predictive-maintenance")
+def predictive_maintenance():
 
     db: Session = SessionLocal()
 
@@ -116,17 +127,48 @@ def robot_anomalies():
 
         telemetry = (
             db.query(Telemetry)
-            .order_by(Telemetry.id.desc())
-            .limit(100)
+            .order_by(
+                Telemetry.robot_id.asc(),
+                Telemetry.timestamp.asc(),
+                Telemetry.id.asc()
+            )
             .all()
         )
 
-        anomalies = detect_anomalies(
-            telemetry
+        grouped = {}
+
+        for row in telemetry:
+
+            grouped.setdefault(
+                row.robot_id,
+                []
+            ).append(row)
+
+        predictions = []
+
+        for robot_id in sorted(grouped):
+
+            prediction = build_predictive_maintenance(
+                grouped[robot_id]
+            )
+
+            if prediction is not None:
+                predictions.append(prediction)
+
+        predictions.sort(
+            key=lambda item: (
+                -item["failure_risk"],
+                item["robot_id"]
+            )
         )
 
-        return anomalies
+        return predictions
 
     finally:
 
         db.close()
+
+@router.get("/robots/anomalies")
+def robot_anomalies():
+
+    return predictive_maintenance()

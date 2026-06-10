@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Integer, Float
+from datetime import datetime, timezone
+
+from sqlalchemy import Column, Integer, Float, DateTime, func
 from app.database import Base
 
 class Telemetry(Base):
@@ -14,3 +16,11 @@ class Telemetry(Base):
     temperature = Column(Float)
 
     speed = Column(Float)
+
+    timestamp = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now()
+    )

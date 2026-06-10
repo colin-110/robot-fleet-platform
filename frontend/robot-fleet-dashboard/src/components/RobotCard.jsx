@@ -1,50 +1,107 @@
+function statusMeta(status) {
+  if (status === "DEAD") {
+    return {
+      border: "rgba(0, 0, 0, 0.78)",
+      pillBg: "rgba(0, 0, 0, 0.92)",
+      pillText: "#ffffff",
+      dot: "dotBlack"
+    };
+  }
+
+  if (status === "OFFLINE") {
+    return {
+      border: "rgba(100, 116, 139, 0.45)",
+      pillBg: "rgba(100, 116, 139, 0.16)",
+      pillText: "#cbd5e1",
+      dot: "dotGray"
+    };
+  }
+
+  if (status === "OVERHEATING") {
+    return {
+      border: "rgba(239, 68, 68, 0.45)",
+      pillBg: "rgba(239, 68, 68, 0.12)",
+      pillText: "hsl(var(--bad))",
+      dot: "dotBad"
+    };
+  }
+
+  if (status === "LOW POWER") {
+    return {
+      border: "rgba(245, 158, 11, 0.45)",
+      pillBg: "rgba(245, 158, 11, 0.12)",
+      pillText: "hsl(var(--warn))",
+      dot: "dotWarn"
+    };
+  }
+
+  return {
+    border: "rgba(34, 197, 94, 0.35)",
+    pillBg: "rgba(34, 197, 94, 0.12)",
+    pillText: "hsl(var(--good))",
+    dot: "dotGood"
+  };
+}
+
+function formatRuntime(minutes) {
+  if (minutes === null || minutes === undefined) {
+    return "n/a";
+  }
+
+  if (minutes < 60) {
+    return `${minutes.toFixed(1)} min`;
+  }
+
+  const hours = minutes / 60;
+  return `${hours.toFixed(1)} h`;
+}
+
+function formatLastSeen(lastSeen) {
+  if (!lastSeen) {
+    return "n/a";
+  }
+
+  const seenAt = new Date(lastSeen);
+
+  if (Number.isNaN(seenAt.getTime())) {
+    return "n/a";
+  }
+
+  const seconds = Math.max(
+    0,
+    Math.floor((Date.now() - seenAt.getTime()) / 1000)
+  );
+
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+
+  return `${hours}h ago`;
+}
+
 function RobotCard({ robot }) {
-  const statusTone =
-    robot.status === "OVERHEATING"
-      ? "bad"
-      : robot.status === "LOW POWER"
-      ? "warn"
-      : "good";
-
-  const border =
-    statusTone === "bad"
-      ? "rgba(239, 68, 68, 0.45)"
-      : statusTone === "warn"
-      ? "rgba(245, 158, 11, 0.45)"
-      : "rgba(34, 197, 94, 0.35)";
-
-  const pillBg =
-    statusTone === "bad"
-      ? "rgba(239, 68, 68, 0.12)"
-      : statusTone === "warn"
-      ? "rgba(245, 158, 11, 0.12)"
-      : "rgba(34, 197, 94, 0.12)";
-
-  const pillText =
-    statusTone === "bad"
-      ? "hsl(var(--bad))"
-      : statusTone === "warn"
-      ? "hsl(var(--warn))"
-      : "hsl(var(--good))";
+  const meta = statusMeta(robot.status);
 
   const batteryColor =
-    robot.battery < 25
-      ? "hsl(var(--warn))"
-      : "hsl(var(--good))";
+    robot.battery < 25 ? "hsl(var(--warn))" : "hsl(var(--good))";
 
-  const statusDot =
-    statusTone === "bad"
-      ? "dotBad"
-      : statusTone === "warn"
-      ? "dotWarn"
-      : "dotGood";
+  const failureRisk =
+    typeof robot.failure_risk === "number" ? robot.failure_risk : null;
 
   return (
     <div
       className="glassStrong sheen"
       style={{
         padding: 16,
-        borderColor: border
+        borderColor: meta.border
       }}
     >
       <div
@@ -68,13 +125,13 @@ function RobotCard({ robot }) {
         <span
           className="pill"
           style={{
-            background: pillBg,
+            background: meta.pillBg,
             borderColor: "rgba(148, 163, 184, 0.18)",
-            color: pillText,
+            color: meta.pillText,
             fontWeight: 800
           }}
         >
-          <span className={`dot ${statusDot}`} aria-hidden="true" />
+          <span className={`dot ${meta.dot}`} aria-hidden="true" />
           {robot.status}
         </span>
       </div>
@@ -115,14 +172,14 @@ function RobotCard({ robot }) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            gridTemplateColumns: "repeat(2, 1fr)",
             gap: 10
           }}
         >
           <div className="glass" style={{ padding: 10 }}>
             <div className="subtle">Temperature</div>
             <div style={{ fontSize: 16, fontWeight: 800 }}>
-              {robot.temperature}°C
+              {robot.temperature} C
             </div>
           </div>
           <div className="glass" style={{ padding: 10 }}>
@@ -130,6 +187,25 @@ function RobotCard({ robot }) {
             <div style={{ fontSize: 16, fontWeight: 800 }}>
               {robot.speed}
             </div>
+          </div>
+          <div className="glass" style={{ padding: 10 }}>
+            <div className="subtle">Runtime Remaining</div>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>
+              {formatRuntime(robot.runtime_remaining_minutes)}
+            </div>
+          </div>
+          <div className="glass" style={{ padding: 10 }}>
+            <div className="subtle">Failure Risk</div>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>
+              {failureRisk === null ? "n/a" : `${failureRisk}%`}
+            </div>
+          </div>
+        </div>
+
+        <div className="glass" style={{ padding: 10 }}>
+          <div className="subtle">Last Seen</div>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>
+            {formatLastSeen(robot.last_seen)}
           </div>
         </div>
       </div>

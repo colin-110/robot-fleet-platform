@@ -5,24 +5,19 @@ import { AnimatePresence, motion } from "framer-motion";
 import RobotCard from "./components/RobotCard";
 import AlertsPanel from "./components/AlertsPanel";
 import TelemetryChart from "./components/TelemetryChart";
-import AnomalyPanel from "./components/AnomalyPanel";
 import FleetStats from "./components/FleetStats";
 import Sidebar from "./components/Sidebar";
 import Navbar from "./components/Navbar";
 import FleetHealth from "./components/FleetHealth";
+import PredictiveMaintenancePanel from "./components/PredictiveMaintenancePanel";
 
 function App() {
-
   const [robots, setRobots] = useState([]);
-  const [anomalies, setAnomalies] = useState([]);
+  const [maintenance, setMaintenance] = useState([]);
   const [error, setError] = useState("");
-
   const [socketConnected, setSocketConnected] = useState(false);
-
   const [lastFetchAt, setLastFetchAt] = useState(0);
-
   const [lastWsAt, setLastWsAt] = useState(0);
-
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [query, setQuery] = useState("");
@@ -31,13 +26,10 @@ function App() {
     import.meta.env.VITE_API_BASE_URL ||
     `http://${window.location.hostname}:8000`;
 
-  const WS_BASE = API_BASE.replace(
-    "http",
-    "ws"
-  );
+  const WS_BASE = API_BASE.replace("http", "ws");
 
   const formatRelativeTime = (timestampMs) => {
-    if (!timestampMs) return "—";
+    if (!timestampMs) return "--";
     const seconds = Math.max(0, Math.floor((Date.now() - timestampMs) / 1000));
     if (seconds < 5) return "just now";
     if (seconds < 60) return `${seconds}s ago`;
@@ -48,175 +40,137 @@ function App() {
   };
 
   const fetchRobots = async () => {
-
     try {
+      const response = await axios.get(`${API_BASE}/robots/status`);
 
-      const response = await axios.get(
-        `${API_BASE}/robots/status`
-      );
-
-      setRobots(
-        Array.isArray(response.data)
-          ? response.data
-          : []
-      );
-
+      setRobots(Array.isArray(response.data) ? response.data : []);
       setLastFetchAt(Date.now());
-
       setError("");
-
     } catch (requestError) {
-
       console.error(requestError);
-
-      setError(
-        "Backend is unreachable."
-      );
+      setError("Backend is unreachable.");
     }
   };
 
-  const fetchAnomalies = async () => {
-
+  const fetchMaintenance = async () => {
     try {
-
       const response = await axios.get(
-        `${API_BASE}/robots/anomalies`
+        `${API_BASE}/robots/predictive-maintenance`
       );
 
-      setAnomalies(
-        Array.isArray(response.data)
-          ? response.data
-          : []
-      );
-
-    } catch (error) {
-
-      console.error(error);
+      setMaintenance(Array.isArray(response.data) ? response.data : []);
+    } catch (requestError) {
+      console.error(requestError);
     }
   };
 
   useEffect(() => {
-
     let socket;
-
     let reconnectTimer;
-
     let pollTimer;
-
     let keepAliveTimer;
-
     let unmounted = false;
 
     const connectWebSocket = () => {
-
       if (unmounted) {
         return;
       }
 
-      socket = new WebSocket(
-        `${WS_BASE}/ws`
-      );
+      socket = new WebSocket(`${WS_BASE}/ws`);
 
       socket.onopen = () => {
-
         setSocketConnected(true);
-
         setLastWsAt(Date.now());
-
         setError("");
 
         keepAliveTimer = setInterval(() => {
-
-          if (
-            socket &&
-            socket.readyState === WebSocket.OPEN
-          ) {
-
+          if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send("ping");
           }
-
         }, 10000);
       };
 
       socket.onmessage = async () => {
-
         setLastWsAt(Date.now());
-
         await fetchRobots();
-
-        await fetchAnomalies();
+        await fetchMaintenance();
       };
 
       socket.onerror = (websocketError) => {
-
-        console.error(
-          "WebSocket error:",
-          websocketError
-        );
-
+        console.error("WebSocket error:", websocketError);
         setSocketConnected(false);
       };
 
       socket.onclose = () => {
-
         if (unmounted) {
           return;
         }
 
         setSocketConnected(false);
-
         clearInterval(keepAliveTimer);
 
-        reconnectTimer = setTimeout(
-          connectWebSocket,
-          2000
-        );
+        reconnectTimer = setTimeout(connectWebSocket, 2000);
       };
     };
 
     fetchRobots();
-
-    fetchAnomalies();
-
+    fetchMaintenance();
     connectWebSocket();
 
     pollTimer = setInterval(() => {
-
       fetchRobots();
-
-      fetchAnomalies();
-
+      fetchMaintenance();
     }, 3000);
 
     return () => {
-
       unmounted = true;
-
       clearInterval(pollTimer);
-
       clearInterval(keepAliveTimer);
-
       clearTimeout(reconnectTimer);
 
       if (socket) {
-
         socket.close();
       }
     };
-
   }, []);
 
-  const filteredRobots = robots.filter((robot) => {
+  const maintenanceByRobotId = new Map(
+    maintenance.map((item) => [item.robot_id, item])
+  );
+
+  const robotsWithInsights = robots.map((robot) => {
+    const insight = maintenanceByRobotId.get(robot.robot_id);
+
+    return {
+      ...robot,
+      failure_risk: insight?.failure_risk ?? null,
+      risk_level: insight?.risk_level ?? null,
+      reasons: insight?.reasons ?? [],
+      runtime_remaining_minutes:
+        robot.runtime_remaining_minutes ??
+        insight?.runtime_remaining_minutes ??
+        null
+    };
+  });
+
+  const filteredRobots = robotsWithInsights.filter((robot) => {
     if (!query) return true;
-    const haystack = `${robot.robot_id} ${robot.status}`.toLowerCase();
+    const haystack = `${robot.robot_id} ${robot.status} ${robot.risk_level ?? ""} ${robot.failure_risk ?? ""}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
 
-  const filteredAnomalies = anomalies.filter((item) => {
-    if (!query) return true;
-    const haystack = `${item.robot_id} ${item.severity} ${item.anomaly_type}`.toLowerCase();
-    return haystack.includes(query.toLowerCase());
-  });
+  const filteredMaintenance = maintenance
+    .filter((item) => {
+      if (!query) return true;
+      const haystack = `${item.robot_id} ${item.risk_level} ${(item.reasons || []).join(" ")}`.toLowerCase();
+      return haystack.includes(query.toLowerCase());
+    })
+    .sort((left, right) => {
+      if (right.failure_risk !== left.failure_risk) {
+        return right.failure_risk - left.failure_risk;
+      }
+      return left.robot_id - right.robot_id;
+    });
 
   const showDashboard = activeNav === "Dashboard";
   const showTelemetry = activeNav === "Telemetry";
@@ -251,7 +205,7 @@ function App() {
       <div className="content">
         <Navbar
           title="FleetOps AI"
-          subtitle="AI-assisted fleet monitoring • real-time telemetry"
+          subtitle="Predictive fleet monitoring | real-time telemetry"
           socketConnected={socketConnected}
           lastFetchText={formatRelativeTime(lastFetchAt)}
           lastWsText={formatRelativeTime(lastWsAt)}
@@ -259,11 +213,11 @@ function App() {
           onQueryChange={setQuery}
           onClearQuery={() => setQuery("")}
           filteredCount={filteredRobots.length}
-          totalCount={robots.length}
+          totalCount={robotsWithInsights.length}
           onOpenSidebar={() => setSidebarOpen(true)}
           onRefresh={() => {
             fetchRobots();
-            fetchAnomalies();
+            fetchMaintenance();
           }}
           error={error}
         />
@@ -275,7 +229,7 @@ function App() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
-            <FleetStats robots={filteredRobots} anomalies={filteredAnomalies} />
+            <FleetStats robots={filteredRobots} maintenance={filteredMaintenance} />
 
             <div
               style={{
@@ -289,13 +243,12 @@ function App() {
                 <TelemetryChart robots={filteredRobots} />
               </div>
               <div className="colSpan5">
-                <FleetHealth robots={filteredRobots} anomalies={filteredAnomalies} />
+                <FleetHealth robots={filteredRobots} maintenance={filteredMaintenance} />
               </div>
             </div>
 
             <AlertsPanel robots={filteredRobots} />
-
-            <AnomalyPanel anomalies={filteredAnomalies} />
+            <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
           </motion.div>
         )}
 
@@ -318,7 +271,7 @@ function App() {
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <div style={{ maxWidth: 520 }}>
-              <FleetHealth robots={filteredRobots} anomalies={filteredAnomalies} />
+              <FleetHealth robots={filteredRobots} maintenance={filteredMaintenance} />
             </div>
           </motion.div>
         )}
@@ -331,11 +284,11 @@ function App() {
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <AlertsPanel robots={filteredRobots} />
-            <AnomalyPanel anomalies={filteredAnomalies} />
+            <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
           </motion.div>
         )}
 
-        {robots.length === 0 && !error && (
+        {robotsWithInsights.length === 0 && !error && (
           <div className="glass" style={{ padding: 16, marginBottom: 16 }}>
             <div className="sectionTitle">
               <h2>Waiting for telemetry</h2>
@@ -347,7 +300,7 @@ function App() {
           </div>
         )}
 
-        {robots.length > 0 && filteredRobots.length === 0 && (
+        {robotsWithInsights.length > 0 && filteredRobots.length === 0 && (
           <div className="glass" style={{ padding: 16, marginBottom: 16 }}>
             <div className="sectionTitle">
               <h2>No results</h2>
@@ -356,7 +309,7 @@ function App() {
               </button>
             </div>
             <div className="subtle">
-              Try searching by robot id (e.g. <span style={{ color: "rgba(229,231,235,0.9)" }}>1</span>) or status (e.g. <span style={{ color: "rgba(229,231,235,0.9)" }}>active</span>).
+              Try searching by robot id, status, or risk level.
             </div>
           </div>
         )}
