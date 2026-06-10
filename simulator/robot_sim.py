@@ -25,6 +25,8 @@ class RobotState:
 
     health: float = 100.0
 
+    dead_printed: bool = False
+
     x: float = 0.0
     y: float = 0.0
 
@@ -121,6 +123,21 @@ async def robot_loop(
         )
 
         robot.last_update_s = now
+
+        # -----------------------------------
+        # DEAD
+        # -----------------------------------
+
+        if robot.mode == "DEAD":
+
+            await asyncio.sleep(
+                rng.uniform(
+                    tick_min_s,
+                    tick_max_s
+                )
+            )
+
+            continue
 
         # -----------------------------------
         # ONLINE / OFFLINE
@@ -430,6 +447,43 @@ async def robot_loop(
             2.6
         )
 
+        # -----------------------------------
+        # DEAD STATE
+        # -----------------------------------
+
+        if (
+            robot.battery < 5.0
+            or robot.temperature > 95.0
+        ):
+
+            if mover_token:
+
+                max_active_movers.release()
+
+                mover_token = False
+
+            robot.mode = "DEAD"
+            robot.task = "NONE"
+            robot.online = False
+            robot.speed = 0.0
+
+            if not robot.dead_printed:
+
+                safe_print(
+                    f"[R{robot.robot_id:02d}] DEAD"
+                )
+
+                robot.dead_printed = True
+
+            await asyncio.sleep(
+                rng.uniform(
+                    tick_min_s,
+                    tick_max_s
+                )
+            )
+
+            continue
+
         payload = {
 
             "robot_id": robot.robot_id,
@@ -500,13 +554,13 @@ async def main_async():
 
     parser.add_argument(
         "--api-url",
-        default="http://127.0.0.1:8000/telemetry"
+        default="https://robot-fleet-platform-production.up.railway.app/telemetry"
     )
 
     parser.add_argument(
         "--robots",
         type=int,
-        default=20
+        default=5
     )
 
     parser.add_argument(
@@ -530,13 +584,13 @@ async def main_async():
     parser.add_argument(
         "--tick-min",
         type=float,
-        default=0.35
+        default=2
     )
 
     parser.add_argument(
         "--tick-max",
         type=float,
-        default=1.2
+        default=5
     )
 
     parser.add_argument(
@@ -548,7 +602,7 @@ async def main_async():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=2.0
+        default=10.0
     )
 
     args = parser.parse_args()

@@ -1,21 +1,32 @@
-function FleetHealth({ robots, anomalies }) {
+function FleetHealth({ robots, maintenance }) {
+  const maintenanceRisk =
+    maintenance.length > 0
+      ? maintenance.reduce((sum, item) => sum + item.failure_risk, 0) /
+        maintenance.length
+      : 0;
+
+  const lowPowerCount = robots.filter(
+    (robot) => robot.status === "LOW POWER"
+  ).length;
+
+  const overheatingCount = robots.filter(
+    (robot) => robot.status === "OVERHEATING"
+  ).length;
+
+  const offlineCount = robots.filter((robot) => robot.status === "OFFLINE").length;
+  const deadCount = robots.filter((robot) => robot.status === "DEAD").length;
+  const criticalRiskCount = maintenance.filter(
+    (item) => item.failure_risk >= 85
+  ).length;
 
   let score = 100;
-
-  score -= anomalies.length * 5;
-
-  robots.forEach((robot) => {
-
-    if (robot.status === "LOW POWER") {
-      score -= 5;
-    }
-
-    if (robot.status === "OVERHEATING") {
-      score -= 10;
-    }
-  });
-
-  score = Math.max(0, score);
+  score -= maintenanceRisk * 0.5;
+  score -= lowPowerCount * 5;
+  score -= overheatingCount * 10;
+  score -= offlineCount * 4;
+  score -= deadCount * 18;
+  score -= criticalRiskCount * 4;
+  score = Math.max(0, Math.round(score));
 
   const color =
     score > 80
@@ -39,7 +50,7 @@ function FleetHealth({ robots, anomalies }) {
       <div className="sectionTitle">
         <h2>Fleet health</h2>
         <span className="subtle">
-          {anomalies.length} anomaly{anomalies.length === 1 ? "" : "ies"}
+          {criticalRiskCount} high-risk robot{criticalRiskCount === 1 ? "" : "s"}
         </span>
       </div>
 
@@ -65,7 +76,7 @@ function FleetHealth({ robots, anomalies }) {
         </div>
 
         <div className="subtle" style={{ textAlign: "center" }}>
-          Score degrades with critical anomalies, overheating, and low power.
+          Score degrades with predictive risk, overheating, low power, and offline robots.
         </div>
       </div>
     </div>
