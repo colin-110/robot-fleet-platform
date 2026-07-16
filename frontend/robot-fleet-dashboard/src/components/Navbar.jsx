@@ -9,30 +9,17 @@ function Navbar({
   onClearQuery,
   filteredCount,
   totalCount,
-  onOpenSidebar,
   onRefresh,
   error
 }) {
   const dotClass = error ? "dotBad" : socketConnected ? "dotGood" : "dotWarn";
-
-  const statusText = error
-    ? "Backend unreachable"
-    : socketConnected
-    ? "Live"
-    : "Connecting";
+  const statusText = error ? "Backend unreachable" : socketConnected ? "Live" : "Connecting";
 
   return (
     <div style={{ marginBottom: 18 }}>
       <div className="navHeader">
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button
-              className="btn"
-              onClick={onOpenSidebar}
-              style={{ display: "inline-flex", padding: "8px 10px" }}
-            >
-              Menu
-            </button>
             <div>
               <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.4 }}>{title}</h1>
               <div className="subtle">{subtitle}</div>
@@ -54,7 +41,7 @@ function Navbar({
       </div>
 
       <div className="navFilters">
-        <div style={{ position: "relative" }}>
+        <div style={{ position: "relative", flex: 1, maxWidth: 400 }}>
           <input
             className="input"
             placeholder="Search by robot id, mission, status, or risk level"
@@ -67,11 +54,12 @@ function Navbar({
               onClick={onClearQuery}
               style={{
                 position: "absolute",
-                right: 8,
+                right: 4,
                 top: "50%",
                 transform: "translateY(-50%)",
-                padding: "8px 10px",
-                borderRadius: 12
+                padding: "4px 8px",
+                border: "none",
+                background: "transparent"
               }}
               title="Clear"
             >
@@ -83,7 +71,7 @@ function Navbar({
         <div className="pill" title="Filtered robots">
           <span className="subtle">Robots</span>
           <span style={{ opacity: 0.7 }}>|</span>
-          <span style={{ fontWeight: 800 }}>{filteredCount}</span>
+          <span style={{ fontWeight: 600 }}>{filteredCount}</span>
           <span className="subtle">/ {totalCount}</span>
         </div>
 
@@ -95,11 +83,11 @@ function Navbar({
       </div>
 
       {error && (
-        <div style={{ marginTop: 12 }} className="glass">
+        <div style={{ marginTop: 12 }} className="panel">
           <div style={{ padding: 12, display: "flex", gap: 10, alignItems: "center" }}>
             <span className="dot dotBad" aria-hidden="true" />
             <div>
-              <div style={{ fontWeight: 700 }}>Cannot reach backend</div>
+              <div style={{ fontWeight: 600 }}>Cannot reach backend</div>
               <div className="subtle">
                 Start the API and verify `VITE_API_BASE_URL`.
               </div>

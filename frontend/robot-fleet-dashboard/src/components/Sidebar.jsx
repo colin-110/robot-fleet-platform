@@ -1,15 +1,9 @@
-function Sidebar({ open, active, onChange, onToggle }) {
-  const items = [
-    "Dashboard",
-    "Fleet Analytics",
-    "AI Alerts",
-    "Telemetry",
-    "System Health"
-  ];
+import { NAV_ITEMS } from "../utils/constants";
 
+function Sidebar({ active, onChange }) {
   return (
-    <aside className={`sidebarWrap ${open ? "sidebarWrapOpen" : ""}`}>
-      <div className="sidebar glassStrong sheen">
+    <aside className="sidebarWrap">
+      <div className="sidebar">
         <div className="brand">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className="brandMark" aria-hidden="true" />
@@ -18,14 +12,10 @@ function Sidebar({ open, active, onChange, onToggle }) {
               <span>Robot fleet platform</span>
             </div>
           </div>
-
-          <button className="btn" onClick={onToggle} style={{ padding: "8px 10px" }}>
-            Menu
-          </button>
         </div>
 
         <nav className="nav" aria-label="Primary">
-          {items.map((item) => {
+          {NAV_ITEMS.map((item) => {
             const isActive = active === item;
             return (
               <div

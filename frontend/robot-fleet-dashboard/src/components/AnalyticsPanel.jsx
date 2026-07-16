@@ -14,18 +14,11 @@ import {
   YAxis
 } from "recharts";
 
+import { PIE_COLORS } from "../utils/constants";
+
 const chartCardStyle = {
   padding: 16,
   minHeight: 320
-};
-
-const pieColors = {
-  ACTIVE: "#22c55e",
-  "LOW POWER": "#f59e0b",
-  OVERHEATING: "#ef4444",
-  OFFLINE: "#94a3b8",
-  CHARGING: "#38bdf8",
-  DEAD: "#020617"
 };
 
 function AnalyticsPanel({ analytics }) {
@@ -38,7 +31,7 @@ function AnalyticsPanel({ analytics }) {
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div className="twoColumnGrid">
-        <div className="glassStrong sheen colSpan7" style={chartCardStyle}>
+        <div className="panel colSpan7" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Fleet Health Trend</h2>
             <span className="subtle">Recent telemetry windows</span>
@@ -64,7 +57,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="glassStrong sheen colSpan5" style={chartCardStyle}>
+        <div className="panel colSpan5" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Robot Status Breakdown</h2>
             <span className="subtle">Current fleet state</span>
@@ -84,7 +77,7 @@ function AnalyticsPanel({ analytics }) {
                 {statusBreakdown.map((entry) => (
                   <Cell
                     key={entry.status}
-                    fill={pieColors[entry.status] || "#64748b"}
+                    fill={PIE_COLORS[entry.status] || "#64748b"}
                   />
                 ))}
               </Pie>
@@ -94,7 +87,7 @@ function AnalyticsPanel({ analytics }) {
       </div>
 
       <div className="analyticsGrid">
-        <div className="glassStrong sheen" style={chartCardStyle}>
+        <div className="panel" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Battery Distribution</h2>
             <span className="subtle">Latest robot snapshot</span>
@@ -110,7 +103,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="glassStrong sheen" style={chartCardStyle}>
+        <div className="panel" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Temperature Distribution</h2>
             <span className="subtle">Latest robot snapshot</span>
@@ -126,7 +119,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="glassStrong sheen" style={chartCardStyle}>
+        <div className="panel" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Mission Completion Count</h2>
             <span className="subtle">Completed missions</span>
