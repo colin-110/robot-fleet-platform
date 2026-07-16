@@ -1,9 +1,18 @@
+"""
+Pydantic schemas for request validation and response serialization.
+"""
+
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+# ── Request Schemas ─────────────────────────────────────────────────
 
 
 class TelemetryCreate(BaseModel):
+    """Incoming telemetry payload from the simulator."""
+
     robot_id: int
     battery: float
     temperature: float
@@ -19,3 +28,100 @@ class TelemetryCreate(BaseModel):
     network_health: float | None = None
     x: float | None = None
     y: float | None = None
+
+
+# ── Response Schemas ────────────────────────────────────────────────
+
+
+class TelemetryAck(BaseModel):
+    """Acknowledgement returned after telemetry ingestion."""
+
+    message: str
+    id: int
+
+
+class RobotStatusResponse(BaseModel):
+    """Current status summary for a single robot."""
+
+    robot_id: int
+    battery: float
+    temperature: float
+    speed: float
+    status: str
+    mission_id: str | None = None
+    mission_type: str | None = None
+    mission_progress: float | None = None
+    mission_start_time: str | None = None
+    last_seen: str | None = None
+    runtime_remaining_minutes: float | None = None
+    x: float = 0.0
+    y: float = 0.0
+    battery_health: float = 100.0
+    motor_health: float = 100.0
+    sensor_health: float = 100.0
+    network_health: float = 100.0
+
+
+class MaintenancePredictionResponse(BaseModel):
+    """Predictive maintenance risk assessment for a single robot."""
+
+    robot_id: int
+    failure_risk: int
+    risk_level: str
+    reasons: list[str]
+    battery: float
+    temperature: float
+    speed: float
+    battery_drain_rate_per_min: float
+    temperature_rise_rate_per_min: float
+    runtime_remaining_minutes: float | None = None
+    battery_health: float = 100.0
+    motor_health: float = 100.0
+    sensor_health: float = 100.0
+    network_health: float = 100.0
+
+
+class DistributionBucket(BaseModel):
+    """A single bucket in a distribution chart."""
+
+    range: str
+    count: int
+
+
+class StatusBreakdownItem(BaseModel):
+    """A single status category in the robot status breakdown."""
+
+    status: str
+    count: int
+
+
+class MissionCompletionItem(BaseModel):
+    """Completed mission count per mission type."""
+
+    mission_type: str
+    count: int
+
+
+class HealthTrendPoint(BaseModel):
+    """A single point in the fleet health trend time series."""
+
+    timestamp: str | None
+    health_score: float
+
+
+class FleetAnalyticsResponse(BaseModel):
+    """Fleet-wide analytics payload."""
+
+    fleet_health_trend: list[HealthTrendPoint] = Field(default_factory=list)
+    battery_distribution: list[DistributionBucket] = Field(default_factory=list)
+    temperature_distribution: list[DistributionBucket] = Field(default_factory=list)
+    mission_completion_count: list[MissionCompletionItem] = Field(default_factory=list)
+    robot_status_breakdown: list[StatusBreakdownItem] = Field(default_factory=list)
+
+
+class HealthResponse(BaseModel):
+    """Health check response."""
+
+    status: str
+    database: str
+    version: str = "1.0.0"

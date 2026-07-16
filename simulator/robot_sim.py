@@ -1,12 +1,13 @@
 import argparse
 import asyncio
+import logging
 import math
 import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import requests
+import httpx
 
 
 MISSION_TYPES = ["PATROL", "DELIVERY", "INSPECTION"]
@@ -65,11 +66,11 @@ def lerp(a: float, b: float, t: float):
     return a + (b - a) * t
 
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("simulator")
+
 def safe_print(message: str):
-    try:
-        print(message)
-    except OSError:
-        pass
+    logger.info(message)
 
 
 def random_point(rng: random.Random, radius: float):
@@ -172,11 +173,16 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
-async def post_telemetry(api_url: str, payload: dict, timeout_s: float):
-    def _post():
-        requests.post(api_url, json=payload, timeout=timeout_s)
-
-    await asyncio.to_thread(_post)
+async def post_telemetry(client: httpx.AsyncClient, api_url: str, payload: dict, timeout_s: float):
+    for attempt in range(3):
+        try:
+            response = await client.post(api_url, json=payload, timeout=timeout_s)
+            response.raise_for_status()
+            return
+        except httpx.RequestError as exc:
+            if attempt == 2:
+                raise exc
+            await asyncio.sleep(0.5 * (2 ** attempt))
 
 
 async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng: random.Random, radius: float):
@@ -220,6 +226,7 @@ async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng
 async def robot_loop(
     robot: RobotState,
     *,
+    client: httpx.AsyncClient,
     api_url: str,
     rng: random.Random,
     ambient_c: float,
@@ -282,7 +289,7 @@ async def robot_loop(
                             f"[R{robot.robot_id:02d}] completed "
                             f"{mission.mission_type} {mission.mission_id}"
                         )
-                        await emit_telemetry(robot, api_url, rng, post_timeout_s)
+                        await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
                         clear_mission(robot)
                         robot.status = "ACTIVE" if robot.battery > 18.0 else "CHARGING"
                     else:
@@ -298,7 +305,7 @@ async def robot_loop(
             motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
             battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
             drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
-            robot.battery -= drain_per_s * dt * 100.0
+            robot.battery -= drain_per_s * dt * 20.0
 
             load_heat = 0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
             cooling = 0.02 * max(0.0, robot.temperature - ambient_c)
@@ -306,7 +313,7 @@ async def robot_loop(
         else:
             robot.speed = lerp(robot.speed, 0.0, 0.35)
             standby_drain = 0.0015 * (1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.25)
-            robot.battery -= standby_drain * dt * 100.0
+            robot.battery -= standby_drain * dt * 20.0
             robot.temperature -= 0.04 * (robot.temperature - ambient_c) * dt
 
         robot.battery_health = clamp(robot.battery_health - rng.uniform(0.0006, 0.0012), 55.0, 100.0)
@@ -333,20 +340,36 @@ async def robot_loop(
             if not robot.dead_printed:
                 safe_print(f"[R{robot.robot_id:02d}] DEAD")
                 robot.dead_printed = True
-            await emit_telemetry(robot, api_url, rng, post_timeout_s)
+            
+            # Emit telemetry so it doesn't disappear from the dashboard
+            await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
             clear_mission(robot)
+            
+            # Revive after a while
+            if rng.random() < 0.2:  # ~20% chance per tick to revive (approx 10-25 seconds)
+                robot.battery = 100.0
+                robot.temperature = ambient_c
+                robot.battery_health = 100.0
+                robot.motor_health = 100.0
+                robot.sensor_health = 100.0
+                robot.network_health = 100.0
+                robot.status = "ACTIVE"
+                robot.online = True
+                robot.dead_printed = False
+                safe_print(f"[R{robot.robot_id:02d}] REVIVED and REPAIRED")
+            
             await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
             continue
 
         if robot.network_health < 68.0 and rng.random() < ((68.0 - robot.network_health) / 100.0):
             safe_print(f"[R{robot.robot_id:02d}] telemetry dropped (network instability)")
         else:
-            await emit_telemetry(robot, api_url, rng, post_timeout_s)
+            await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
 
         await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
 
 
-async def emit_telemetry(robot: RobotState, api_url: str, rng: random.Random, post_timeout_s: float):
+async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: str, rng: random.Random, post_timeout_s: float):
     payload = {
         "robot_id": robot.robot_id,
         "battery": round(clamp(apply_sensor_noise(robot, robot.battery, kind="battery", rng=rng), 0.0, 100.0), 2),
@@ -366,7 +389,7 @@ async def emit_telemetry(robot: RobotState, api_url: str, rng: random.Random, po
     }
 
     try:
-        await post_telemetry(api_url, payload, post_timeout_s)
+        await post_telemetry(client, api_url, payload, post_timeout_s)
         mission_label = robot.mission.mission_type if robot.mission else "IDLE"
         progress = f"{robot.mission_progress:5.1f}%" if robot.mission_progress is not None else "  n/a"
         safe_print(
@@ -383,8 +406,9 @@ async def main_async():
     parser = argparse.ArgumentParser(description="Mission-based robot fleet simulator")
     parser.add_argument(
         "--api-url",
-        default="https://robot-fleet-platform-production.up.railway.app/telemetry",
+        default="http://localhost:8000/api/v1/telemetry",
     )
+    parser.add_argument("--local", action="store_true", help="Use local API URL")
     parser.add_argument("--robots", type=int, default=5)
     parser.add_argument("--ambient", type=float, default=30.0)
     parser.add_argument("--radius", type=float, default=20.0)
@@ -393,6 +417,9 @@ async def main_async():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
+
+    if args.local:
+        args.api_url = "http://localhost:8000/api/v1/telemetry"
 
     rng = random.Random(args.seed)
     robots = []
@@ -422,22 +449,24 @@ async def main_async():
         )
     ]
 
-    for robot in robots:
-        tasks.append(
-            asyncio.create_task(
-                robot_loop(
-                    robot,
-                    api_url=args.api_url,
-                    rng=random.Random((args.seed * 1000) + robot.robot_id * 17),
-                    ambient_c=args.ambient,
-                    tick_min_s=args.tick_min,
-                    tick_max_s=args.tick_max,
-                    post_timeout_s=args.timeout,
+    async with httpx.AsyncClient() as client:
+        for robot in robots:
+            tasks.append(
+                asyncio.create_task(
+                    robot_loop(
+                        robot,
+                        client=client,
+                        api_url=args.api_url,
+                        rng=random.Random((args.seed * 1000) + robot.robot_id * 17),
+                        ambient_c=args.ambient,
+                        tick_min_s=args.tick_min,
+                        tick_max_s=args.tick_max,
+                        post_timeout_s=args.timeout,
+                    )
                 )
             )
-        )
 
-    await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks)
 
 
 def main():
