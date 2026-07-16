@@ -10,11 +10,18 @@ env/
 ENV/
 backend/.venv/
 
+# Environment files (NEVER commit secrets)
+.env
+*.env
+!.env.example
 
 # Databases
 *.db
 *.sqlite
 *.sqlite3
+
+# Alembic
+alembic/versions/
 
 # Logs
 *.log

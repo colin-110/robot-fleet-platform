@@ -47,7 +47,7 @@ function FleetHealth({ robots, maintenance }) {
   };
 
   return (
-    <div className="glassStrong sheen" style={{ padding: 16 }}>
+    <div className="panel" style={{ padding: 16 }}>
       <div className="sectionTitle">
         <h2>Fleet health</h2>
         <span className="subtle">Composite status and component health</span>
