@@ -1,210 +1,109 @@
-function statusMeta(status) {
-  if (status === "DEAD") {
-    return {
-      border: "rgba(0, 0, 0, 0.82)",
-      pillBg: "rgba(0, 0, 0, 0.92)",
-      pillText: "#ffffff",
-      dot: "dotBlack"
-    };
-  }
-
-  if (status === "OFFLINE") {
-    return {
-      border: "rgba(100, 116, 139, 0.52)",
-      pillBg: "rgba(100, 116, 139, 0.16)",
-      pillText: "#cbd5e1",
-      dot: "dotGray"
-    };
-  }
-
-  if (status === "OVERHEATING") {
-    return {
-      border: "rgba(239, 68, 68, 0.52)",
-      pillBg: "rgba(239, 68, 68, 0.14)",
-      pillText: "hsl(var(--bad))",
-      dot: "dotBad"
-    };
-  }
-
-  if (status === "LOW POWER") {
-    return {
-      border: "rgba(245, 158, 11, 0.52)",
-      pillBg: "rgba(245, 158, 11, 0.14)",
-      pillText: "hsl(var(--warn))",
-      dot: "dotWarn"
-    };
-  }
-
-  if (status === "CHARGING") {
-    return {
-      border: "rgba(56, 189, 248, 0.52)",
-      pillBg: "rgba(56, 189, 248, 0.14)",
-      pillText: "hsl(var(--info))",
-      dot: "dotInfo"
-    };
-  }
-
-  return {
-    border: "rgba(34, 197, 94, 0.42)",
-    pillBg: "rgba(34, 197, 94, 0.12)",
-    pillText: "hsl(var(--good))",
-    dot: "dotGood"
-  };
-}
-
-function formatRuntime(minutes) {
-  if (minutes === null || minutes === undefined) {
-    return "n/a";
-  }
-
-  if (minutes < 60) {
-    return `${minutes.toFixed(1)} min`;
-  }
-
-  return `${(minutes / 60).toFixed(1)} h`;
-}
-
-function formatLastSeen(lastSeen) {
-  if (!lastSeen) {
-    return "n/a";
-  }
-
-  const seenAt = new Date(lastSeen);
-  if (Number.isNaN(seenAt.getTime())) {
-    return "n/a";
-  }
-
-  const seconds = Math.max(0, Math.floor((Date.now() - seenAt.getTime()) / 1000));
-  if (seconds < 60) {
-    return `${seconds}s ago`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-
-  return `${Math.floor(minutes / 60)}h ago`;
-}
-
-function healthTone(value) {
-  if (value <= 60) return "hsl(var(--bad))";
-  if (value <= 80) return "hsl(var(--warn))";
-  return "hsl(var(--good))";
-}
+import { memo } from "react";
+import { getStatusMeta, healthTone, formatRuntime, formatLastSeen } from "../utils/constants";
 
 function formatMission(robot) {
-  if (!robot.mission_id || !robot.mission_type) {
-    return "Idle";
-  }
-
+  if (!robot.mission_id || !robot.mission_type) return "Idle";
   const progress =
     typeof robot.mission_progress === "number"
       ? `${robot.mission_progress.toFixed(0)}%`
       : "in progress";
-
   return `${robot.mission_type} ${progress}`;
 }
 
 function RobotCard({ robot }) {
-  const meta = statusMeta(robot.status);
+  const meta = getStatusMeta(robot.status);
   const failureRisk =
     typeof robot.failure_risk === "number" ? `${robot.failure_risk}%` : "n/a";
   const healthCards = [
     { label: "Battery Health", value: robot.battery_health },
     { label: "Motor Health", value: robot.motor_health },
     { label: "Sensor Health", value: robot.sensor_health },
-    { label: "Network Health", value: robot.network_health }
+    { label: "Network Health", value: robot.network_health },
   ];
 
   return (
     <div
-      className="glassStrong sheen"
-      style={{
-        padding: 16,
-        borderColor: meta.border
-      }}
+      className="panel"
+      style={{ padding: 24, borderColor: meta.border, height: '100%', display: 'flex', flexDirection: 'column' }}
     >
-      <div className="robotHeader">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <div className="subtle">Robot</div>
-          <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: -0.4 }}>
+          <div className="stat-label">Robot</div>
+          <div className="stat-value">
             R{robot.robot_id}
           </div>
         </div>
 
         <span
-          className="pill"
+          className="badge"
           style={{
             background: meta.pillBg,
-            borderColor: "rgba(148, 163, 184, 0.18)",
+            borderColor: meta.border,
             color: meta.pillText,
-            fontWeight: 800
           }}
         >
-          <span className={`dot ${meta.dot}`} aria-hidden="true" />
           {robot.status}
         </span>
       </div>
 
-      <div style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "grid", gap: 16, flex: 1 }}>
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <div className="subtle">Battery</div>
-            <div style={{ fontWeight: 900, color: healthTone(robot.battery) }}>
+            <div className="stat-label">Battery</div>
+            <div style={{ fontWeight: 700, color: healthTone(robot.battery) }}>
               {robot.battery}%
             </div>
           </div>
-          <div className="progressTrack">
+          <div className="progress-bar-container">
             <div
-              className="progressFill"
+              className="progress-bar-fill"
               style={{
                 width: `${Math.max(0, Math.min(100, robot.battery))}%`,
-                background: `linear-gradient(90deg, ${healthTone(robot.battery)}, rgba(33, 211, 146, 0.35))`
+                background: healthTone(robot.battery),
               }}
             />
           </div>
         </div>
 
-        <div className="robotMetricGrid">
-          <div className="glass metricBox">
-            <div className="subtle">Temperature</div>
-            <div className="metricValue">{robot.temperature} C</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div className="panel" style={{ padding: 12 }}>
+            <div className="stat-label" style={{ fontSize: '0.7rem' }}>Temperature</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{robot.temperature} C</div>
           </div>
-          <div className="glass metricBox">
-            <div className="subtle">Speed</div>
-            <div className="metricValue">{robot.speed} m/s</div>
+          <div className="panel" style={{ padding: 12 }}>
+            <div className="stat-label" style={{ fontSize: '0.7rem' }}>Speed</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{robot.speed} m/s</div>
           </div>
-          <div className="glass metricBox">
-            <div className="subtle">Runtime Remaining</div>
-            <div className="metricValue">{formatRuntime(robot.runtime_remaining_minutes)}</div>
+          <div className="panel" style={{ padding: 12 }}>
+            <div className="stat-label" style={{ fontSize: '0.7rem' }}>Runtime</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{formatRuntime(robot.runtime_remaining_minutes)}</div>
           </div>
-          <div className="glass metricBox">
-            <div className="subtle">Failure Risk</div>
-            <div className="metricValue">{failureRisk}</div>
+          <div className="panel" style={{ padding: 12 }}>
+            <div className="stat-label" style={{ fontSize: '0.7rem' }}>Failure Risk</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{failureRisk}</div>
           </div>
         </div>
 
-        <div className="glass metricBox">
-          <div className="subtle">Mission Progress</div>
-          <div className="metricValue">{formatMission(robot)}</div>
+        <div className="panel" style={{ padding: 16 }}>
+          <div className="stat-label">Mission Progress</div>
+          <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{formatMission(robot)}</div>
           {robot.mission_id && (
-            <div className="subtle" style={{ marginTop: 4 }}>
+            <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginTop: 4 }}>
               {robot.mission_id}
             </div>
           )}
         </div>
 
-        <div className="glass metricBox">
-          <div className="subtle">Last Seen</div>
-          <div className="metricValue">{formatLastSeen(robot.last_seen)}</div>
+        <div className="panel" style={{ padding: 16 }}>
+          <div className="stat-label">Last Seen</div>
+          <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{formatLastSeen(robot.last_seen)}</div>
         </div>
 
-        <div className="componentGrid">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 'auto' }}>
           {healthCards.map((item) => (
-            <div key={item.label} className="glass componentCard">
-              <div className="subtle">{item.label}</div>
-              <div className="metricValue" style={{ color: healthTone(item.value) }}>
+            <div key={item.label} className="panel" style={{ padding: 12 }}>
+              <div className="stat-label" style={{ fontSize: '0.7rem' }}>{item.label}</div>
+              <div style={{ fontWeight: 600, marginTop: 4, color: healthTone(item.value) }}>
                 {item.value}%
               </div>
             </div>
@@ -215,4 +114,4 @@ function RobotCard({ robot }) {
   );
 }
 
-export default RobotCard;
+export default memo(RobotCard);

@@ -17,28 +17,28 @@ function FleetStats({ robots, maintenance }) {
   const criticalRiskRobots = maintenance.filter((item) => item.failure_risk >= 85).length;
 
   const stats = [
-    { title: "Total Robots", value: totalRobots, color: "hsl(var(--brand))" },
-    { title: "Active", value: activeRobots, color: "hsl(var(--good))" },
-    { title: "Charging", value: chargingRobots, color: "hsl(var(--info))" },
-    { title: "Low Power", value: lowPowerRobots, color: "hsl(var(--warn))" },
-    { title: "Overheating", value: overheatingRobots, color: "hsl(var(--bad))" },
-    { title: "Offline", value: offlineRobots, color: "#94a3b8" },
-    { title: "Dead", value: deadRobots, color: "#020617" },
-    { title: "Average Battery", value: `${averageBattery}%`, color: "hsl(var(--good))" },
+    { title: "Total Robots", value: totalRobots, color: "var(--accent-primary)" },
+    { title: "Active", value: activeRobots, color: "var(--status-active)" },
+    { title: "Charging", value: chargingRobots, color: "var(--status-charging)" },
+    { title: "Low Power", value: lowPowerRobots, color: "var(--status-warning)" },
+    { title: "Overheating", value: overheatingRobots, color: "var(--status-danger)" },
+    { title: "Offline", value: offlineRobots, color: "var(--text-secondary)" },
+    { title: "Dead", value: deadRobots, color: "var(--status-dead)" },
+    { title: "Average Battery", value: `${averageBattery}%`, color: "var(--status-active)" },
     {
       title: "Critical Risk",
       value: criticalRiskRobots,
-      color: criticalRiskRobots > 0 ? "hsl(var(--bad))" : "hsl(var(--good))"
+      color: criticalRiskRobots > 0 ? "var(--status-danger)" : "var(--status-active)"
     }
   ];
 
   return (
-    <div className="kpiGrid">
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16 }}>
       {stats.map((stat) => (
-        <div key={stat.title} className="glass kpi sheen">
-          <div className="kpiInner">
-            <div className="kpiLabel">{stat.title}</div>
-            <div className="kpiValue" style={{ color: stat.color }}>
+        <div key={stat.title} className="panel" style={{ padding: "16px 20px" }}>
+          <div>
+            <div className="stat-label" style={{ fontSize: "0.75rem", marginBottom: 8 }}>{stat.title}</div>
+            <div className="stat-value" style={{ color: stat.color, fontSize: "1.5rem" }}>
               {stat.value}
             </div>
           </div>

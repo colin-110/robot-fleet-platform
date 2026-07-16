@@ -17,7 +17,7 @@ function AnomalyPanel({ anomalies }) {
   }
 
   return (
-    <div className="glassStrong sheen" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="panel" style={{ padding: 16, marginBottom: 16 }}>
       <div className="sectionTitle">
         <h2>AI anomaly feed</h2>
         <span className="subtle">{anomalies.length} signals</span>
@@ -33,7 +33,7 @@ function AnomalyPanel({ anomalies }) {
           return (
             <div
               key={`${item.robot_id}-${index}`}
-              className="glass"
+              className="panel"
               style={{
                 padding: 12,
                 borderColor: "rgba(148, 163, 184, 0.16)"
@@ -106,22 +106,22 @@ function AnomalyPanel({ anomalies }) {
                   gap: 10
                 }}
               >
-                <div className="glass" style={{ padding: 10 }}>
+                <div className="panel" style={{ padding: 10 }}>
                   <div className="subtle">Battery</div>
                   <div style={{ fontWeight: 900 }}>{item.battery}%</div>
                 </div>
-                <div className="glass" style={{ padding: 10 }}>
+                <div className="panel" style={{ padding: 10 }}>
                   <div className="subtle">Temperature</div>
                   <div style={{ fontWeight: 900 }}>{item.temperature}°C</div>
                 </div>
-                <div className="glass" style={{ padding: 10 }}>
+                <div className="panel" style={{ padding: 10 }}>
                   <div className="subtle">Speed</div>
                   <div style={{ fontWeight: 900 }}>{item.speed}</div>
                 </div>
               </div>
 
               {(item.reason || item.recommended_action) && (
-                <div style={{ marginTop: 10 }} className="glass">
+                <div style={{ marginTop: 10 }} className="panel">
                   <div style={{ padding: 10, display: "grid", gap: 6 }}>
                     {item.reason && (
                       <div className="subtle">

@@ -1,52 +1,10 @@
-function riskTone(level) {
-  if (level === "CRITICAL") {
-    return {
-      dot: "dotBad",
-      color: "hsl(var(--bad))",
-      border: "rgba(239, 68, 68, 0.28)"
-    };
-  }
-
-  if (level === "HIGH") {
-    return {
-      dot: "dotBad",
-      color: "hsl(var(--bad))",
-      border: "rgba(239, 68, 68, 0.18)"
-    };
-  }
-
-  if (level === "MEDIUM") {
-    return {
-      dot: "dotWarn",
-      color: "hsl(var(--warn))",
-      border: "rgba(245, 158, 11, 0.18)"
-    };
-  }
-
-  return {
-    dot: "dotGood",
-    color: "hsl(var(--good))",
-    border: "rgba(34, 197, 94, 0.18)"
-  };
-}
-
-function formatRuntime(minutes) {
-  if (minutes === null || minutes === undefined) {
-    return "n/a";
-  }
-  if (minutes < 60) {
-    return `${minutes.toFixed(1)} min`;
-  }
-  return `${(minutes / 60).toFixed(1)} h`;
-}
+import { getRiskMeta, formatRuntime } from "../utils/constants";
 
 function PredictiveMaintenancePanel({ maintenance }) {
-  if (!maintenance || maintenance.length === 0) {
-    return null;
-  }
+  if (!maintenance || maintenance.length === 0) return null;
 
   return (
-    <div className="glassStrong sheen" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="panel" style={{ padding: 16, marginBottom: 16 }}>
       <div className="sectionTitle">
         <h2>Predictive maintenance</h2>
         <span className="subtle">{maintenance.length} robots scored</span>
@@ -54,12 +12,12 @@ function PredictiveMaintenancePanel({ maintenance }) {
 
       <div style={{ display: "grid", gap: 10 }}>
         {maintenance.map((item) => {
-          const meta = riskTone(item.risk_level);
+          const meta = getRiskMeta(item.risk_level);
 
           return (
             <div
               key={item.robot_id}
-              className="glass"
+              className="panel"
               style={{ padding: 12, borderColor: meta.border }}
             >
               <div className="maintenanceRow">
@@ -79,11 +37,11 @@ function PredictiveMaintenancePanel({ maintenance }) {
               </div>
 
               <div className="maintenanceMetrics">
-                <div className="glass metricBox">
+                <div className="panel metricBox">
                   <div className="subtle">Runtime Remaining</div>
                   <div className="metricValue">{formatRuntime(item.runtime_remaining_minutes)}</div>
                 </div>
-                <div className="glass metricBox">
+                <div className="panel metricBox">
                   <div className="subtle">Battery Health</div>
                   <div className="metricValue">{item.battery_health}%</div>
                 </div>

@@ -28,19 +28,19 @@ function TooltipContent({ active, payload, label }) {
       <div className="subtle" style={{ display: "grid", gap: 4 }}>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
           <span>Battery</span>
-          <span style={{ color: "hsl(var(--chart-1))", fontWeight: 700 }}>
+          <span style={{ color: "var(--status-active)", fontWeight: 700 }}>
             {battery}%
           </span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
           <span>Temperature</span>
-          <span style={{ color: "hsl(var(--chart-2))", fontWeight: 700 }}>
+          <span style={{ color: "var(--status-warning)", fontWeight: 700 }}>
             {temperature}C
           </span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between" }}>
           <span>Speed</span>
-          <span style={{ color: "hsl(var(--chart-3))", fontWeight: 700 }}>
+          <span style={{ color: "var(--status-charging)", fontWeight: 700 }}>
             {speed} m/s
           </span>
         </div>
@@ -58,7 +58,7 @@ function TelemetryChart({ robots }) {
   }));
 
   return (
-    <div className="glassStrong sheen" style={{ padding: 16 }}>
+    <div className="panel" style={{ padding: 16 }}>
       <div className="sectionTitle">
         <h2>Fleet telemetry</h2>
         <span className="subtle">
@@ -89,21 +89,21 @@ function TelemetryChart({ robots }) {
           <Line
             type="monotone"
             dataKey="battery"
-            stroke="hsl(var(--chart-1))"
+            stroke="var(--status-active)"
             strokeWidth={3}
             dot={{ r: 3 }}
           />
           <Line
             type="monotone"
             dataKey="temperature"
-            stroke="hsl(var(--chart-2))"
+            stroke="var(--status-warning)"
             strokeWidth={3}
             dot={{ r: 3 }}
           />
           <Line
             type="monotone"
             dataKey="speed"
-            stroke="hsl(var(--chart-3))"
+            stroke="var(--status-charging)"
             strokeWidth={3}
             dot={{ r: 3 }}
           />

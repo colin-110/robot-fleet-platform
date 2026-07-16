@@ -1,54 +1,12 @@
-function alertMeta(status) {
-  if (status === "DEAD") {
-    return {
-      dot: "dotBlack",
-      border: "rgba(0, 0, 0, 0.5)",
-      accent: "#0f172a"
-    };
-  }
-
-  if (status === "OFFLINE") {
-    return {
-      dot: "dotGray",
-      border: "rgba(100, 116, 139, 0.35)",
-      accent: "#94a3b8"
-    };
-  }
-
-  if (status === "OVERHEATING") {
-    return {
-      dot: "dotBad",
-      border: "rgba(239, 68, 68, 0.25)",
-      accent: "hsl(var(--bad))"
-    };
-  }
-
-  if (status === "CHARGING") {
-    return {
-      dot: "dotInfo",
-      border: "rgba(56, 189, 248, 0.25)",
-      accent: "hsl(var(--info))"
-    };
-  }
-
-  return {
-    dot: "dotWarn",
-    border: "rgba(245, 158, 11, 0.25)",
-    accent: "hsl(var(--warn))"
-  };
-}
+import { getStatusMeta, ALERT_STATUSES } from "../utils/constants";
 
 function AlertsPanel({ robots }) {
-  const alerts = robots.filter((robot) =>
-    ["LOW POWER", "OVERHEATING", "OFFLINE", "CHARGING", "DEAD"].includes(robot.status)
-  );
+  const alerts = robots.filter((robot) => ALERT_STATUSES.includes(robot.status));
 
-  if (alerts.length === 0) {
-    return null;
-  }
+  if (alerts.length === 0) return null;
 
   return (
-    <div className="glassStrong sheen" style={{ padding: 16, marginBottom: 16 }}>
+    <div className="panel" style={{ padding: 16, marginBottom: 16 }}>
       <div className="sectionTitle">
         <h2>Active alerts</h2>
         <span className="subtle">{alerts.length} affected</span>
@@ -56,19 +14,19 @@ function AlertsPanel({ robots }) {
 
       <div style={{ display: "grid", gap: 10 }}>
         {alerts.map((robot) => {
-          const meta = alertMeta(robot.status);
+          const meta = getStatusMeta(robot.status);
 
           return (
             <div
               key={robot.robot_id}
-              className="glass"
+              className="panel"
               style={{
                 padding: 12,
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
                 gap: 12,
-                borderColor: meta.border
+                borderColor: meta.border,
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -82,7 +40,7 @@ function AlertsPanel({ robots }) {
               <div className="pill" style={{ borderColor: "rgba(148, 163, 184, 0.18)" }}>
                 <span className="subtle">Mission</span>
                 <span style={{ opacity: 0.7 }}>|</span>
-                <span style={{ color: meta.accent, fontWeight: 800 }}>
+                <span style={{ color: meta.alertAccent, fontWeight: 800 }}>
                   {robot.mission_type || "Idle"}
                 </span>
               </div>

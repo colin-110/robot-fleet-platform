@@ -1,6 +1,12 @@
-fastapi>=0.95,<0.100
+fastapi>=0.100,<1
 uvicorn>=0.22,<1
 SQLAlchemy>=2,<3
+psycopg2-binary>=2,<3
+asyncpg>=0.28,<1
+pydantic-settings>=2,<3
+alembic>=1.13,<2
 python-dotenv>=1,<2
 wsproto>=1.2,<2
-psycopg2-binary>=2,<3
+pytest>=8,<9
+httpx>=0.27,<1
+redis>=5.0.0
