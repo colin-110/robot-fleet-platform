@@ -56,6 +56,10 @@ class RobotState:
     last_update_s: float = 0.0
     pause_until_s: float = 0.0
     completion_count: int = 0
+    blackout_until: float = 0.0
+    charging_suspended: bool = False
+    dead_since: float = 0.0
+    returning_to_charge: bool = False
 
 
 def clamp(value: float, lo: float, hi: float):
@@ -135,6 +139,7 @@ def assign_mission(robot: RobotState, mission: Mission):
     robot.mission_start_time = iso_utc_now()
     robot.status = "ACTIVE"
     robot.pause_until_s = 0.0
+    robot.returning_to_charge = False
 
 
 def clear_mission(robot: RobotState):
@@ -150,6 +155,7 @@ def effective_speed(robot: RobotState, mission_type: str, rng: random.Random):
         "PATROL": 1.1,
         "DELIVERY": 1.8,
         "INSPECTION": 0.95,
+        "RETURN": 1.4,
     }.get(mission_type, 1.0)
     degraded_cap = base * clamp(robot.motor_health / 100.0, 0.45, 1.0)
     return clamp(degraded_cap + rng.uniform(-0.08, 0.12), 0.2, 2.2)
@@ -199,9 +205,10 @@ async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng
                 robot
                 for robot in robots
                 if robot.online
-                and robot.status not in {"DEAD", "CHARGING"}
+                and robot.status not in {"DEAD", "CHARGING", "OVERHEATING"}
                 and robot.mission is None
-                and robot.battery > 15.0
+                and not robot.returning_to_charge
+                and robot.battery > 20.0
             ]
             if not candidates:
                 break
@@ -236,191 +243,317 @@ async def robot_loop(
 ):
     robot.last_update_s = time.time()
 
-    while True:
-        now = time.time()
-        dt = clamp(now - robot.last_update_s, 0.1, 2.5)
-        robot.last_update_s = now
-        
-        # Poll for commands
-        try:
-            cmd_url = api_url.replace("/telemetry", f"/commands/{robot.robot_id}")
-            cmd_resp = await client.get(cmd_url, timeout=1.0)
-            if cmd_resp.status_code == 200:
-                for cmd in cmd_resp.json():
-                    if cmd == "RETURN_TO_BASE":
-                        clear_mission(robot)
-                        robot.mission = Mission(
-                            mission_id="CMD-RTB",
-                            mission_type="RETURN",
-                            steps=[MissionStep(0.0, 0.0, label="Return to base")],
-                            home_x=0.0,
-                            home_y=0.0,
-                            progress_weight=100.0,
-                        )
-                        robot.mission_id = "CMD-RTB"
-                        robot.mission_progress = 0.0
-                        robot.status = "ACTIVE"
-                        robot.online = True
-                        safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE")
-                    elif cmd == "EMERGENCY_STOP":
-                        robot.status = "STOPPED"
-                        robot.speed = 0.0
-                        clear_mission(robot)
-                        safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED")
-                    elif cmd == "RESUME":
-                        robot.status = "ACTIVE"
-                        robot.online = True
-                        safe_print(f"[R{robot.robot_id:02d}] RESUMED")
-        except Exception:
-            pass
+    try:
+        while True:
+            now = time.time()
+            dt = clamp(now - robot.last_update_s, 0.1, 2.5)
+            robot.last_update_s = now
             
-        if robot.status in ("DEAD", "STOPPED"):
-            # Emit telemetry so it stays on dashboard
+            # Check simulated network blackout
+            is_blacked_out = robot.blackout_until > now
+            
+            # Trigger network blackout with random probability
+            if not is_blacked_out and robot.status not in ("DEAD", "STOPPED"):
+                blackout_chance = 0.003 + ((100.0 - robot.network_health) / 100.0) * 0.015
+                if rng.random() < blackout_chance:
+                    blackout_duration = rng.uniform(30.0, 90.0)
+                    robot.blackout_until = now + blackout_duration
+                    is_blacked_out = True
+                    safe_print(f"[R{robot.robot_id:02d}] Telemetry drop: Network blackout started for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)")
+
+            # Poll commands if not blacked out
+            if not is_blacked_out:
+                try:
+                    cmd_url = api_url.replace("/telemetry", f"/commands/{robot.robot_id}")
+                    cmd_resp = await client.get(cmd_url, timeout=1.0)
+                    if cmd_resp.status_code == 200:
+                        for cmd in cmd_resp.json():
+                            if cmd == "RETURN_TO_BASE":
+                                clear_mission(robot)
+                                robot.returning_to_charge = True
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command")
+                            elif cmd == "EMERGENCY_STOP":
+                                robot.status = "STOPPED"
+                                robot.speed = 0.0
+                                clear_mission(robot)
+                                robot.returning_to_charge = False
+                                safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED")
+                            elif cmd == "RESUME":
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(f"[R{robot.robot_id:02d}] RESUMED")
+                except Exception:
+                    pass
+
+            # Meltdown / Battery exhaustion DEAD checks
+            is_dead = (
+                robot.battery <= 5.0 
+                or robot.temperature >= 95.0 
+                or robot.battery_health < 10.0 
+                or robot.motor_health < 10.0
+            )
+            
+            if is_dead:
+                if robot.status != "DEAD":
+                    robot.status = "DEAD"
+                    robot.online = False
+                    robot.speed = 0.0
+                    robot.dead_since = now
+                    clear_mission(robot)
+                    robot.returning_to_charge = False
+                    safe_print(f"[R{robot.robot_id:02d}] SHUTDOWN: DEAD state reached (bat={robot.battery:.1f}%, temp={robot.temperature:.1f}C, motor_h={robot.motor_health:.1f}%)")
+                
+                # Emit dead telemetry if not blacked out
+                if not is_blacked_out:
+                    await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
+                
+                # Maintenance repair crew event (45s to 90s delay)
+                if now - robot.dead_since >= rng.uniform(45.0, 90.0):
+                    robot.battery = 100.0
+                    robot.temperature = ambient_c
+                    robot.battery_health = 100.0
+                    robot.motor_health = 100.0
+                    robot.sensor_health = 100.0
+                    robot.network_health = 100.0
+                    robot.status = "ACTIVE"
+                    robot.online = True
+                    robot.charging_suspended = False
+                    safe_print(f"[R{robot.robot_id:02d}] MAINTENANCE COMPLETE: Robot fully revived and operational")
+                
+                await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+                continue
+
             if robot.status == "STOPPED":
-                await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
-            await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
-            continue
+                if not is_blacked_out:
+                    await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
+                await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+                continue
 
-        if robot.mission is None and robot.battery <= 18.0 and robot.status != "STOPPED":
-            robot.status = "CHARGING"
-        elif robot.status not in ("CHARGING", "STOPPED"):
-            robot.status = "ACTIVE"
+            # Low power / Return to charge triggers
+            if robot.battery <= 20.0 and robot.status not in ("CHARGING", "RETURNING_TO_CHARGE"):
+                robot.status = "LOW POWER"
+                if robot.battery <= 10.0 and robot.mission is not None:
+                    # Abort active mission to top up
+                    safe_print(f"[R{robot.robot_id:02d}] Aborting mission {robot.mission_id} due to low charge ({robot.battery:.1f}%)")
+                    clear_mission(robot)
+                    robot.returning_to_charge = True
 
-        if robot.status == "CHARGING":
-            robot.speed = lerp(robot.speed, 0.0, 0.45)
-            charge_rate = 0.24 * clamp(robot.battery_health / 100.0, 0.55, 1.0)
-            robot.battery = clamp(robot.battery + charge_rate * dt * 100.0, 0.0, 100.0)
-            robot.temperature -= 0.08 * max(0.0, robot.temperature - ambient_c) * dt
-            if robot.battery >= 92.0:
-                robot.status = "ACTIVE"
-            if robot.mission is None:
-                clear_mission(robot)
-        elif robot.mission is not None:
-            mission = robot.mission
-            step = mission.steps[mission.current_step]
-            dx = step.x - robot.x
-            dy = step.y - robot.y
-            dist = math.hypot(dx, dy)
+            # Proactive top up if idle
+            if robot.mission is None and robot.battery <= 50.0 and not robot.returning_to_charge and robot.status != "CHARGING":
+                robot.returning_to_charge = True
 
-            if robot.pause_until_s > now:
-                robot.speed = lerp(robot.speed, 0.0, 0.4)
-            else:
-                target_speed = effective_speed(robot, mission.mission_type, rng)
-                robot.speed = lerp(robot.speed, target_speed, 0.22)
+            # ── STATE PHYSICS ──
 
-                if dist < 0.45:
-                    mission.current_step += 1
-                    robot.mission_progress = round(
-                        min(100.0, mission.current_step * mission.progress_weight),
-                        1,
-                    )
-
-                    if step.pause_s > 0:
-                        robot.pause_until_s = now + step.pause_s
-
-                    if mission.current_step >= len(mission.steps):
-                        robot.completion_count += 1
-                        robot.mission_progress = 100.0
-                        safe_print(
-                            f"[R{robot.robot_id:02d}] completed "
-                            f"{mission.mission_type} {mission.mission_id}"
-                        )
-                        await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
-                        clear_mission(robot)
-                        robot.status = "ACTIVE" if robot.battery > 18.0 else "CHARGING"
-                    else:
-                        next_step = mission.steps[mission.current_step]
-                        safe_print(
-                            f"[R{robot.robot_id:02d}] {mission.mission_id} -> {next_step.label}"
-                        )
+            # 1. Returning to charge base
+            if robot.returning_to_charge:
+                robot.status = "LOW POWER" if robot.battery <= 20.0 else "ACTIVE"
+                dx = 0.0 - robot.x
+                dy = 0.0 - robot.y
+                dist = math.hypot(dx, dy)
+                if dist < 0.5:
+                    robot.returning_to_charge = False
+                    robot.status = "CHARGING"
+                    robot.x = 0.0
+                    robot.y = 0.0
+                    robot.speed = 0.0
+                    safe_print(f"[R{robot.robot_id:02d}] Arrived at Base charging pad.")
                 else:
+                    target_speed = effective_speed(robot, "RETURN", rng)
+                    robot.speed = lerp(robot.speed, target_speed, 0.22)
                     step_distance = robot.speed * dt
                     robot.x += (dx / dist) * step_distance
                     robot.y += (dy / dist) * step_distance
+                    
+                    motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
+                    battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
+                    drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
+                    robot.battery -= drain_per_s * dt * 20.0
+                    
+                    load_heat = 0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
+                    cooling = 0.02 * max(0.0, robot.temperature - ambient_c)
+                    robot.temperature += (load_heat - cooling) * dt
 
-            motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
-            battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
-            drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
-            robot.battery -= drain_per_s * dt * 20.0
+            # 2. Charging (with thermal suspension)
+            elif robot.status == "CHARGING":
+                robot.speed = 0.0
+                
+                if robot.temperature >= 80.0:
+                    if not robot.charging_suspended:
+                        robot.charging_suspended = True
+                        safe_print(f"[R{robot.robot_id:02d}] Thermal safety: Charging suspended due to overheating ({robot.temperature:.1f}C)")
+                
+                if robot.charging_suspended:
+                    robot.status = "OVERHEATING"
+                    # Cool down
+                    robot.temperature -= 0.08 * (robot.temperature - ambient_c) * dt
+                    if robot.temperature <= 60.0:
+                        robot.charging_suspended = False
+                        robot.status = "CHARGING"
+                        safe_print(f"[R{robot.robot_id:02d}] Battery cooled to safe levels. Resuming charge cycle.")
+                else:
+                    charge_rate = 0.35 * clamp(robot.battery_health / 100.0, 0.55, 1.0)
+                    robot.battery = clamp(robot.battery + charge_rate * dt * 10.0, 0.0, 100.0)
+                    
+                    # Charging creates heat
+                    charging_heat = 0.12 * (1.0 + (100.0 - robot.battery_health) / 100.0)
+                    cooling = 0.035 * (robot.temperature - ambient_c)
+                    robot.temperature += (charging_heat - cooling) * dt
+                    
+                    if robot.battery >= 100.0:
+                        robot.status = "ACTIVE"
+                        safe_print(f"[R{robot.robot_id:02d}] Fully charged to 100%.")
 
-            load_heat = 0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
-            cooling = 0.02 * max(0.0, robot.temperature - ambient_c)
-            robot.temperature += (load_heat - cooling) * dt
-        else:
-            robot.speed = lerp(robot.speed, 0.0, 0.35)
-            standby_drain = 0.0015 * (1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.25)
-            robot.battery -= standby_drain * dt * 20.0
-            robot.temperature -= 0.04 * (robot.temperature - ambient_c) * dt
+            # 3. Overheating operation (speed halved)
+            elif robot.temperature >= 80.0:
+                robot.status = "OVERHEATING"
+                if robot.mission is not None:
+                    mission = robot.mission
+                    step = mission.steps[mission.current_step]
+                    dx = step.x - robot.x
+                    dy = step.y - robot.y
+                    dist = math.hypot(dx, dy)
+                    
+                    # Slow down by half to cool down
+                    target_speed = effective_speed(robot, mission.mission_type, rng) / 2.0
+                    robot.speed = lerp(robot.speed, target_speed, 0.22)
+                    
+                    if dist < 0.45:
+                        mission.current_step += 1
+                        robot.mission_progress = round(min(100.0, mission.current_step * mission.progress_weight), 1)
+                        if mission.current_step >= len(mission.steps):
+                            robot.completion_count += 1
+                            robot.mission_progress = 100.0
+                            safe_print(f"[R{robot.robot_id:02d}] Completed mission {mission.mission_id} while overheating.")
+                            if not is_blacked_out:
+                                await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
+                            clear_mission(robot)
+                        else:
+                            next_step = mission.steps[mission.current_step]
+                    else:
+                        step_distance = robot.speed * dt
+                        robot.x += (dx / dist) * step_distance
+                        robot.y += (dy / dist) * step_distance
+                        
+                    # Lower battery drain
+                    motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
+                    battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
+                    drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
+                    robot.battery -= drain_per_s * dt * 20.0
+                    
+                    load_heat = 0.02 + 0.02 * robot.speed
+                    cooling = 0.045 * (robot.temperature - ambient_c)
+                    robot.temperature += (load_heat - cooling) * dt
+                else:
+                    robot.speed = lerp(robot.speed, 0.0, 0.35)
+                    robot.temperature -= 0.06 * (robot.temperature - ambient_c) * dt
 
-        robot.battery_health = clamp(robot.battery_health - rng.uniform(0.0006, 0.0012), 55.0, 100.0)
-        robot.motor_health = clamp(
-            robot.motor_health - rng.uniform(0.0008, 0.0014) * (1.3 if robot.mission else 0.5),
-            50.0,
-            100.0,
-        )
-        robot.sensor_health = clamp(robot.sensor_health - rng.uniform(0.0005, 0.0010), 58.0, 100.0)
-        robot.network_health = clamp(robot.network_health - rng.uniform(0.0006, 0.0011), 52.0, 100.0)
+            # 4. Normal Mission Operation
+            elif robot.mission is not None:
+                mission = robot.mission
+                step = mission.steps[mission.current_step]
+                dx = step.x - robot.x
+                dy = step.y - robot.y
+                dist = math.hypot(dx, dy)
 
-        if rng.random() < 0.0025:
-            robot.temperature += rng.uniform(4.0, 9.0)
+                if robot.pause_until_s > now:
+                    robot.speed = lerp(robot.speed, 0.0, 0.4)
+                else:
+                    target_speed = effective_speed(robot, mission.mission_type, rng)
+                    robot.speed = lerp(robot.speed, target_speed, 0.22)
 
-        # Check geofence (Restricted Zone at x=15, y=10, radius 5)
-        dist_to_fence = math.hypot(robot.x - 15.0, robot.y - 10.0)
-        if dist_to_fence < 5.0:
-            if not getattr(robot, 'in_fence', False):
-                robot.in_fence = True
-                safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
-                try:
-                    await client.post(f"{api_url.replace('/telemetry', '')}/events", json={
-                        "robot_id": robot.robot_id,
-                        "message": "Entered Restricted Zone!"
-                    }, timeout=2.0)
-                except Exception:
-                    pass
-        else:
-            if getattr(robot, 'in_fence', False):
-                robot.in_fence = False
-                safe_print(f"[R{robot.robot_id:02d}] EXITED RESTRICTED ZONE")
+                    if dist < 0.45:
+                        mission.current_step += 1
+                        robot.mission_progress = round(
+                            min(100.0, mission.current_step * mission.progress_weight),
+                            1,
+                        )
 
-        robot.battery = clamp(robot.battery, 0.0, 100.0)
-        robot.temperature = clamp(robot.temperature, 22.0, 99.0)
-        robot.speed = clamp(robot.speed, 0.0, 2.2)
+                        if step.pause_s > 0:
+                            robot.pause_until_s = now + step.pause_s
 
-        if robot.battery <= 5.0 or robot.temperature >= 95.0:
-            robot.status = "DEAD"
-            robot.online = False
-            robot.speed = 0.0
-            robot.mission_progress = 100.0 if robot.mission_id else None
-            if not robot.dead_printed:
-                safe_print(f"[R{robot.robot_id:02d}] DEAD")
-                robot.dead_printed = True
-            
-            # Emit telemetry so it doesn't disappear from the dashboard
-            await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
-            clear_mission(robot)
-            
-            # Revive after a while
-            if rng.random() < 0.2:  # ~20% chance per tick to revive (approx 10-25 seconds)
-                robot.battery = 100.0
-                robot.temperature = ambient_c
-                robot.battery_health = 100.0
-                robot.motor_health = 100.0
-                robot.sensor_health = 100.0
-                robot.network_health = 100.0
-                robot.status = "ACTIVE"
-                robot.online = True
-                robot.dead_printed = False
-                safe_print(f"[R{robot.robot_id:02d}] REVIVED and REPAIRED")
-            
+                        if mission.current_step >= len(mission.steps):
+                            robot.completion_count += 1
+                            robot.mission_progress = 100.0
+                            safe_print(
+                                f"[R{robot.robot_id:02d}] completed "
+                                f"{mission.mission_type} {mission.mission_id}"
+                            )
+                            if not is_blacked_out:
+                                await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
+                            clear_mission(robot)
+                            robot.status = "ACTIVE"
+                        else:
+                            next_step = mission.steps[mission.current_step]
+                            safe_print(
+                                f"[R{robot.robot_id:02d}] {mission.mission_id} -> {next_step.label}"
+                            )
+                    else:
+                        step_distance = robot.speed * dt
+                        robot.x += (dx / dist) * step_distance
+                        robot.y += (dy / dist) * step_distance
+
+                motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
+                battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
+                drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
+                robot.battery -= drain_per_s * dt * 20.0
+
+                load_heat = 0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
+                cooling = 0.02 * max(0.0, robot.temperature - ambient_c)
+                robot.temperature += (load_heat - cooling) * dt
+
+            # 5. Standby
+            else:
+                robot.speed = lerp(robot.speed, 0.0, 0.35)
+                standby_drain = 0.0015 * (1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.25)
+                robot.battery -= standby_drain * dt * 20.0
+                robot.temperature -= 0.04 * (robot.temperature - ambient_c) * dt
+
+            # Wear down components
+            robot.battery_health = clamp(robot.battery_health - rng.uniform(0.0006, 0.0012), 10.0, 100.0)
+            robot.motor_health = clamp(
+                robot.motor_health - rng.uniform(0.0008, 0.0014) * (1.3 if robot.mission else 0.5),
+                10.0,
+                100.0,
+            )
+            robot.sensor_health = clamp(robot.sensor_health - rng.uniform(0.0005, 0.0010), 10.0, 100.0)
+            robot.network_health = clamp(robot.network_health - rng.uniform(0.0006, 0.0011), 10.0, 100.0)
+
+            if rng.random() < 0.0025:
+                robot.temperature += rng.uniform(4.0, 9.0)
+
+            # Check geofence
+            dist_to_fence = math.hypot(robot.x - 15.0, robot.y - 10.0)
+            if dist_to_fence < 5.0:
+                if not getattr(robot, 'in_fence', False):
+                    robot.in_fence = True
+                    safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
+                    if not is_blacked_out:
+                        try:
+                            await client.post(f"{api_url.replace('/telemetry', '')}/events", json={
+                                "robot_id": robot.robot_id,
+                                "message": "Entered Restricted Zone!"
+                            }, timeout=2.0)
+                        except Exception:
+                            pass
+            else:
+                if getattr(robot, 'in_fence', False):
+                    robot.in_fence = False
+                    safe_print(f"[R{robot.robot_id:02d}] EXITED RESTRICTED ZONE")
+
+            robot.battery = clamp(robot.battery, 0.0, 100.0)
+            robot.temperature = clamp(robot.temperature, 22.0, 99.0)
+            robot.speed = clamp(robot.speed, 0.0, 2.2)
+
+            # Emit telemetry if online and not in blackout
+            if not is_blacked_out:
+                await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
+
             await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
-            continue
-
-        if robot.network_health < 68.0 and rng.random() < ((68.0 - robot.network_health) / 100.0):
-            safe_print(f"[R{robot.robot_id:02d}] telemetry dropped (network instability)")
-        else:
-            await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
-
-        await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+            
+    except asyncio.CancelledError:
+        safe_print(f"[R{robot.robot_id:02d}] Decommissioned and shutting down.")
 
 
 async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: str, rng: random.Random, post_timeout_s: float):
@@ -444,7 +577,7 @@ async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: 
 
     try:
         await post_telemetry(client, api_url, payload, post_timeout_s)
-        mission_label = robot.mission.mission_type if robot.mission else "IDLE"
+        mission_label = robot.mission.mission_type if robot.mission else ("RTB" if robot.returning_to_charge else "IDLE")
         progress = f"{robot.mission_progress:5.1f}%" if robot.mission_progress is not None else "  n/a"
         safe_print(
             f"[R{robot.robot_id:02d}] {robot.status:<10} {mission_label:<10} "
@@ -456,6 +589,89 @@ async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: 
         safe_print(f"[R{robot.robot_id:02d}] POST failed: {exc}")
 
 
+async def fleet_scaling_loop(
+    robots: list[RobotState],
+    active_robot_tasks: dict[int, asyncio.Task],
+    client: httpx.AsyncClient,
+    api_url: str,
+    rng: random.Random,
+    ambient: float,
+    tick_min: float,
+    tick_max: float,
+    timeout: float,
+    radius: float,
+    initial_robots_count: int,
+):
+    max_robot_id = initial_robots_count
+    
+    while True:
+        # Check size constraints
+        # Keep fleet size between 40 and 60.
+        # Random choice to scale up or down
+        await asyncio.sleep(rng.uniform(60.0, 120.0))
+        
+        current_count = len(robots)
+        action = None
+        if current_count < 40:
+            action = "deploy"
+        elif current_count > 60:
+            action = "retire"
+        else:
+            action = rng.choice(["deploy", "retire", "none"])
+            
+        if action == "deploy":
+            max_robot_id += 1
+            new_id = max_robot_id
+            start_x, start_y = random_point(rng, radius * 0.2)
+            new_robot = RobotState(
+                robot_id=new_id,
+                battery=100.0,
+                temperature=ambient,
+                x=start_x,
+                y=start_y,
+                home_x=0.0,
+                home_y=0.0,
+            )
+            robots.append(new_robot)
+            
+            # Start loop
+            task = asyncio.create_task(
+                robot_loop(
+                    new_robot,
+                    client=client,
+                    api_url=api_url,
+                    rng=random.Random(rng.randint(0, 1000000)),
+                    ambient_c=ambient,
+                    tick_min_s=tick_min,
+                    tick_max_s=tick_max,
+                    post_timeout_s=timeout,
+                )
+            )
+            active_robot_tasks[new_id] = task
+            safe_print(f"[FLEET] Deploying new robot R{new_id:02d} to the field.")
+            
+        elif action == "retire" and current_count > 10:
+            candidates = [r for r in robots if r.status != "DEAD"]
+            if not candidates:
+                candidates = robots
+                
+            selected = rng.choice(candidates)
+            rid = selected.robot_id
+            
+            # Remove mission
+            clear_mission(selected)
+            
+            # Stop task
+            if rid in active_robot_tasks:
+                task = active_robot_tasks[rid]
+                task.cancel()
+                del active_robot_tasks[rid]
+                
+            # Remove from list
+            robots.remove(selected)
+            safe_print(f"[FLEET] Retired robot R{rid:02d}. Recalled to workshop.")
+
+
 async def main_async():
     parser = argparse.ArgumentParser(description="Mission-based robot fleet simulator")
     parser.add_argument(
@@ -463,7 +679,7 @@ async def main_async():
         default="http://localhost:8000/api/v1/telemetry",
     )
     parser.add_argument("--local", action="store_true", help="Use local API URL")
-    parser.add_argument("--robots", type=int, default=5)
+    parser.add_argument("--robots", type=int, default=0)
     parser.add_argument("--ambient", type=float, default=30.0)
     parser.add_argument("--radius", type=float, default=20.0)
     parser.add_argument("--tick-min", type=float, default=2.0)
@@ -476,8 +692,16 @@ async def main_async():
         args.api_url = "http://localhost:8000/api/v1/telemetry"
 
     rng = random.Random(args.seed)
+    
+    robots_count = args.robots
+    if robots_count <= 0:
+        robots_count = rng.randint(35, 55)
+        safe_print(f"[FLEET] Fleet size randomized to {robots_count} robots.")
+    else:
+        safe_print(f"[FLEET] Initializing fleet with specified count of {robots_count} robots.")
+
     robots = []
-    for rid in range(1, args.robots + 1):
+    for rid in range(1, robots_count + 1):
         start_x, start_y = random_point(rng, args.radius * 0.2)
         robots.append(
             RobotState(
@@ -492,35 +716,62 @@ async def main_async():
         )
 
     mission_queue: list[Mission] = []
-    tasks = [
-        asyncio.create_task(
-            dispatcher_loop(
-                robots=robots,
-                queue=mission_queue,
-                rng=random.Random(args.seed + 999),
-                radius=args.radius,
-            )
+    
+    # Start dispatcher loop
+    dispatcher_task = asyncio.create_task(
+        dispatcher_loop(
+            robots=robots,
+            queue=mission_queue,
+            rng=random.Random(args.seed + 999),
+            radius=args.radius,
         )
-    ]
+    )
 
+    active_robot_tasks = {}
     async with httpx.AsyncClient() as client:
+        # Start robot loops
         for robot in robots:
-            tasks.append(
-                asyncio.create_task(
-                    robot_loop(
-                        robot,
-                        client=client,
-                        api_url=args.api_url,
-                        rng=random.Random((args.seed * 1000) + robot.robot_id * 17),
-                        ambient_c=args.ambient,
-                        tick_min_s=args.tick_min,
-                        tick_max_s=args.tick_max,
-                        post_timeout_s=args.timeout,
-                    )
+            task = asyncio.create_task(
+                robot_loop(
+                    robot,
+                    client=client,
+                    api_url=args.api_url,
+                    rng=random.Random((args.seed * 1000) + robot.robot_id * 17),
+                    ambient_c=args.ambient,
+                    tick_min_s=args.tick_min,
+                    tick_max_s=args.tick_max,
+                    post_timeout_s=args.timeout,
                 )
             )
+            active_robot_tasks[robot.robot_id] = task
 
-        await asyncio.gather(*tasks)
+        # Start fleet scaling daemon task
+        scaling_task = asyncio.create_task(
+            fleet_scaling_loop(
+                robots=robots,
+                active_robot_tasks=active_robot_tasks,
+                client=client,
+                api_url=args.api_url,
+                rng=random.Random(args.seed + 777),
+                ambient=args.ambient,
+                tick_min=args.tick_min,
+                tick_max=args.tick_max,
+                timeout=args.timeout,
+                radius=args.radius,
+                initial_robots_count=robots_count,
+            )
+        )
+
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            dispatcher_task.cancel()
+            scaling_task.cancel()
+            for task in list(active_robot_tasks.values()):
+                task.cancel()
 
 
 def main():

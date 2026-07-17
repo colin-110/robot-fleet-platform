@@ -50,8 +50,8 @@ class ConnectionManager:
     async def broadcast(self, data: dict) -> None:
         """Publish data to Redis Streams (handles scaling/persistence)."""
         try:
-            # maxlen=10000 ensures the stream doesn't grow infinitely in memory
-            await self.redis.xadd(self.stream_name, {"data": json.dumps(data)}, maxlen=10000)
+            # We use xadd to push the message onto a stream
+            await self.redis.xadd(self.stream_name, {"data": json.dumps(data, default=str)}, maxlen=10000)
         except Exception:
             logger.exception("Failed to publish to Redis Stream")
 

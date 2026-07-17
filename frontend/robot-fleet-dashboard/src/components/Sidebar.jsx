@@ -8,7 +8,7 @@ function Sidebar({ active, onChange }) {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span className="brandMark" aria-hidden="true" />
             <div className="brandTitle">
-              <strong>FleetOps AI</strong>
+              <strong>FleetOps</strong>
               <span>Robot fleet platform</span>
             </div>
           </div>
@@ -37,8 +37,6 @@ function Sidebar({ active, onChange }) {
             );
           })}
         </nav>
-
-          Mission dispatch and telemetry ingestion.
       </div>
     </aside>
   );

@@ -35,6 +35,16 @@ services:
     networks:
       - fleet_net
 
+  simulator:
+    build: ./simulator
+    container_name: fleet_simulator
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - fleet_net
+
   db:
     image: postgres:15
     container_name: fleet_db
