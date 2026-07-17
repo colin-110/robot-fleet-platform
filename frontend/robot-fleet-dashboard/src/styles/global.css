@@ -384,7 +384,6 @@ a {
 }
 
 .robotHeader,
-.maintenanceRow,
 .navHeader {
   display: flex;
   justify-content: space-between;
@@ -397,14 +396,12 @@ a {
 }
 
 .robotMetricGrid,
-.componentGrid,
-.maintenanceMetrics {
+.componentGrid {
   display: grid;
   gap: 10px;
 }
 
-.robotMetricGrid,
-.maintenanceMetrics {
+.robotMetricGrid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -605,7 +602,6 @@ a {
   .navHeader,
   .navFilters,
   .robotMetricGrid,
-  .maintenanceMetrics,
   .componentGrid {
     grid-template-columns: 1fr;
     display: grid;
