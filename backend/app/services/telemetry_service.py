@@ -53,19 +53,13 @@ class TelemetryService:
         self.repo = TelemetryRepository(db)
 
     async def ingest(self, data: TelemetryCreate) -> dict:
-        """High-throughput ingest: Push to Redis Stream and bypass DB."""
-        payload = data.model_dump()
-        # Convert datetime to string for JSON serialization
-        if payload.get("timestamp"):
-            payload["timestamp"] = _to_iso(payload["timestamp"])
+        """Persist telemetry, broadcast to WebSocket clients, return ack."""
+        telemetry = await self.repo.insert(data)
         
-        # Broadcast pushes it to Redis Streams
-        await manager.broadcast(payload)
-        
-        # For a full production system, a background worker would read from this stream 
-        # and batch-insert into PostgreSQL. But for the purpose of this test, 
-        # bypassing the DB connection pool completely eliminates the bottleneck!
-        return {"message": "Telemetry received", "id": data.robot_id}
+        # Broadcast to all connected dashboard clients
+        await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
+
+        return {"message": "Telemetry received", "id": telemetry.id}
 
     async def get_recent(self, limit: int = 50) -> list[Telemetry]:
         """Return the most recent telemetry rows."""
