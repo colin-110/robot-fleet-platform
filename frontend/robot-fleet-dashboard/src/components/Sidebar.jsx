@@ -38,9 +38,7 @@ function Sidebar({ active, onChange }) {
           })}
         </nav>
 
-        <div className="footerHint">
-          Mission dispatch, telemetry ingestion, and predictive maintenance.
-        </div>
+          Mission dispatch and telemetry ingestion.
       </div>
     </aside>
   );

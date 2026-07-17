@@ -7,7 +7,6 @@ A production-grade, full-stack platform for robot fleet telemetry ingestion, rea
 ## 🌟 Features
 
 - **Real-time Telemetry Ingestion**: High-throughput FastAPI endpoint handling robot state.
-- **Predictive Maintenance**: Heuristic-based risk scoring (temperature, battery, motor health) to predict failure before it happens.
 - **Live Fleet Monitoring**: Real-time dashboard using WebSockets and React.
 - **Fleet Analytics**: Distribution breakdowns and historical health trends.
 - **Simulator**: Built-in Python simulator to generate realistic robot traffic, missions, and edge cases.
@@ -29,7 +28,6 @@ graph TB
   subgraph "Services"
     SVC_T["Telemetry"]
     SVC_R["Robot Status"]
-    SVC_M["Maintenance"]
     SVC_A["Analytics"]
   end
 
@@ -41,9 +39,9 @@ graph TB
 
   SIM -->|"POST /api/v1/telemetry"| API
   DASH -->|"REST + WS"| API
-  API --> MW --> SVC_T & SVC_R & SVC_M & SVC_A
-  SVC_M & SVC_A --> CACHE
-  SVC_T & SVC_R & SVC_M & SVC_A --> REPO --> DB
+  API --> MW --> SVC_T & SVC_R & SVC_A
+  SVC_A --> CACHE
+  SVC_T & SVC_R & SVC_A --> REPO --> DB
 ```
 
 ## 🚀 Quick Start (Docker)

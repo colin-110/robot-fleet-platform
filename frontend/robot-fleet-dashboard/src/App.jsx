@@ -1,15 +1,17 @@
 import { useState } from "react";
+import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import "./App.css";
+
 
 import useFleetData from "./hooks/useFleetData";
 import useRelativeTime from "./hooks/useRelativeTime";
 
-import AlertsPanel from "./components/AlertsPanel";
 import AnalyticsPanel from "./components/AnalyticsPanel";
-import FleetHealth from "./components/FleetHealth";
+import FleetStatusChart from "./components/FleetStatusChart";
 import FleetStats from "./components/FleetStats";
 import Navbar from "./components/Navbar";
-import PredictiveMaintenancePanel from "./components/PredictiveMaintenancePanel";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
 import TelemetryChart from "./components/TelemetryChart";
@@ -17,7 +19,6 @@ import TelemetryChart from "./components/TelemetryChart";
 function App() {
   const {
     robots,
-    maintenance,
     analytics,
     error,
     socketConnected,
@@ -27,51 +28,21 @@ function App() {
   } = useFleetData();
 
   const { formatRelativeTime } = useRelativeTime();
+  const { width: gridWidth, containerRef: gridRef } = useContainerWidth();
 
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [query, setQuery] = useState("");
 
-  const maintenanceByRobotId = new Map(
-    maintenance.map((item) => [item.robot_id, item])
-  );
-
-  const robotsWithInsights = robots.map((robot) => {
-    const insight = maintenanceByRobotId.get(robot.robot_id);
-    return {
-      ...robot,
-      failure_risk: insight?.failure_risk ?? null,
-      risk_level: insight?.risk_level ?? null,
-      reasons: insight?.reasons ?? [],
-      runtime_remaining_minutes:
-        robot.runtime_remaining_minutes ??
-        insight?.runtime_remaining_minutes ??
-        null,
-    };
-  });
-
-  const filteredRobots = robotsWithInsights.filter((robot) => {
+  const filteredRobots = robots.filter((robot) => {
     if (!query) return true;
     const haystack =
-      `${robot.robot_id} ${robot.status} ${robot.risk_level ?? ""} ` +
-      `${robot.failure_risk ?? ""} ${robot.mission_type ?? ""} ${robot.mission_id ?? ""}`;
+      `${robot.robot_id} ${robot.status} ` +
+      `${robot.mission_type ?? ""} ${robot.mission_id ?? ""}`;
     return haystack.toLowerCase().includes(query.toLowerCase());
   });
 
-  const filteredMaintenance = maintenance
-    .filter((item) => {
-      if (!query) return true;
-      const haystack = `${item.robot_id} ${item.risk_level} ${(item.reasons || []).join(" ")}`;
-      return haystack.toLowerCase().includes(query.toLowerCase());
-    })
-    .sort((left, right) => {
-      if (right.failure_risk !== left.failure_risk)
-        return right.failure_risk - left.failure_risk;
-      return left.robot_id - right.robot_id;
-    });
-
   const showDashboard = activeNav === "Dashboard";
   const showTelemetry = activeNav === "Telemetry";
-  const showAlerts = activeNav === "AI Alerts";
   const showAnalytics = activeNav === "Fleet Analytics";
   const showHealth = activeNav === "System Health";
 
@@ -84,8 +55,8 @@ function App() {
 
       <div className="main-content">
         <Navbar
-          title="FleetOps AI"
-          subtitle="Mission dispatch, fleet telemetry, and predictive maintenance"
+          title="FleetOps"
+          subtitle="Mission dispatch and fleet telemetry"
           socketConnected={socketConnected}
           lastFetchText={formatRelativeTime(lastFetchAt)}
           lastWsText={formatRelativeTime(lastWsAt)}
@@ -93,24 +64,44 @@ function App() {
           onQueryChange={setQuery}
           onClearQuery={() => setQuery("")}
           filteredCount={filteredRobots.length}
-          totalCount={robotsWithInsights.length}
+          totalCount={robots.length}
           onRefresh={refreshAll}
           error={error}
         />
 
         {showDashboard && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <FleetStats robots={filteredRobots} maintenance={filteredMaintenance} />
-            <div className="dashboard-grid">
-              <div className="col-span-8">
-                <TelemetryChart robots={filteredRobots} />
-              </div>
-              <div className="col-span-4">
-                <FleetHealth robots={filteredRobots} maintenance={filteredMaintenance} />
-              </div>
+            <FleetStats robots={filteredRobots} />
+            <div ref={gridRef}>
+              {gridWidth > 0 && (
+                <ResponsiveGridLayout
+                  className="layout"
+                  width={gridWidth}
+                  layouts={{
+                    lg: [
+                      { i: "telemetry", x: 0, y: 0, w: 8, h: 4 },
+                      { i: "status", x: 8, y: 0, w: 4, h: 4 }
+                    ],
+                    md: [
+                      { i: "telemetry", x: 0, y: 0, w: 10, h: 4 },
+                      { i: "status", x: 0, y: 4, w: 10, h: 4 }
+                    ]
+                  }}
+                  breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+                  cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+                  rowHeight={90}
+                  draggableHandle=".drag-handle"
+                  margin={[24, 24]}
+                >
+                  <div key="telemetry">
+                    <TelemetryChart robots={filteredRobots} />
+                  </div>
+                  <div key="status">
+                    <FleetStatusChart robots={filteredRobots} />
+                  </div>
+                </ResponsiveGridLayout>
+              )}
             </div>
-            <AlertsPanel robots={filteredRobots} />
-            <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
           </div>
         )}
 
@@ -127,20 +118,12 @@ function App() {
         )}
 
         {showHealth && (
-          <div style={{ display: "grid", gap: 24 }}>
-            <FleetHealth robots={filteredRobots} maintenance={filteredMaintenance} />
-            <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
+          <div style={{ display: "grid", gap: 24, height: 400 }}>
+            <FleetStatusChart robots={filteredRobots} />
           </div>
         )}
 
-        {showAlerts && (
-          <div>
-            <AlertsPanel robots={filteredRobots} />
-            <PredictiveMaintenancePanel maintenance={filteredMaintenance} />
-          </div>
-        )}
-
-        {robotsWithInsights.length === 0 && !error && (
+        {robots.length === 0 && !error && (
           <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
             <div className="section-title">
               <h2>Waiting for telemetry</h2>
@@ -151,7 +134,7 @@ function App() {
           </div>
         )}
 
-        {robotsWithInsights.length > 0 && filteredRobots.length === 0 && (
+        {robots.length > 0 && filteredRobots.length === 0 && (
           <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
             <div className="section-title">
               <h2>No results</h2>
@@ -160,7 +143,7 @@ function App() {
               </button>
             </div>
             <div className="subtle">
-              Try robot id, mission type, status, or risk level.
+              Try robot id, mission type, or status.
             </div>
           </div>
         )}

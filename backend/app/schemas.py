@@ -62,25 +62,6 @@ class RobotStatusResponse(BaseModel):
     network_health: float = 100.0
 
 
-class MaintenancePredictionResponse(BaseModel):
-    """Predictive maintenance risk assessment for a single robot."""
-
-    robot_id: int
-    failure_risk: int
-    risk_level: str
-    reasons: list[str]
-    battery: float
-    temperature: float
-    speed: float
-    battery_drain_rate_per_min: float
-    temperature_rise_rate_per_min: float
-    runtime_remaining_minutes: float | None = None
-    battery_health: float = 100.0
-    motor_health: float = 100.0
-    sensor_health: float = 100.0
-    network_health: float = 100.0
-
-
 class DistributionBucket(BaseModel):
     """A single bucket in a distribution chart."""
 

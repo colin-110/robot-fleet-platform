@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas import TelemetryCreate
 from app.services.analytics_service import AnalyticsService
-from app.services.maintenance_service import MaintenanceService
 from app.services.robot_service import RobotService
 from app.services.telemetry_service import TelemetryService
 
@@ -46,23 +45,6 @@ async def robot_status(db: AsyncSession = Depends(get_db)):
     """Return current status summary for all robots."""
     service = RobotService(db)
     return await service.get_fleet_status()
-
-
-# ── Predictive Maintenance ──────────────────────────────────────────
-
-
-@router.get("/robots/predictive-maintenance")
-async def predictive_maintenance(db: AsyncSession = Depends(get_db)):
-    """Return failure risk predictions for all robots."""
-    service = MaintenanceService(db)
-    return await service.get_predictions()
-
-
-@router.get("/robots/anomalies")
-async def robot_anomalies(db: AsyncSession = Depends(get_db)):
-    """Alias for predictive maintenance predictions."""
-    service = MaintenanceService(db)
-    return await service.get_predictions()
 
 
 # ── Fleet Analytics ─────────────────────────────────────────────────
