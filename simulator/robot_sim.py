@@ -680,6 +680,7 @@ async def main_async():
     )
     parser.add_argument("--local", action="store_true", help="Use local API URL")
     parser.add_argument("--robots", type=int, default=0)
+    parser.add_argument("--api-key", default="fleet-secret-key-2026", help="API authentication key")
     parser.add_argument("--ambient", type=float, default=30.0)
     parser.add_argument("--radius", type=float, default=20.0)
     parser.add_argument("--tick-min", type=float, default=2.0)
@@ -728,7 +729,8 @@ async def main_async():
     )
 
     active_robot_tasks = {}
-    async with httpx.AsyncClient() as client:
+    headers = {"X-API-Key": args.api_key}
+    async with httpx.AsyncClient(headers=headers) as client:
         # Start robot loops
         for robot in robots:
             task = asyncio.create_task(
