@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 # ── Request Schemas ─────────────────────────────────────────────────
 
 
+class CommandCreate(BaseModel):
+    """Command payload sent from frontend to robot."""
+    action: str
+
+
 class TelemetryCreate(BaseModel):
     """Incoming telemetry payload from the simulator."""
 
