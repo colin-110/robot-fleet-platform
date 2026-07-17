@@ -24,6 +24,7 @@ export default function useFleetData() {
   const [error, setError] = useState("");
   const [lastFetchAt, setLastFetchAt] = useState(0);
   const [lastWsAt, setLastWsAt] = useState(0);
+  const [events, setEvents] = useState([]);
 
   const API_BASE =
     import.meta.env.VITE_API_BASE_URL ||
@@ -67,8 +68,16 @@ export default function useFleetData() {
     if (lastMessage) {
       setLastWsAt(Date.now());
       refreshAllEvent();
+      
+      try {
+        const msg = JSON.parse(lastMessage.data);
+        if (msg.type === "COMMAND" || msg.type === "EVENT") {
+          setEvents(prev => [msg, ...prev].slice(0, 50));
+        }
+      } catch(e) {
+        // ignore parse errors
+      }
     }
-    // refreshAllEvent is a useEffectEvent and should not be in the dependency array
   }, [lastMessage]);
 
   useEffect(() => {
@@ -88,6 +97,7 @@ export default function useFleetData() {
     socketConnected,
     lastFetchAt,
     lastWsAt,
+    events,
     refreshAll,
   };
 }
