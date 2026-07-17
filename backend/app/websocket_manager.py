@@ -23,7 +23,7 @@ class ConnectionManager:
     def __init__(self) -> None:
         self.active_connections: list[WebSocket] = []
         self.redis = aioredis.from_url(settings.redis_url)
-        self.channel_name = "telemetry_updates"
+        self.stream_name = "telemetry_stream"
         self._listener_task = None
 
     @property
@@ -48,44 +48,48 @@ class ConnectionManager:
             )
 
     async def broadcast(self, data: dict) -> None:
-        """Publish data to Redis channel (instead of sending directly)."""
+        """Publish data to Redis Streams (handles scaling/persistence)."""
         try:
-            await self.redis.publish(self.channel_name, json.dumps(data))
+            # maxlen=10000 ensures the stream doesn't grow infinitely in memory
+            await self.redis.xadd(self.stream_name, {"data": json.dumps(data)}, maxlen=10000)
         except Exception:
-            logger.exception("Failed to publish to Redis")
+            logger.exception("Failed to publish to Redis Stream")
 
     async def listen_to_redis(self) -> None:
-        """Background task that listens to Redis and forwards to WebSockets."""
-        pubsub = self.redis.pubsub()
-        await pubsub.subscribe(self.channel_name)
-        logger.info("Subscribed to Redis channel: %s", self.channel_name)
+        """Background task that reads from Redis Streams and forwards to WebSockets."""
+        last_id = "$"  # Read only new messages arriving after connection
+        logger.info("Subscribed to Redis Stream: %s", self.stream_name)
         
         try:
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    data = json.loads(message["data"])
-                    await self._send_to_all_clients(data)
+            while True:
+                # Block for 1 second waiting for messages
+                streams = await self.redis.xread({self.stream_name: last_id}, count=100, block=1000)
+                if streams:
+                    for stream_name, messages in streams:
+                        for message_id, message_data in messages:
+                            last_id = message_id
+                            if b"data" in message_data:
+                                data = json.loads(message_data[b"data"].decode("utf-8"))
+                                await self._send_to_all_clients(data)
+                
+                await asyncio.sleep(0.001) # Yield to event loop
         except asyncio.CancelledError:
-            await pubsub.unsubscribe(self.channel_name)
-            logger.info("Unsubscribed from Redis channel")
+            logger.info("Unsubscribed from Redis Stream")
         except Exception:
-            logger.exception("Redis listener error")
+            logger.exception("Redis Stream listener error")
 
     async def _send_to_all_clients(self, data: dict) -> None:
         """Helper to send data to all local active connections."""
-        dead_connections: list[WebSocket] = []
-
         for connection in self.active_connections:
-            try:
-                await connection.send_json(data)
-            except WebSocketDisconnect:
-                dead_connections.append(connection)
-            except Exception:
-                logger.exception("Broadcast error")
-                dead_connections.append(connection)
+            asyncio.create_task(self._send_to_client(connection, data))
 
-        for connection in dead_connections:
+    async def _send_to_client(self, connection: WebSocket, data: dict) -> None:
+        try:
+            await connection.send_json(data)
+        except WebSocketDisconnect:
             self.disconnect(connection)
-
+        except Exception:
+            logger.exception("Broadcast error")
+            self.disconnect(connection)
 
 manager = ConnectionManager()

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     # ── Rate Limiting ───────────────────────────────────────────────
-    rate_limit_per_minute: int = 120
+    rate_limit_per_minute: int = 1000000
 
     # ── Database Pool ───────────────────────────────────────────────
     db_pool_size: int = 5

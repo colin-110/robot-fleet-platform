@@ -1,4 +1,5 @@
-import { memo } from "react";
+import { memo, useState } from "react";
+import axios from "axios";
 import { getStatusMeta, healthTone, formatRuntime, formatLastSeen } from "../utils/constants";
 
 function formatMission(robot) {
@@ -20,6 +21,20 @@ function RobotCard({ robot }) {
     { label: "Sensor Health", value: robot.sensor_health },
     { label: "Network Health", value: robot.network_health },
   ];
+
+  const [loadingAction, setLoadingAction] = useState("");
+
+  const handleCommand = async (action) => {
+    const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
+    setLoadingAction(action);
+    try {
+      await axios.post(`${API_BASE}/api/v1/commands/${robot.robot_id}`, { action });
+    } catch (err) {
+      console.error("Failed to send command", err);
+    } finally {
+      setLoadingAction("");
+    }
+  };
 
   return (
     <div
@@ -97,6 +112,36 @@ function RobotCard({ robot }) {
         <div className="panel" style={{ padding: 16 }}>
           <div className="stat-label">Last Seen</div>
           <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--text-primary)' }}>{formatLastSeen(robot.last_seen)}</div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <button 
+            className="btn" 
+            disabled={loadingAction === "RETURN_TO_BASE"}
+            onClick={() => handleCommand("RETURN_TO_BASE")}
+          >
+            {loadingAction === "RETURN_TO_BASE" ? "Sending..." : "Return to Base"}
+          </button>
+          
+          {robot.status === "STOPPED" ? (
+            <button 
+              className="btn" 
+              style={{ borderColor: 'var(--good)', color: 'hsl(var(--good))' }}
+              disabled={loadingAction === "RESUME"}
+              onClick={() => handleCommand("RESUME")}
+            >
+              {loadingAction === "RESUME" ? "Sending..." : "Resume"}
+            </button>
+          ) : (
+            <button 
+              className="btn" 
+              style={{ borderColor: 'var(--bad)', color: 'hsl(var(--bad))' }}
+              disabled={loadingAction === "EMERGENCY_STOP"}
+              onClick={() => handleCommand("EMERGENCY_STOP")}
+            >
+              {loadingAction === "EMERGENCY_STOP" ? "Sending..." : "Emergency Stop"}
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 'auto' }}>
