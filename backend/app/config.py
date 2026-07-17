@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # ── Redis ───────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
+    use_redis_buffer: bool = True
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"

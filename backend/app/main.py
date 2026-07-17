@@ -12,20 +12,23 @@ Features:
 """
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, insert
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.database import Base, engine
+from app.database import Base, engine, AsyncSessionLocal
 from app.middleware import RateLimitMiddleware, RequestIdMiddleware
 from app.routes.telemetry import router as v1_router
 from app.schemas import HealthResponse
 from app.websocket_manager import manager
+from app.models import Telemetry
 
 # ── Logging Setup ───────────────────────────────────────────────────
 
@@ -37,6 +40,68 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+# ── Redis to DB Worker ───────────────────────────────────────────────
+
+
+async def redis_to_db_sync_worker():
+    """Background worker that batch-saves telemetry from Redis to PostgreSQL."""
+    logger.info("Starting Redis-to-DB sync worker...")
+    redis = manager.redis
+    
+    while True:
+        try:
+            payloads = []
+            for _ in range(100):
+                data = await redis.rpop("telemetry_queue")
+                if not data:
+                    break
+                payloads.append(json.loads(data.decode("utf-8") if isinstance(data, bytes) else data))
+                
+            if payloads:
+                insert_dicts = []
+                for p in payloads:
+                    ts = datetime.fromisoformat(p["timestamp"].replace("Z", "+00:00"))
+                    mst = datetime.fromisoformat(p["mission_start_time"].replace("Z", "+00:00")) if p["mission_start_time"] else None
+                    
+                    insert_dicts.append({
+                        "robot_id": p["robot_id"],
+                        "battery": p["battery"],
+                        "temperature": p["temperature"],
+                        "speed": p["speed"],
+                        "status": p["status"],
+                        "mission_id": p["mission_id"],
+                        "mission_type": p["mission_type"],
+                        "mission_progress": p["mission_progress"],
+                        "mission_start_time": mst,
+                        "battery_health": p["battery_health"],
+                        "motor_health": p["motor_health"],
+                        "sensor_health": p["sensor_health"],
+                        "network_health": p["network_health"],
+                        "x": p["x"],
+                        "y": p["y"],
+                        "timestamp": ts
+                    })
+                
+                async with AsyncSessionLocal() as session:
+                    async with session.begin():
+                        stmt = insert(Telemetry).values(insert_dicts)
+                        await session.execute(stmt)
+                        
+                logger.debug("Successfully batched and saved %d telemetry records to database.", len(insert_dicts))
+            
+            if not payloads:
+                await asyncio.sleep(0.5)
+            else:
+                await asyncio.sleep(0.05)
+                
+        except asyncio.CancelledError:
+            logger.info("Stopping Redis-to-DB sync worker...")
+            break
+        except Exception:
+            logger.exception("Error in Redis-to-DB sync worker")
+            await asyncio.sleep(2.0)
 
 
 # ── Lifespan ────────────────────────────────────────────────────────
@@ -57,11 +122,18 @@ async def lifespan(app: FastAPI):
     # Start Redis Pub/Sub listener
     manager._listener_task = asyncio.create_task(manager.listen_to_redis())
     
+    # Start Redis Ingestion DB Sync worker
+    app.state.db_sync_task = asyncio.create_task(redis_to_db_sync_worker())
+    
     yield
     
     # Shutdown
     if manager._listener_task:
         manager._listener_task.cancel()
+    
+    if hasattr(app.state, "db_sync_task") and app.state.db_sync_task:
+        app.state.db_sync_task.cancel()
+        
     logger.info("Robot Fleet Platform shutting down")
 
 
