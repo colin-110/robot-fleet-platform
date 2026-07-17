@@ -58,57 +58,59 @@ function TelemetryChart({ robots }) {
   }));
 
   return (
-    <div className="panel" style={{ padding: 16 }}>
-      <div className="sectionTitle">
+    <div className="panel" style={{ padding: 16, height: "100%", display: "flex", flexDirection: "column" }}>
+      <div className="sectionTitle drag-handle" style={{ cursor: "grab", flexShrink: 0 }}>
         <h2>Fleet telemetry</h2>
         <span className="subtle">
           {robots.length} robot{robots.length === 1 ? "" : "s"}
         </span>
       </div>
 
-      <ResponsiveContainer width="100%" height={320}>
-        <LineChart data={chartData}>
-          <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 6" />
-          <XAxis
-            dataKey="name"
-            tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
-            axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
-            tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
-          />
-          <YAxis
-            tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
-            axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
-            tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
-          />
-          <Tooltip
-            cursor={{ stroke: "rgba(33, 211, 146, 0.25)", strokeWidth: 1 }}
-            content={<TooltipContent />}
-            wrapperStyle={tooltipStyle}
-          />
-          <Legend />
-          <Line
-            type="monotone"
-            dataKey="battery"
-            stroke="var(--status-active)"
-            strokeWidth={3}
-            dot={{ r: 3 }}
-          />
-          <Line
-            type="monotone"
-            dataKey="temperature"
-            stroke="var(--status-warning)"
-            strokeWidth={3}
-            dot={{ r: 3 }}
-          />
-          <Line
-            type="monotone"
-            dataKey="speed"
-            stroke="var(--status-charging)"
-            strokeWidth={3}
-            dot={{ r: 3 }}
-          />
-        </LineChart>
-      </ResponsiveContainer>
+      <div style={{ flexGrow: 1, minHeight: 0, marginTop: 8 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData}>
+            <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 6" />
+            <XAxis
+              dataKey="name"
+              tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
+              axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
+              tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
+            />
+            <YAxis
+              tick={{ fill: "var(--chart-axis)", fontSize: 12 }}
+              axisLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
+              tickLine={{ stroke: "rgba(148, 163, 184, 0.22)" }}
+            />
+            <Tooltip
+              cursor={{ stroke: "rgba(33, 211, 146, 0.25)", strokeWidth: 1 }}
+              content={<TooltipContent />}
+              wrapperStyle={tooltipStyle}
+            />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="battery"
+              stroke="var(--status-active)"
+              strokeWidth={3}
+              dot={{ r: 3 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="temperature"
+              stroke="var(--status-warning)"
+              strokeWidth={3}
+              dot={{ r: 3 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="speed"
+              stroke="var(--status-charging)"
+              strokeWidth={3}
+              dot={{ r: 3 }}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { useWebSocket } from "./useWebSocket";
 
 /**
  * Custom hook that encapsulates ALL fleet data fetching logic:
- *  - REST polling (robots, maintenance, analytics)
+ *  - REST polling (robots, analytics)
  *  - WebSocket connection management
  *  - Error state tracking
  *  - Connection timestamps
@@ -13,7 +13,7 @@ import { useWebSocket } from "./useWebSocket";
  */
 export default function useFleetData() {
   const [robots, setRobots] = useState([]);
-  const [maintenance, setMaintenance] = useState([]);
+
   const [analytics, setAnalytics] = useState({
     fleet_health_trend: [],
     battery_distribution: [],
@@ -39,11 +39,6 @@ export default function useFleetData() {
     setRobots(Array.isArray(response.data) ? response.data : []);
   };
 
-  const fetchMaintenance = async () => {
-    const response = await axios.get(`${API_PREFIX}/robots/predictive-maintenance`);
-    setMaintenance(Array.isArray(response.data) ? response.data : []);
-  };
-
   const fetchAnalytics = async () => {
     const response = await axios.get(`${API_PREFIX}/analytics/fleet`);
     setAnalytics(response.data || {});
@@ -51,7 +46,7 @@ export default function useFleetData() {
 
   const refreshAll = useCallback(async () => {
     try {
-      await Promise.all([fetchRobots(), fetchMaintenance(), fetchAnalytics()]);
+      await Promise.all([fetchRobots(), fetchAnalytics()]);
       setLastFetchAt(Date.now());
       setError("");
     } catch (requestError) {
@@ -87,7 +82,7 @@ export default function useFleetData() {
 
   return {
     robots,
-    maintenance,
+
     analytics,
     error,
     socketConnected,

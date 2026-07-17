@@ -1,4 +1,4 @@
-function FleetStats({ robots, maintenance }) {
+function FleetStats({ robots }) {
   const totalRobots = robots.length;
   const activeRobots = robots.filter((robot) => robot.status === "ACTIVE").length;
   const lowPowerRobots = robots.filter((robot) => robot.status === "LOW POWER").length;
@@ -14,7 +14,7 @@ function FleetStats({ robots, maintenance }) {
         ).toFixed(1)
       : 0;
 
-  const criticalRiskRobots = maintenance.filter((item) => item.failure_risk >= 85).length;
+
 
   const stats = [
     { title: "Total Robots", value: totalRobots, color: "var(--accent-primary)" },
@@ -24,12 +24,7 @@ function FleetStats({ robots, maintenance }) {
     { title: "Overheating", value: overheatingRobots, color: "var(--status-danger)" },
     { title: "Offline", value: offlineRobots, color: "var(--text-secondary)" },
     { title: "Dead", value: deadRobots, color: "var(--status-dead)" },
-    { title: "Average Battery", value: `${averageBattery}%`, color: "var(--status-active)" },
-    {
-      title: "Critical Risk",
-      value: criticalRiskRobots,
-      color: criticalRiskRobots > 0 ? "var(--status-danger)" : "var(--status-active)"
-    }
+    { title: "Average Battery", value: `${averageBattery}%`, color: "var(--status-active)" }
   ];
 
   return (

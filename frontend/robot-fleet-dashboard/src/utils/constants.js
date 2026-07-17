@@ -57,34 +57,6 @@ export function getStatusMeta(status) {
   return STATUS_META[status] || STATUS_META.ACTIVE;
 }
 
-// ── Risk level tones ───────────────────────────────────────────────
-
-export const RISK_META = {
-  CRITICAL: {
-    dot: "dotBad",
-    color: "hsl(var(--bad))",
-    border: "rgba(239, 68, 68, 0.28)",
-  },
-  HIGH: {
-    dot: "dotBad",
-    color: "hsl(var(--bad))",
-    border: "rgba(239, 68, 68, 0.18)",
-  },
-  MEDIUM: {
-    dot: "dotWarn",
-    color: "hsl(var(--warn))",
-    border: "rgba(245, 158, 11, 0.18)",
-  },
-  LOW: {
-    dot: "dotGood",
-    color: "hsl(var(--good))",
-    border: "rgba(34, 197, 94, 0.18)",
-  },
-};
-
-export function getRiskMeta(level) {
-  return RISK_META[level] || RISK_META.LOW;
-}
 
 // ── Pie chart colors ───────────────────────────────────────────────
 
@@ -131,7 +103,6 @@ export const ALERT_STATUSES = ["LOW POWER", "OVERHEATING", "OFFLINE", "CHARGING"
 export const NAV_ITEMS = [
   "Dashboard",
   "Fleet Analytics",
-  "AI Alerts",
   "Telemetry",
   "System Health",
 ];
