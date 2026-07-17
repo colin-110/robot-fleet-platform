@@ -6,16 +6,23 @@ All routes are mounted under ``/api/v1`` prefix.
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.config import get_settings
 from datetime import datetime, timezone
 from app.schemas import TelemetryCreate, CommandCreate
 from app.websocket_manager import manager
 from app.services.analytics_service import AnalyticsService
 from app.services.robot_service import RobotService
 from app.services.telemetry_service import TelemetryService
+
+settings = get_settings()
+
+async def verify_api_key(x_api_key: str = Header(None)):
+    if x_api_key != settings.telemetry_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +33,11 @@ router = APIRouter(prefix="/api/v1", tags=["v1"])
 
 
 @router.post("/telemetry")
-async def create_telemetry(data: TelemetryCreate, db: AsyncSession = Depends(get_db)):
+async def create_telemetry(
+    data: TelemetryCreate,
+    db: AsyncSession = Depends(get_db),
+    _ = Depends(verify_api_key)
+):
     """Ingest a telemetry reading from the simulator."""
     service = TelemetryService(db)
     return await service.ingest(data)
