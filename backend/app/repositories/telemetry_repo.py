@@ -142,3 +142,64 @@ class TelemetryRepository:
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    # ── Analytics ───────────────────────────────────────────────────
+
+    async def get_fleet_health_trend(self, limit_minutes: int = 20) -> list[dict]:
+        """Calculates fleet health trend over the last limit_minutes by grouping by minute."""
+        stmt = (
+            select(
+                func.date_trunc('minute', Telemetry.timestamp).label("bucket"),
+                func.avg(Telemetry.battery).label("avg_battery"),
+                func.avg(Telemetry.temperature).label("avg_temperature"),
+                func.avg(Telemetry.battery_health).label("avg_batt_h"),
+                func.avg(Telemetry.motor_health).label("avg_motor_h"),
+                func.avg(Telemetry.sensor_health).label("avg_sensor_h"),
+                func.avg(Telemetry.network_health).label("avg_net_h"),
+            )
+            .group_by("bucket")
+            .order_by(text("bucket DESC"))
+            .limit(limit_minutes)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        
+        trend = []
+        for row in reversed(rows): # oldest first
+            avg_component = (row.avg_batt_h + row.avg_motor_h + row.avg_sensor_h + row.avg_net_h) / 4.0
+            score = (avg_component * 0.55) + (row.avg_battery * 0.30) - max(0.0, row.avg_temperature - 55.0) * 1.1
+            score = max(0.0, min(100.0, score))
+            
+            # format bucket properly
+            bucket = row.bucket
+            if bucket.tzinfo is None:
+                bucket = bucket.replace(tzinfo=timezone.utc)
+            else:
+                bucket = bucket.astimezone(timezone.utc)
+                
+            trend.append({
+                "timestamp": bucket.isoformat().replace("+00:00", "Z"),
+                "health_score": round(score, 1)
+            })
+        return trend
+
+    async def get_mission_completions(self) -> list[dict]:
+        """Returns count of completed missions by type."""
+        stmt = (
+            select(
+                Telemetry.mission_type,
+                func.count(func.distinct(Telemetry.mission_id)).label("count")
+            )
+            .filter(Telemetry.mission_progress >= 100.0)
+            .filter(Telemetry.mission_type.isnot(None))
+            .group_by(Telemetry.mission_type)
+        )
+        result = await self.db.execute(stmt)
+        
+        mission_types = ["PATROL", "DELIVERY", "INSPECTION"]
+        counts = {m_type: 0 for m_type in mission_types}
+        for row in result.all():
+            if row.mission_type in counts:
+                counts[row.mission_type] = row.count
+                
+        return [{"mission_type": k, "count": v} for k, v in counts.items()]
