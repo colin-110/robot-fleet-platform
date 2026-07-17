@@ -11,6 +11,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/robotfleet
       - REDIS_URL=redis://redis:6379/0
+      - TELEMETRY_API_KEY=fleet-secret-key-2026
     restart: unless-stopped
     depends_on:
       db:
@@ -20,6 +21,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - fleet_net
+
+  worker:
+    build: ./backend
+    container_name: fleet_worker
+    command: python -m app.worker
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/robotfleet
+      - REDIS_URL=redis://redis:6379/0
+      - TELEMETRY_API_KEY=fleet-secret-key-2026
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - fleet_net
 
@@ -38,6 +56,7 @@ services:
   simulator:
     build: ./simulator
     container_name: fleet_simulator
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "fleet-secret-key-2026"]
     restart: unless-stopped
     depends_on:
       backend:

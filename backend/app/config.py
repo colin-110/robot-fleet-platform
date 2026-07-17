@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # ── Redis ───────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
     use_redis_buffer: bool = True
+    telemetry_api_key: str = "fleet-secret-key-2026"
+    retention_days: int = 7
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"

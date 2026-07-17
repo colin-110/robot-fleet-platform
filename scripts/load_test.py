@@ -25,11 +25,12 @@ async def send_telemetry_burst(client: httpx.AsyncClient, num_requests: int) -> 
         })
 
     start_time = time.time()
+    headers = {"X-API-Key": "fleet-secret-key-2026"}
     
     async def post_request(payload):
         req_start = time.time()
         try:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload, headers=headers)
             req_end = time.time()
             return resp.status_code == 200, (req_end - req_start) * 1000
         except Exception:
