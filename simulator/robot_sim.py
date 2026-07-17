@@ -240,14 +240,50 @@ async def robot_loop(
         now = time.time()
         dt = clamp(now - robot.last_update_s, 0.1, 2.5)
         robot.last_update_s = now
-
-        if robot.status == "DEAD":
+        
+        # Poll for commands
+        try:
+            cmd_url = api_url.replace("/telemetry", f"/commands/{robot.robot_id}")
+            cmd_resp = await client.get(cmd_url, timeout=1.0)
+            if cmd_resp.status_code == 200:
+                for cmd in cmd_resp.json():
+                    if cmd == "RETURN_TO_BASE":
+                        clear_mission(robot)
+                        robot.mission = Mission(
+                            mission_id="CMD-RTB",
+                            mission_type="RETURN",
+                            steps=[MissionStep(0.0, 0.0, label="Return to base")],
+                            home_x=0.0,
+                            home_y=0.0,
+                            progress_weight=100.0,
+                        )
+                        robot.mission_id = "CMD-RTB"
+                        robot.mission_progress = 0.0
+                        robot.status = "ACTIVE"
+                        robot.online = True
+                        safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE")
+                    elif cmd == "EMERGENCY_STOP":
+                        robot.status = "STOPPED"
+                        robot.speed = 0.0
+                        clear_mission(robot)
+                        safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED")
+                    elif cmd == "RESUME":
+                        robot.status = "ACTIVE"
+                        robot.online = True
+                        safe_print(f"[R{robot.robot_id:02d}] RESUMED")
+        except Exception:
+            pass
+            
+        if robot.status in ("DEAD", "STOPPED"):
+            # Emit telemetry so it stays on dashboard
+            if robot.status == "STOPPED":
+                await emit_telemetry(robot, client, api_url, rng, post_timeout_s)
             await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
             continue
 
-        if robot.mission is None and robot.battery <= 18.0:
+        if robot.mission is None and robot.battery <= 18.0 and robot.status != "STOPPED":
             robot.status = "CHARGING"
-        elif robot.status != "CHARGING":
+        elif robot.status not in ("CHARGING", "STOPPED"):
             robot.status = "ACTIVE"
 
         if robot.status == "CHARGING":
@@ -327,6 +363,24 @@ async def robot_loop(
 
         if rng.random() < 0.0025:
             robot.temperature += rng.uniform(4.0, 9.0)
+
+        # Check geofence (Restricted Zone at x=15, y=10, radius 5)
+        dist_to_fence = math.hypot(robot.x - 15.0, robot.y - 10.0)
+        if dist_to_fence < 5.0:
+            if not getattr(robot, 'in_fence', False):
+                robot.in_fence = True
+                safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
+                try:
+                    await client.post(f"{api_url.replace('/telemetry', '')}/events", json={
+                        "robot_id": robot.robot_id,
+                        "message": "Entered Restricted Zone!"
+                    }, timeout=2.0)
+                except Exception:
+                    pass
+        else:
+            if getattr(robot, 'in_fence', False):
+                robot.in_fence = False
+                safe_print(f"[R{robot.robot_id:02d}] EXITED RESTRICTED ZONE")
 
         robot.battery = clamp(robot.battery, 0.0, 100.0)
         robot.temperature = clamp(robot.temperature, 22.0, 99.0)

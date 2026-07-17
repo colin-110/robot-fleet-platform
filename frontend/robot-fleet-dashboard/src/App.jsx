@@ -9,12 +9,13 @@ import useFleetData from "./hooks/useFleetData";
 import useRelativeTime from "./hooks/useRelativeTime";
 
 import AnalyticsPanel from "./components/AnalyticsPanel";
+import EventLog from "./components/EventLog";
 import FleetStatusChart from "./components/FleetStatusChart";
 import FleetStats from "./components/FleetStats";
+import FleetMap from "./components/FleetMap";
 import Navbar from "./components/Navbar";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
-import TelemetryChart from "./components/TelemetryChart";
 
 function App() {
   const {
@@ -24,6 +25,7 @@ function App() {
     socketConnected,
     lastFetchAt,
     lastWsAt,
+    events,
     refreshAll,
   } = useFleetData();
 
@@ -76,28 +78,34 @@ function App() {
               {gridWidth > 0 && (
                 <ResponsiveGridLayout
                   className="layout"
-                  width={gridWidth}
                   layouts={{
                     lg: [
-                      { i: "telemetry", x: 0, y: 0, w: 8, h: 4 },
-                      { i: "status", x: 8, y: 0, w: 4, h: 4 }
+                      { i: "telemetry", x: 0, y: 0, w: 8, h: 6 },
+                      { i: "status", x: 8, y: 0, w: 4, h: 3 },
+                      { i: "events", x: 8, y: 3, w: 4, h: 3 }
                     ],
                     md: [
-                      { i: "telemetry", x: 0, y: 0, w: 10, h: 4 },
-                      { i: "status", x: 0, y: 4, w: 10, h: 4 }
+                      { i: "telemetry", x: 0, y: 0, w: 10, h: 6 },
+                      { i: "status", x: 0, y: 6, w: 5, h: 3 },
+                      { i: "events", x: 5, y: 6, w: 5, h: 3 }
                     ]
                   }}
                   breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
                   cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-                  rowHeight={90}
+                  rowHeight={100}
+                  width={gridWidth}
                   draggableHandle=".drag-handle"
-                  margin={[24, 24]}
+                  isDraggable={true}
+                  isResizable={true}
                 >
                   <div key="telemetry">
-                    <TelemetryChart robots={filteredRobots} />
+                    <FleetMap robots={filteredRobots} />
                   </div>
                   <div key="status">
                     <FleetStatusChart robots={filteredRobots} />
+                  </div>
+                  <div key="events">
+                    <EventLog events={events} />
                   </div>
                 </ResponsiveGridLayout>
               )}
@@ -106,8 +114,8 @@ function App() {
         )}
 
         {showTelemetry && (
-          <div>
-            <TelemetryChart robots={filteredRobots} />
+          <div style={{ height: "600px" }}>
+            <FleetMap robots={filteredRobots} />
           </div>
         )}
 
