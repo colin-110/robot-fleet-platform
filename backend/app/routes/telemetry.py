@@ -4,24 +4,20 @@ API v1 routes — Telemetry ingestion and retrieval.
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List
 
 from app.config import get_settings
 from app.database import get_db
-from app.schemas import TelemetryCreate
+from app.schemas import TelemetryCreate, TelemetryResponse
 from app.services.telemetry_service import TelemetryService
+from app.auth import verify_api_key
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["telemetry"])
-
-
-async def verify_api_key(x_api_key: str = Header(None)):
-    """Validate the API key header for telemetry ingestion."""
-    if x_api_key != settings.telemetry_api_key:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
 
 
 @router.post("/telemetry")
@@ -35,9 +31,23 @@ async def create_telemetry(
     service = TelemetryService(db)
     return await service.ingest(data, background_tasks)
 
+@router.post("/telemetry/batch")
+async def create_telemetry_batch(
+    data: List[TelemetryCreate],
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
+):
+    """Ingest a batch of telemetry readings."""
+    service = TelemetryService(db)
+    return await service.ingest_batch(data, background_tasks)
 
-@router.get("/telemetry")
-async def get_telemetry(limit: int = 50, db: AsyncSession = Depends(get_db)):
+@router.get("/telemetry", response_model=List[TelemetryResponse])
+async def get_telemetry(
+    limit: int = 50, 
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
+):
     """Return the most recent telemetry rows."""
     service = TelemetryService(db)
     return await service.get_recent(limit=min(limit, 200))

@@ -4,8 +4,10 @@ import logging
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import socket
+import signal
 
-from sqlalchemy import insert, delete, update
+from sqlalchemy import insert, delete, update, func
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
@@ -14,14 +16,17 @@ from app.models import Telemetry, RobotCommand
 from app.websocket_manager import manager
 
 # Configure logging for worker
-settings = get_settings()
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s  %(levelname)-8s  [WORKER] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("worker")
+logger = logging.getLogger(__name__)
+
+settings = get_settings()
+
+STREAM_KEY = "telemetry_stream"
+CONSUMER_GROUP = "db_writers"
+CONSUMER_NAME = f"worker-{socket.gethostname()}"
 
 
 async def redis_to_db_sync_worker():
@@ -34,7 +39,7 @@ async def redis_to_db_sync_worker():
     
     # Ensure consumer group exists
     try:
-        await redis.xgroup_create("telemetry_stream", "telemetry_group", id="0", mkstream=True)
+        await redis.xgroup_create(STREAM_KEY, CONSUMER_GROUP, id="0", mkstream=True)
     except Exception as e:
         if "BUSYGROUP" not in str(e):
             logger.error("Failed to create consumer group: %s", e)
@@ -46,15 +51,15 @@ async def redis_to_db_sync_worker():
             
             # Block for up to 500ms waiting for new messages
             messages = await redis.xreadgroup(
-                "telemetry_group", "worker-1", 
-                {"telemetry_stream": ">"}, 
+                CONSUMER_GROUP, CONSUMER_NAME, 
+                {STREAM_KEY: ">"}, 
                 count=100, block=500
             )
             
             if messages:
                 for stream, stream_msgs in messages:
                     for msg_id, msg_data in stream_msgs:
-                        payload_raw = msg_data.get(b"payload") or msg_data.get("payload")
+                        payload_raw = msg_data.get("payload")
                         if payload_raw:
                             try:
                                 decoded = orjson.loads(payload_raw)
@@ -113,7 +118,7 @@ async def redis_to_db_sync_worker():
                 
                 # Acknowledge messages in Redis stream so they are removed from PEL
                 if message_ids:
-                    await redis.xack("telemetry_stream", "telemetry_group", *message_ids)
+                    await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
                     
                 # Reset retry delay on successful database write
                 retry_delay = 2.0
@@ -142,12 +147,23 @@ async def db_pruner_task():
         try:
             limit_date = datetime.now(timezone.utc) - timedelta(days=settings.retention_days)
             
-            async with AsyncSessionLocal() as session:
-                async with session.begin():
-                    stmt = delete(Telemetry).where(Telemetry.timestamp < limit_date)
-                    result = await session.execute(stmt)
+            total_deleted = 0
+            while True:
+                async with AsyncSessionLocal() as session:
+                    async with session.begin():
+                        # Use a subquery to find IDs to delete, with a limit to batch it
+                        subq = select(Telemetry.id).where(Telemetry.timestamp < limit_date).limit(10000).subquery()
+                        stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
+                        result = await session.execute(stmt)
+                        
+                        deleted_count = result.rowcount
+                        total_deleted += deleted_count
+                        
+                if deleted_count == 0:
+                    break
+                await asyncio.sleep(0.1) # Yield to avoid locking DB too hard
                     
-            logger.info("RETENTION: Pruned %d telemetry records older than %d days.", result.rowcount, settings.retention_days)
+            logger.info("RETENTION: Pruned %d telemetry records older than %d days.", total_deleted, settings.retention_days)
             
             # Run once every 24 hours
             await asyncio.sleep(86400)
@@ -174,16 +190,18 @@ async def scan_for_timeouts(session: AsyncSession):
     expired_commands = result.scalars().all()
     
     for cmd in expired_commands:
-        logger.info(f"Command {cmd.id} for robot {cmd.robot_id} has expired (status was {cmd.status})")
-            
-            # Update to TIMEOUT
+        logger.info(f"Command {cmd.id} timed out. Updating status to TIMEOUT.")
         
         # Update to TIMEOUT
         update_stmt = (
             update(RobotCommand)
             .where(RobotCommand.id == cmd.id)
-            .values(status="TIMEOUT", completed_at=now)
-            .execution_options(synchronize_session=False)
+            .values(
+                status="TIMEOUT",
+                completed_at=func.now(),
+                error_code="TIMEOUT",
+                error_message=f"Command did not complete within {cmd.timeout_seconds} seconds"
+            )
         )
         await session.execute(update_stmt)
         
@@ -261,7 +279,12 @@ async def main():
         HEALTH_FILE.unlink(missing_ok=True)
 
 
+def handle_sigterm(signum, frame):
+    logger.info("Received SIGTERM, shutting down gracefully...")
+    raise KeyboardInterrupt()
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, handle_sigterm)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
