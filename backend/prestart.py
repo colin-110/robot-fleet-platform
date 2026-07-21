@@ -3,7 +3,7 @@ import logging
 
 from app.database import engine, Base
 # Import models so Base.metadata knows about them
-from app.models import Telemetry, RobotCommand
+from app.models import Telemetry, RobotCommand, Robot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("prestart")

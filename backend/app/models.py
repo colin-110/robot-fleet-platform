@@ -7,8 +7,28 @@ used by status derivation, predictive maintenance, and analytics.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, Index, Integer, String, func, JSON, UniqueConstraint
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Boolean, func, JSON, UniqueConstraint
 from app.database import Base
+
+
+class Robot(Base):
+    """First-class robot entity with identity and metadata."""
+    __tablename__ = "robots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=True)
+    model = Column(String(64), nullable=True)
+    firmware_version = Column(String(32), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    registered_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    decommissioned_at = Column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<Robot id={self.id} name={self.name!r} active={self.is_active}>"
 
 class RobotCommand(Base):
     __tablename__ = "robot_commands"

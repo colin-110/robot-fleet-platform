@@ -1,4 +1,4 @@
-name: Backend CI Pipeline
+name: CI Pipeline
 
 on:
   push:
@@ -7,10 +7,10 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test:
+  # ── Backend Tests ──────────────────────────────────────────────────
+  backend-test:
     runs-on: ubuntu-latest
-    
-    # We define background services needed for the backend tests
+
     services:
       postgres:
         image: postgres:15-alpine
@@ -56,8 +56,38 @@ jobs:
         DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db
         REDIS_URL: redis://localhost:6379/0
         TELEMETRY_API_KEY: fleet-secret-key-2026
-        USE_REDIS_BUFFER: "true"
+        USE_REDIS_BUFFER: "false"
         PYTHONPATH: .
       run: |
         cd backend
         pytest tests/ -v
+
+  # ── Frontend Lint & Build ──────────────────────────────────────────
+  frontend-build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: 'npm'
+        cache-dependency-path: frontend/robot-fleet-dashboard/package-lock.json
+
+    - name: Install Dependencies
+      run: |
+        cd frontend/robot-fleet-dashboard
+        npm ci
+
+    - name: Lint
+      run: |
+        cd frontend/robot-fleet-dashboard
+        npm run lint
+
+    - name: Build
+      run: |
+        cd frontend/robot-fleet-dashboard
+        npm run build

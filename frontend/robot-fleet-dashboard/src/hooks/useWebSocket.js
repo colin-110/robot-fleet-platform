@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+const WS_API_KEY = import.meta.env.VITE_WS_API_KEY || 'fleet-secret-key-2026';
+
 export function useWebSocket(url) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState(null);
@@ -11,7 +13,11 @@ export function useWebSocket(url) {
   const connect = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN) return;
 
-    ws.current = new WebSocket(url);
+    // Append API key as query parameter for WebSocket auth
+    const separator = url.includes('?') ? '&' : '?';
+    const authenticatedUrl = `${url}${separator}api_key=${encodeURIComponent(WS_API_KEY)}`;
+
+    ws.current = new WebSocket(authenticatedUrl);
 
     ws.current.onopen = () => {
       setIsConnected(true);

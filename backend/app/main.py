@@ -15,7 +15,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Query
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -24,7 +24,11 @@ from starlette.websockets import WebSocketDisconnect
 from app.config import get_settings
 from app.database import Base, engine
 from app.middleware import RateLimitMiddleware, RequestIdMiddleware
-from app.routes.telemetry import router as v1_router
+from app.routes.telemetry import router as telemetry_router
+from app.routes.commands import router as commands_router
+from app.routes.robots import router as robots_router
+from app.routes.analytics import router as analytics_router
+from app.routes.events import router as events_router
 from app.schemas import HealthResponse
 from app.websocket_manager import manager
 
@@ -96,10 +100,15 @@ app.add_middleware(
 # ── Routes ──────────────────────────────────────────────────────────
 
 # Versioned API
-app.include_router(v1_router)
+app.include_router(telemetry_router)
+app.include_router(commands_router)
+app.include_router(robots_router)
+app.include_router(analytics_router)
+app.include_router(events_router)
 
 # Backward-compatible unversioned routes (so existing simulator works)
-app.include_router(v1_router, prefix="", include_in_schema=False)
+app.include_router(telemetry_router, prefix="", include_in_schema=False)
+app.include_router(commands_router, prefix="", include_in_schema=False)
 
 
 @app.get("/", tags=["root"])
@@ -129,8 +138,18 @@ async def health_check():
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time telemetry broadcast."""
+async def websocket_endpoint(
+    websocket: WebSocket,
+    api_key: str = Query(None),
+):
+    """WebSocket endpoint for real-time telemetry broadcast.
+
+    Requires ``?api_key=<key>`` query parameter for authentication.
+    """
+    if api_key != settings.telemetry_api_key:
+        await websocket.close(code=4001, reason="Invalid or missing API key")
+        return
+
     await manager.connect(websocket)
     try:
         while True:

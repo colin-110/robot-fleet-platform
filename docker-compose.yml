@@ -32,6 +32,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; assert time.time() - os.path.getmtime('/tmp/worker_healthy') < 30"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     networks:
       - fleet_net
 
