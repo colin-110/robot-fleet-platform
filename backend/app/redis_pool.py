@@ -15,8 +15,8 @@ settings = get_settings()
 # Shared connection pool used by all Redis consumers
 _pool = aioredis.ConnectionPool.from_url(
     settings.redis_url,
-    max_connections=20,
-    decode_responses=False,
+    max_connections=1000,
+    decode_responses=True,
 )
 
 

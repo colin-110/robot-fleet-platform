@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
 from app.database import Base, engine
-from app.middleware import RateLimitMiddleware, RequestIdMiddleware
+from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.routes.telemetry import router as telemetry_router
 from app.routes.commands import router as commands_router
 from app.routes.robots import router as robots_router
@@ -84,10 +84,11 @@ app = FastAPI(
 
 # ── Middleware (order matters: outermost first) ─────────────────────
 
-app.add_middleware(RequestIdMiddleware)
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     RateLimitMiddleware,
-    max_per_minute=settings.rate_limit_per_minute,
+    max_requests=settings.rate_limit_per_minute,
+    window_seconds=60,
 )
 app.add_middleware(
     CORSMiddleware,

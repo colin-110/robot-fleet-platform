@@ -65,8 +65,8 @@ htmlcov/
 docker-data/
 
 # Alembic migrations
-alembic/versions/*
-!alembic/versions/.gitkeep
+# alembic/versions/*
+# !alembic/versions/.gitkeep
 
 # ==============================================================================
 # Environment / Secrets

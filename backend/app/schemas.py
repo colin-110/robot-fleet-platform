@@ -52,6 +52,30 @@ class TelemetryCreate(BaseModel):
     y: float | None = None
 
 
+class TelemetryResponse(BaseModel):
+    """Telemetry response payload."""
+    id: int
+    robot_id: int
+    battery: float
+    temperature: float
+    speed: float
+    status: str | None = None
+    mission_id: str | None = None
+    mission_type: str | None = None
+    mission_progress: float | None = None
+    mission_start_time: datetime | None = None
+    battery_health: float | None = None
+    motor_health: float | None = None
+    sensor_health: float | None = None
+    network_health: float | None = None
+    x: float | None = None
+    y: float | None = None
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ── Response Schemas ────────────────────────────────────────────────
 
 

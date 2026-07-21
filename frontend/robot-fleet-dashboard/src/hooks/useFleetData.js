@@ -68,8 +68,10 @@ export default function useFleetData() {
       setLastWsAt(Date.now());
       
       try {
-        if (lastMessage.type === "COMMAND" || lastMessage.type === "EVENT") {
-          setEvents(prev => [lastMessage, ...prev].slice(0, 50));
+        if (lastMessage.type) {
+          if (lastMessage.type.startsWith("COMMAND") || lastMessage.type === "EVENT") {
+            setEvents(prev => [lastMessage, ...prev].slice(0, 50));
+          }
         } else if (lastMessage.robot_id) {
           // It's a live telemetry update
           setRobots(prevRobots => {
@@ -90,12 +92,18 @@ export default function useFleetData() {
 
   useEffect(() => {
     setTimeout(() => refreshAllEvent(), 0);
-    const pollTimer = setInterval(() => refreshAllEvent(), 5000);
+    const pollTimer = setInterval(() => {
+      if (!socketConnected) {
+        refreshAllEvent();
+      } else {
+        fetchAnalytics().catch(console.error);
+      }
+    }, 5000);
 
     return () => {
       clearInterval(pollTimer);
     };
-  }, []);
+  }, [socketConnected]);
 
   return {
     robots,

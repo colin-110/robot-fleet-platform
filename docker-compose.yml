@@ -9,9 +9,12 @@ services:
       - ./backend/.env
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - PYTHONPATH=.
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -26,6 +29,8 @@ services:
     command: python -m app.worker
     env_file:
       - ./backend/.env
+    environment:
+      - PYTHONPATH=.
     restart: unless-stopped
     depends_on:
       db:
@@ -54,7 +59,7 @@ services:
 
   simulator:
     build: ./simulator
-    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}"]
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}", "--workers", "4", "--robots", "200"]
     env_file:
       - ./backend/.env
     restart: unless-stopped
