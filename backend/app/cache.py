@@ -6,18 +6,19 @@ predictive maintenance scores across all API instances.
 """
 
 import json
+import logging
 from typing import Any
-import redis.asyncio as redis
 
-from app.config import get_settings
+from app.redis_pool import get_redis
 
-settings = get_settings()
+logger = logging.getLogger(__name__)
+
 
 class RedisCache:
-    """Simple key-value store using Redis."""
+    """Simple key-value store using the shared Redis connection pool."""
 
     def __init__(self) -> None:
-        self.client = redis.Redis.from_url(settings.redis_url)
+        self.client = get_redis()
 
     async def get(self, key: str) -> Any | None:
         """Return cached value or ``None`` if missing / expired."""
@@ -26,6 +27,7 @@ class RedisCache:
             if val is not None:
                 return json.loads(val)
         except Exception:
+            logger.warning("Redis cache GET failed for key=%s", key, exc_info=True)
             return None
         return None
 
@@ -34,21 +36,22 @@ class RedisCache:
         try:
             await self.client.setex(key, int(ttl_seconds), json.dumps(value))
         except Exception:
-            pass
+            logger.warning("Redis cache SET failed for key=%s", key, exc_info=True)
 
     async def invalidate(self, key: str) -> None:
         """Remove a specific key from the cache."""
         try:
             await self.client.delete(key)
         except Exception:
-            pass
+            logger.warning("Redis cache INVALIDATE failed for key=%s", key, exc_info=True)
 
     async def clear(self) -> None:
         """Remove all entries (flushdb)."""
         try:
             await self.client.flushdb()
         except Exception:
-            pass
+            logger.warning("Redis cache CLEAR failed", exc_info=True)
+
 
 # Global singleton used by services
 cache = RedisCache()

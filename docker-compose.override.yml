@@ -1,0 +1,34 @@
+# docker-compose.override.yml — Development overrides
+#
+# This file is automatically loaded by Docker Compose alongside
+# docker-compose.yml. It adds hot-reload, debug ports, and
+# relaxed settings for local development.
+#
+# For production, explicitly use:
+#   docker compose -f docker-compose.yml up
+#
+services:
+  backend:
+    # Single worker with hot reload for development
+    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+    volumes:
+      - ./backend:/app
+    environment:
+      - APP_ENV=development
+      - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=*
+
+  worker:
+    command: python -m app.worker
+    volumes:
+      - ./backend:/app
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  db:
+    ports:
+      - "5432:5432"  # Expose DB for local tools (pgAdmin, DBeaver, etc.)
+
+  redis:
+    ports:
+      - "6379:6379"  # Expose Redis for local debugging

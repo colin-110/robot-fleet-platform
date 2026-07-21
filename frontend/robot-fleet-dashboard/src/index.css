@@ -5,6 +5,8 @@
   --bg-main: #0f172a; 
   --bg-panel: #1e293b;
   --bg-panel-hover: #334155;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
   
   /* Borders */
   --border-default: #334155;
@@ -85,4 +87,10 @@ p {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-light);
+}
+
+/* Loading skeleton shimmer animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
