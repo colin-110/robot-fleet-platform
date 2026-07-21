@@ -35,9 +35,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Simple in-memory token-bucket rate limiter per client IP.
 
     Only applied to POST requests (telemetry ingestion).
+
+    .. note::
+        This is a per-process rate limiter. With multiple Uvicorn
+        workers, the effective limit is ``max_per_minute × workers``.
+        For precise cross-process limiting, use Redis-based rate
+        limiting instead.
     """
 
-    def __init__(self, app, max_per_minute: int = 120) -> None:
+    def __init__(self, app, max_per_minute: int = 600) -> None:
         super().__init__(app)
         self.max_per_minute = max_per_minute
         self._buckets: dict[str, list[float]] = defaultdict(list)
@@ -55,7 +61,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._buckets[client_ip] = [t for t in timestamps if now - t < window]
 
         if len(self._buckets[client_ip]) >= self.max_per_minute:
-            logger.warning("Rate limit exceeded for %s", client_ip)
+            logger.warning(
+                "Rate limit exceeded for %s (%d/%d per minute)",
+                client_ip,
+                len(self._buckets[client_ip]),
+                self.max_per_minute,
+            )
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded. Try again later."},

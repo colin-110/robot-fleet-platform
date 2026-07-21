@@ -3,9 +3,11 @@ import orjson
 import logging
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 from sqlalchemy import insert, delete, update
 from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import Telemetry, RobotCommand
@@ -158,54 +160,46 @@ async def db_pruner_task():
             await asyncio.sleep(3600)
 
 
-async def scan_for_timeouts():
+async def scan_for_timeouts(session: AsyncSession):
     """Scan for commands that have expired and mark them as TIMEOUT."""
-    async with AsyncSessionLocal() as session:
-        now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
         
-        # Find commands where expires_at < now and status not in terminal states
-        stmt = select(RobotCommand).where(
-            RobotCommand.expires_at < now,
-            RobotCommand.status.not_in(["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"])
-        )
-        
-        result = await session.execute(stmt)
-        expired_commands = result.scalars().all()
-        
-        for cmd in expired_commands:
-            logger.info(f"Command {cmd.id} for robot {cmd.robot_id} has expired (status was {cmd.status})")
+    # Find commands where expires_at < now and status not in terminal states
+    stmt = select(RobotCommand).where(
+        RobotCommand.expires_at < now,
+        RobotCommand.status.not_in(["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"])
+    )
+    
+    result = await session.execute(stmt)
+    expired_commands = result.scalars().all()
+    
+    for cmd in expired_commands:
+        logger.info(f"Command {cmd.id} for robot {cmd.robot_id} has expired (status was {cmd.status})")
             
             # Update to TIMEOUT
-            update_stmt = (
-                update(RobotCommand)
-                .where(RobotCommand.id == cmd.id, RobotCommand.status == cmd.status)
-                .values(
-                    status="TIMEOUT",
-                    completed_at=now,
-                    error_code="TIMEOUT",
-                    error_message=f"Command timed out before completion (was {cmd.status})"
-                )
-                .execution_options(synchronize_session=False)
-            )
-            update_result = await session.execute(update_stmt)
-            
-            if update_result.rowcount > 0:
-                await session.commit()
-                
-                # Broadcast
-                payload = {
-                    "type": "COMMAND_UPDATE",
-                    "robot_id": cmd.robot_id,
-                    "command_type": cmd.command_type,
-                    "status": "TIMEOUT",
-                    "command_id": cmd.id,
-                    "timestamp": now.isoformat().replace("+00:00", "Z"),
-                    "error_code": "TIMEOUT",
-                    "error_message": f"Command timed out before completion (was {cmd.status})"
-                }
-                await manager.broadcast(payload)
-            else:
-                await session.rollback()
+        
+        # Update to TIMEOUT
+        update_stmt = (
+            update(RobotCommand)
+            .where(RobotCommand.id == cmd.id)
+            .values(status="TIMEOUT", completed_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(update_stmt)
+        
+        # Broadcast the timeout so the frontend and simulator know
+        payload = {
+            "type": "COMMAND_UPDATE",
+            "robot_id": cmd.robot_id,
+            "command_type": cmd.command_type,
+            "status": "TIMEOUT",
+            "command_id": cmd.id,
+            "timestamp": now.isoformat().replace("+00:00", "Z"),
+        }
+        await manager.broadcast(payload)
+        
+    if expired_commands:
+        await session.commit()
 
 async def timeout_worker_loop():
     logger.info("Starting timeout worker loop")
@@ -217,7 +211,8 @@ async def timeout_worker_loop():
     try:
         while True:
             try:
-                await scan_for_timeouts()
+                async with AsyncSessionLocal() as session:
+                    await scan_for_timeouts(session)
             except Exception as e:
                 logger.error(f"Error in timeout scanner: {e}", exc_info=True)
                 
@@ -228,21 +223,46 @@ async def timeout_worker_loop():
             manager._listener_task.cancel()
 
 
+HEALTH_FILE = Path("/tmp/worker_healthy")
+
+
+async def health_heartbeat():
+    """Periodically touch a health file so Docker can monitor worker liveness."""
+    logger.info("Starting worker health heartbeat...")
+    while True:
+        try:
+            HEALTH_FILE.write_text(datetime.now(timezone.utc).isoformat())
+        except Exception:
+            pass
+        await asyncio.sleep(10)
+
+
 async def main():
     logger.info("Initializing standalone telemetry background processor...")
     # Add a small delay to allow database/redis to finish booting in docker
     await asyncio.sleep(2.0)
-    
-    # Run sync worker, retention pruner, and timeout scanner tasks concurrently
+
+    # Run sync worker, retention pruner, timeout scanner, and health heartbeat concurrently
+    tasks = [
+        asyncio.create_task(redis_to_db_sync_worker()),
+        asyncio.create_task(db_pruner_task()),
+        asyncio.create_task(timeout_worker_loop()),
+        asyncio.create_task(health_heartbeat()),
+    ]
     try:
-        await asyncio.gather(
-            redis_to_db_sync_worker(),
-            db_pruner_task(),
-            timeout_worker_loop()
-        )
-    except KeyboardInterrupt:
+        await asyncio.gather(*tasks)
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Shutting down background processor.")
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        # Clean up health file on exit
+        HEALTH_FILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Worker stopped.")

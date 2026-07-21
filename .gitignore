@@ -88,6 +88,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 .pnpm-store
+.npm-cache/
 
 # Frontend Build Output
 dist/

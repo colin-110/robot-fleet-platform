@@ -5,7 +5,7 @@ from sqlalchemy.future import select
 from app.models import RobotCommand
 import asyncio
 from datetime import datetime, timezone, timedelta
-from app.timeout_worker import scan_for_timeouts
+from app.worker import scan_for_timeouts
 
 TEST_ROBOT_ID = 100
 
@@ -109,7 +109,7 @@ async def test_timeout_behavior(client: AsyncClient, db: AsyncSession):
     cmd_id = resp.json()["payload"]["command_id"]
     
     # Run timeout scan
-    await scan_for_timeouts()
+    await scan_for_timeouts(db)
     
     # Check DB directly since it's an internal process
     stmt = select(RobotCommand).where(RobotCommand.id == cmd_id)
