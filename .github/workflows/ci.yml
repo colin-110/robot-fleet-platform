@@ -57,6 +57,7 @@ jobs:
         REDIS_URL: redis://localhost:6379/0
         TELEMETRY_API_KEY: fleet-secret-key-2026
         USE_REDIS_BUFFER: "true"
+        PYTHONPATH: .
       run: |
         cd backend
         pytest tests/ -v
