@@ -57,6 +57,7 @@ jobs:
         REDIS_URL: redis://localhost:6379/0
         TELEMETRY_API_KEY: test-api-key
         USE_REDIS_BUFFER: "true"
+        PYTHONPATH: .
       run: |
         cd backend
         pytest tests/ -v
