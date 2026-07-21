@@ -8,5 +8,3 @@ env/
 .env
 *.env
 tests/
-alembic/versions/*
-!alembic/versions/.gitkeep
