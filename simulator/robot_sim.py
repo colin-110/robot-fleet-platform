@@ -7,10 +7,20 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import httpx
+import aiohttp
+import multiprocessing
+import sys
+from urllib.parse import urlparse, urlunparse
 
+
+try:
+    import uvloop
+    uvloop.install()
+except ImportError:
+    pass
 
 MISSION_TYPES = ["PATROL", "DELIVERY", "INSPECTION"]
+
 
 
 @dataclass
@@ -60,10 +70,21 @@ class RobotState:
     charging_suspended: bool = False
     dead_since: float = 0.0
     returning_to_charge: bool = False
+    processed_command_ids: set[str] = field(default_factory=set)
 
 
 def clamp(value: float, lo: float, hi: float):
     return max(lo, min(hi, value))
+
+
+def get_base_api(api_url: str) -> str:
+    parsed = urlparse(api_url)
+    path = parsed.path
+    if path.endswith('/telemetry'):
+        path = path[:-len('/telemetry')]
+    elif path.endswith('/telemetry/'):
+        path = path[:-len('/telemetry/')]
+    return urlunparse(parsed._replace(path=path))
 
 
 def lerp(a: float, b: float, t: float):
@@ -179,13 +200,13 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
-async def post_telemetry(client: httpx.AsyncClient, api_url: str, payload: dict, timeout_s: float):
+async def post_telemetry(client: aiohttp.ClientSession, api_url: str, payload: dict, timeout_s: float):
     for attempt in range(3):
         try:
             response = await client.post(api_url, json=payload, timeout=timeout_s)
             response.raise_for_status()
             return
-        except httpx.RequestError as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if attempt == 2:
                 raise exc
             await asyncio.sleep(0.5 * (2 ** attempt))
@@ -233,7 +254,7 @@ async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng
 async def robot_loop(
     robot: RobotState,
     *,
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
     api_url: str,
     rng: random.Random,
     ambient_c: float,
@@ -241,6 +262,7 @@ async def robot_loop(
     tick_max_s: float,
     post_timeout_s: float,
 ):
+    base_api = get_base_api(api_url)
     robot.last_update_s = time.time()
 
     try:
@@ -264,28 +286,64 @@ async def robot_loop(
             # Poll commands if not blacked out
             if not is_blacked_out:
                 try:
-                    cmd_url = api_url.replace("/telemetry", f"/commands/{robot.robot_id}")
-                    cmd_resp = await client.get(cmd_url, timeout=1.0)
-                    if cmd_resp.status_code == 200:
-                        for cmd in cmd_resp.json():
-                            if cmd == "RETURN_TO_BASE":
-                                clear_mission(robot)
-                                robot.returning_to_charge = True
-                                robot.status = "ACTIVE"
-                                robot.online = True
-                                safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command")
-                            elif cmd == "EMERGENCY_STOP":
-                                robot.status = "STOPPED"
-                                robot.speed = 0.0
-                                clear_mission(robot)
-                                robot.returning_to_charge = False
-                                safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED")
-                            elif cmd == "RESUME":
-                                robot.status = "ACTIVE"
-                                robot.online = True
-                                safe_print(f"[R{robot.robot_id:02d}] RESUMED")
-                except Exception:
-                    pass
+                    cmd_url = f"{base_api}/commands/{robot.robot_id}"
+                    async with client.get(cmd_url, timeout=2.0) as cmd_resp:
+                        if cmd_resp.status == 200:
+                            data = await cmd_resp.json()
+                            for cmd_obj in data:
+                                cmd_id = cmd_obj["id"]
+                                cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
+                                
+                                if cmd_id in robot.processed_command_ids:
+                                    # End-to-end idempotency: return existing result
+                                    try:
+                                        async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "COMPLETED", "result": {"message": "Already processed"}}) as _r: await _r.read()
+                                    except Exception:
+                                        pass
+                                    continue
+                                    
+                                robot.processed_command_ids.add(cmd_id)
+                                
+                                # Acknowledge command receipt
+                                try:
+                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "ACKNOWLEDGED"}) as _r: await _r.read()
+                                except Exception:
+                                    pass
+                                    
+                                # Start execution
+                                try:
+                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "EXECUTING"}) as _r: await _r.read()
+                                except Exception:
+                                    pass
+                                    
+                                status_to_patch = "COMPLETED"
+
+                                if cmd_action == "RETURN_TO_BASE":
+                                    clear_mission(robot)
+                                    robot.returning_to_charge = True
+                                    robot.status = "ACTIVE"
+                                    robot.online = True
+                                    safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})")
+                                elif cmd_action == "EMERGENCY_STOP":
+                                    robot.status = "STOPPED"
+                                    robot.speed = 0.0
+                                    clear_mission(robot)
+                                    robot.returning_to_charge = False
+                                    safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})")
+                                elif cmd_action == "RESUME":
+                                    robot.status = "ACTIVE"
+                                    robot.online = True
+                                    safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
+                                else:
+                                    status_to_patch = "FAILED"
+                                    
+                                # Complete command
+                                try:
+                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": status_to_patch}) as _r: await _r.read()
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
             # Meltdown / Battery exhaustion DEAD checks
             is_dead = (
@@ -531,10 +589,11 @@ async def robot_loop(
                     safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
                     if not is_blacked_out:
                         try:
-                            await client.post(f"{api_url.replace('/telemetry', '')}/events", json={
+                            async with client.post(f"{base_api}/events", json={
                                 "robot_id": robot.robot_id,
                                 "message": "Entered Restricted Zone!"
-                            }, timeout=2.0)
+                            }, timeout=2.0) as _r:
+                                await _r.read()
                         except Exception:
                             pass
             else:
@@ -556,7 +615,7 @@ async def robot_loop(
         safe_print(f"[R{robot.robot_id:02d}] Decommissioned and shutting down.")
 
 
-async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: str, rng: random.Random, post_timeout_s: float):
+async def emit_telemetry(robot: RobotState, client: aiohttp.ClientSession, api_url: str, rng: random.Random, post_timeout_s: float):
     payload = {
         "robot_id": robot.robot_id,
         "battery": round(clamp(apply_sensor_noise(robot, robot.battery, kind="battery", rng=rng), 0.0, 100.0), 2),
@@ -592,7 +651,7 @@ async def emit_telemetry(robot: RobotState, client: httpx.AsyncClient, api_url: 
 async def fleet_scaling_loop(
     robots: list[RobotState],
     active_robot_tasks: dict[int, asyncio.Task],
-    client: httpx.AsyncClient,
+    client: aiohttp.ClientSession,
     api_url: str,
     rng: random.Random,
     ambient: float,
@@ -601,8 +660,10 @@ async def fleet_scaling_loop(
     timeout: float,
     radius: float,
     initial_robots_count: int,
+    total_workers: int,
+    worker_index: int,
 ):
-    max_robot_id = initial_robots_count
+    max_robot_id = initial_robots_count * total_workers + worker_index * 1000000
     
     while True:
         # Check size constraints
@@ -672,37 +733,27 @@ async def fleet_scaling_loop(
             safe_print(f"[FLEET] Retired robot R{rid:02d}. Recalled to workshop.")
 
 
-async def main_async():
-    parser = argparse.ArgumentParser(description="Mission-based robot fleet simulator")
-    parser.add_argument(
-        "--api-url",
-        default="http://localhost:8000/api/v1/telemetry",
-    )
-    parser.add_argument("--local", action="store_true", help="Use local API URL")
-    parser.add_argument("--robots", type=int, default=0)
-    parser.add_argument("--api-key", default="fleet-secret-key-2026", help="API authentication key")
-    parser.add_argument("--ambient", type=float, default=30.0)
-    parser.add_argument("--radius", type=float, default=20.0)
-    parser.add_argument("--tick-min", type=float, default=2.0)
-    parser.add_argument("--tick-max", type=float, default=5.0)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--timeout", type=float, default=10.0)
-    args = parser.parse_args()
+async def main_async(args, worker_index=0, total_workers=1):
 
-    if args.local:
-        args.api_url = "http://localhost:8000/api/v1/telemetry"
 
     rng = random.Random(args.seed)
     
     robots_count = args.robots
     if robots_count <= 0:
         robots_count = rng.randint(35, 55)
-        safe_print(f"[FLEET] Fleet size randomized to {robots_count} robots.")
-    else:
-        safe_print(f"[FLEET] Initializing fleet with specified count of {robots_count} robots.")
+    
+    # Calculate chunk for this worker
+    chunk_size = robots_count // total_workers
+    remainder = robots_count % total_workers
+    my_robots = chunk_size + (1 if worker_index < remainder else 0)
+    
+    start_id = sum(chunk_size + (1 if i < remainder else 0) for i in range(worker_index)) + 1
+    end_id = start_id + my_robots
+    
+    safe_print(f"[Worker {worker_index}] Initializing fleet with {my_robots} robots (IDs {start_id} to {end_id - 1}).")
 
     robots = []
-    for rid in range(1, robots_count + 1):
+    for rid in range(start_id, end_id):
         start_x, start_y = random_point(rng, args.radius * 0.2)
         robots.append(
             RobotState(
@@ -730,7 +781,8 @@ async def main_async():
 
     active_robot_tasks = {}
     headers = {"X-API-Key": args.api_key}
-    async with httpx.AsyncClient(headers=headers) as client:
+    connector = aiohttp.TCPConnector(limit=5000)
+    async with aiohttp.ClientSession(headers=headers, connector=connector) as client:
         # Start robot loops
         for robot in robots:
             task = asyncio.create_task(
@@ -760,7 +812,9 @@ async def main_async():
                 tick_max=args.tick_max,
                 timeout=args.timeout,
                 radius=args.radius,
-                initial_robots_count=robots_count,
+                initial_robots_count=args.robots if args.robots > 0 else 55,
+                total_workers=total_workers,
+                worker_index=worker_index,
             )
         )
 
@@ -776,11 +830,53 @@ async def main_async():
                 task.cancel()
 
 
-def main():
+
+def worker_process(args, worker_index, total_workers):
     try:
-        asyncio.run(main_async())
+        asyncio.run(main_async(args, worker_index, total_workers))
     except KeyboardInterrupt:
-        safe_print("\nSimulator stopped.")
+        pass
+
+def main():
+    parser = argparse.ArgumentParser(description="Mission-based robot fleet simulator")
+    parser.add_argument(
+        "--api-url",
+        default="http://localhost:8000/api/v1/telemetry",
+    )
+    parser.add_argument("--local", action="store_true", help="Use local API URL")
+    parser.add_argument("--robots", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--api-key", default="fleet-secret-key-2026", help="API authentication key")
+    parser.add_argument("--ambient", type=float, default=30.0)
+    parser.add_argument("--radius", type=float, default=20.0)
+    parser.add_argument("--tick-min", type=float, default=2.0)
+    parser.add_argument("--tick-max", type=float, default=5.0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--timeout", type=float, default=10.0)
+    args = parser.parse_args()
+
+    if args.local:
+        args.api_url = "http://localhost:8000/api/v1/telemetry"
+
+    if args.workers > 1:
+        processes = []
+        for i in range(args.workers):
+            p = multiprocessing.Process(target=worker_process, args=(args, i, args.workers))
+            p.start()
+            processes.append(p)
+        
+        try:
+            for p in processes:
+                p.join()
+        except KeyboardInterrupt:
+            safe_print("\nSimulator stopped.")
+            for p in processes:
+                p.terminate()
+    else:
+        try:
+            asyncio.run(main_async(args, 0, 1))
+        except KeyboardInterrupt:
+            safe_print("\nSimulator stopped.")
 
 
 if __name__ == "__main__":
