@@ -78,6 +78,27 @@ class TelemetryService:
                 await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
             return {"message": "Telemetry received", "id": telemetry.id}
 
+    async def ingest_batch(self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None) -> dict:
+        """Persist a batch of telemetry readings."""
+        if settings.use_redis_buffer:
+            ts_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            for d in data:
+                payload = d.model_dump(mode='json')
+                payload["timestamp"] = ts_str
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast, payload)
+                else:
+                    await manager.broadcast(payload)
+            return {"message": f"{len(data)} telemetry readings queued in Redis"}
+        else:
+            for d in data:
+                telemetry = await self.repo.insert(d)
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast, _telemetry_to_broadcast_dict(telemetry))
+                else:
+                    await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
+            return {"message": f"{len(data)} telemetry readings received"}
+
     async def get_recent(self, limit: int = 50) -> list[Telemetry]:
         """Return the most recent telemetry rows."""
         return await self.repo.get_recent(limit)

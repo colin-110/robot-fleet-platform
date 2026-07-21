@@ -17,6 +17,8 @@ services:
       - APP_ENV=development
       - LOG_LEVEL=DEBUG
       - CORS_ORIGINS=*
+      - RATE_LIMIT_PER_MINUTE=10000000
+      - USE_REDIS_BUFFER=true
 
   worker:
     command: python -m app.worker

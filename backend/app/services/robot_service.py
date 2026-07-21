@@ -41,10 +41,11 @@ def summarize_robot_history(rows) -> dict | None:
         ts = ts.astimezone(timezone.utc)
         
     age_seconds = (now - ts).total_seconds()
-    if age_seconds > 180:
-        return None
-        
+    
     status = _derive_status(latest, age_seconds)
+    if age_seconds > 180:
+        status = "OFFLINE"
+    
     
     # Calculate linear drain rate over the history window
     runtime = None
