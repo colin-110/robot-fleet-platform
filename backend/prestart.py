@@ -5,14 +5,20 @@ from app.database import engine, Base
 # Import models so Base.metadata knows about them
 from app.models import Telemetry, RobotCommand, Robot
 
+import subprocess
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("prestart")
 
 async def init_db():
     logger.info("Initializing database...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database initialization complete.")
+    # Run alembic upgrade head using subprocess
+    try:
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+        logger.info("Database initialization complete.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error running alembic migrations: {e}")
+        raise
 
 if __name__ == "__main__":
     asyncio.run(init_db())

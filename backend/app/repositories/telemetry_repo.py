@@ -157,6 +157,7 @@ class TelemetryRepository:
                 func.avg(Telemetry.sensor_health).label("avg_sensor_h"),
                 func.avg(Telemetry.network_health).label("avg_net_h"),
             )
+            .where(Telemetry.timestamp > func.now() - text(f"INTERVAL '{limit_minutes} minutes'"))
             .group_by("bucket")
             .order_by(text("bucket DESC"))
             .limit(limit_minutes)

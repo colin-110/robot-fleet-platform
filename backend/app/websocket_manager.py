@@ -71,9 +71,9 @@ class ConnectionManager:
                     for stream_name, messages in streams:
                         for message_id, message_data in messages:
                             last_id = message_id
-                            if b"payload" in message_data:
+                            if "payload" in message_data:
                                 try:
-                                    data = orjson.loads(message_data[b"payload"])
+                                    data = orjson.loads(message_data["payload"])
                                     await self._send_to_all_clients(data)
                                 except orjson.JSONDecodeError:
                                     logger.warning("Failed to decode Redis payload in broadcast")
@@ -90,17 +90,17 @@ class ConnectionManager:
                 retry_delay = min(max_retry_delay, retry_delay * 2.0)
 
     async def _send_to_all_clients(self, data: dict) -> None:
-        """Helper to send data to all local active connections."""
-        for connection in self.active_connections:
+        """Broadcast data to all connected clients."""
+        for connection in list(self.active_connections):
             asyncio.create_task(self._send_to_client(connection, data))
 
-    async def _send_to_client(self, connection: WebSocket, data: dict) -> None:
+    async def _send_to_client(self, websocket: WebSocket, data: dict) -> None:
         try:
-            await connection.send_json(data)
+            await websocket.send_json(data)
         except WebSocketDisconnect:
-            self.disconnect(connection)
+            self.disconnect(websocket)
         except Exception:
             logger.exception("Broadcast error")
-            self.disconnect(connection)
+            self.disconnect(websocket)
 
 manager = ConnectionManager()
