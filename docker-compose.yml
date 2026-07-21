@@ -1,17 +1,14 @@
-name: robot-fleet-platform
-
 services:
+
   backend:
     build: ./backend
-    container_name: fleet_backend
+    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --no-access-log"]
     ports:
       - "8000:8000"
     env_file:
       - ./backend/.env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/robotfleet
-      - REDIS_URL=redis://redis:6379/0
-      - TELEMETRY_API_KEY=fleet-secret-key-2026
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
     restart: unless-stopped
     depends_on:
       db:
@@ -26,26 +23,23 @@ services:
 
   worker:
     build: ./backend
-    container_name: fleet_worker
     command: python -m app.worker
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/robotfleet
-      - REDIS_URL=redis://redis:6379/0
-      - TELEMETRY_API_KEY=fleet-secret-key-2026
+    env_file:
+      - ./backend/.env
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
       - fleet_net
 
+
   frontend:
     build: ./frontend/robot-fleet-dashboard
-    container_name: fleet_frontend
     ports:
-      - "5173:80"
+      - "80:80"
     restart: unless-stopped
     depends_on:
       backend:
@@ -55,8 +49,9 @@ services:
 
   simulator:
     build: ./simulator
-    container_name: fleet_simulator
-    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "fleet-secret-key-2026"]
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}"]
+    env_file:
+      - ./backend/.env
     restart: unless-stopped
     depends_on:
       backend:
@@ -65,19 +60,15 @@ services:
       - fleet_net
 
   db:
-    image: postgres:15
-    container_name: fleet_db
+    image: postgres:15-alpine
+    command: postgres -c synchronous_commit=off -c max_connections=200 -c shared_buffers=256MB
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: robotfleet
-    ports:
-      - "5432:5432"
+    env_file:
+      - ./backend/.env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d robotfleet"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -86,10 +77,13 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: fleet_redis
+    command: redis-server --save "" --appendonly no
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     networks:
       - fleet_net
 

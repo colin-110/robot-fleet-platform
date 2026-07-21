@@ -26,11 +26,10 @@ export default function useFleetData() {
   const [lastWsAt, setLastWsAt] = useState(0);
   const [events, setEvents] = useState([]);
 
-  const API_BASE =
-    import.meta.env.VITE_API_BASE_URL ||
-    `http://${window.location.hostname}:8000`;
-
-  const WS_BASE = API_BASE.replace("http", "ws");
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+  const WS_BASE = import.meta.env.VITE_API_BASE_URL
+    ? import.meta.env.VITE_API_BASE_URL.replace("http", "ws")
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
   // Use /api/v1 prefix for new backend, fall back to root for backward compat
   const API_PREFIX = `${API_BASE}/api/v1`;
@@ -67,12 +66,21 @@ export default function useFleetData() {
   useEffect(() => {
     if (lastMessage) {
       setLastWsAt(Date.now());
-      refreshAllEvent();
       
       try {
-        const msg = JSON.parse(lastMessage.data);
-        if (msg.type === "COMMAND" || msg.type === "EVENT") {
-          setEvents(prev => [msg, ...prev].slice(0, 50));
+        if (lastMessage.type === "COMMAND" || lastMessage.type === "EVENT") {
+          setEvents(prev => [lastMessage, ...prev].slice(0, 50));
+        } else if (lastMessage.robot_id) {
+          // It's a live telemetry update
+          setRobots(prevRobots => {
+            const index = prevRobots.findIndex(r => r.robot_id === lastMessage.robot_id);
+            if (index >= 0) {
+              const newRobots = [...prevRobots];
+              newRobots[index] = { ...newRobots[index], ...lastMessage };
+              return newRobots;
+            }
+            return [...prevRobots, lastMessage];
+          });
         }
       } catch(e) {
         // ignore parse errors
