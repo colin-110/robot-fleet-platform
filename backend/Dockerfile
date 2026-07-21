@@ -17,6 +17,7 @@ RUN apt-get update && \
 COPY --from=builder /app/wheels /wheels
 RUN pip install --no-cache /wheels/*
 
+# Copy application code AFTER installing dependencies (better cache layer)
 COPY . .
 RUN chown -R appuser:appuser /app
 USER appuser

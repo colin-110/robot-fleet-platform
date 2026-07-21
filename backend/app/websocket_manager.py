@@ -8,10 +8,10 @@ import orjson
 import logging
 
 from fastapi import WebSocket
-import redis.asyncio as aioredis
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
+from app.redis_pool import get_redis
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -22,7 +22,7 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self.active_connections: list[WebSocket] = []
-        self.redis = aioredis.from_url(settings.redis_url)
+        self.redis = get_redis()
         self.stream_name = "telemetry_stream"
         self._listener_task = None
 

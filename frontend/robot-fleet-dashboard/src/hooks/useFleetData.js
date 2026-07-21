@@ -101,6 +101,7 @@ export default function useFleetData() {
     robots,
 
     analytics,
+    isLoading: lastFetchAt === 0 && !error,
     error,
     socketConnected,
     lastFetchAt,

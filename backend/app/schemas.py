@@ -26,6 +26,12 @@ class CommandStatusUpdate(BaseModel):
     result: dict | None = None
 
 
+class EventCreate(BaseModel):
+    """Incoming event payload from a robot."""
+    robot_id: int
+    message: str
+
+
 class TelemetryCreate(BaseModel):
     """Incoming telemetry payload from the simulator."""
 

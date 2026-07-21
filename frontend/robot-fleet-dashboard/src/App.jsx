@@ -16,6 +16,7 @@ import FleetMap from "./components/FleetMap";
 import Navbar from "./components/Navbar";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
+import LoadingSkeleton from "./components/LoadingSkeleton";
 
 function DashboardView({ filteredRobots, events }) {
   const { width: gridWidth, containerRef: gridRef } = useContainerWidth();
@@ -71,6 +72,7 @@ function App() {
     lastWsAt,
     events,
     refreshAll,
+    isLoading,
   } = useFleetData();
 
   const { formatRelativeTime } = useRelativeTime();
@@ -114,29 +116,40 @@ function App() {
           error={error}
         />
 
-        {showDashboard && (
+        {isLoading && showDashboard && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <LoadingSkeleton type="stats" />
+            <LoadingSkeleton type="cards" />
+          </div>
+        )}
+
+        {isLoading && showAnalytics && <LoadingSkeleton type="panel" />}
+        {isLoading && showTelemetry && <LoadingSkeleton type="panel" />}
+        {isLoading && showHealth && <LoadingSkeleton type="panel" />}
+
+        {!isLoading && showDashboard && (
           <DashboardView filteredRobots={filteredRobots} events={events} />
         )}
 
-        {showTelemetry && (
+        {!isLoading && showTelemetry && (
           <div style={{ height: "600px" }}>
             <FleetMap robots={filteredRobots} />
           </div>
         )}
 
-        {showAnalytics && (
+        {!isLoading && showAnalytics && (
           <div>
             <AnalyticsPanel analytics={analytics} />
           </div>
         )}
 
-        {showHealth && (
+        {!isLoading && showHealth && (
           <div style={{ display: "grid", gap: 24, height: 400 }}>
             <FleetStatusChart robots={filteredRobots} />
           </div>
         )}
 
-        {robots.length === 0 && !error && (
+        {!isLoading && robots.length === 0 && !error && (
           <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
             <div className="section-title">
               <h2>Waiting for telemetry</h2>
@@ -147,7 +160,7 @@ function App() {
           </div>
         )}
 
-        {robots.length > 0 && filteredRobots.length === 0 && (
+        {!isLoading && robots.length > 0 && filteredRobots.length === 0 && (
           <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
             <div className="section-title">
               <h2>No results</h2>
@@ -161,7 +174,7 @@ function App() {
           </div>
         )}
 
-        {(showDashboard || showTelemetry) && (
+        {!isLoading && (showDashboard || showTelemetry) && (
           <div className="dashboard-grid">
             {filteredRobots.map((robot) => (
               <div key={robot.robot_id} className="col-span-4">
