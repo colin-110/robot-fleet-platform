@@ -6,8 +6,8 @@ Uses connection pooling with pre-ping to handle stale connections.
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 
 from app.config import get_settings
 
@@ -21,9 +21,10 @@ engine = create_async_engine(
     pool_recycle=300,
 )
 
-AsyncSessionLocal = sessionmaker(
+AsyncSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
+    expire_on_commit=False,
     bind=engine,
     class_=AsyncSession,
 )

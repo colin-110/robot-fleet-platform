@@ -17,6 +17,50 @@ import Navbar from "./components/Navbar";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
 
+function DashboardView({ filteredRobots, events }) {
+  const { width: gridWidth, containerRef: gridRef } = useContainerWidth();
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <FleetStats robots={filteredRobots} />
+      <div ref={gridRef} style={{ width: '100%', minHeight: '600px' }}>
+        <ResponsiveGridLayout
+          className="layout"
+          layouts={{
+            lg: [
+              { i: "telemetry", x: 0, y: 0, w: 8, h: 6 },
+              { i: "status", x: 8, y: 0, w: 4, h: 3 },
+              { i: "events", x: 8, y: 3, w: 4, h: 3 }
+            ],
+            md: [
+              { i: "telemetry", x: 0, y: 0, w: 10, h: 6 },
+              { i: "status", x: 0, y: 6, w: 5, h: 3 },
+              { i: "events", x: 5, y: 6, w: 5, h: 3 }
+            ]
+          }}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+          cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
+          rowHeight={100}
+          width={gridWidth || 1200}
+          draggableHandle=".drag-handle"
+          isDraggable={true}
+          isResizable={true}
+        >
+          <div key="telemetry">
+            <FleetMap robots={filteredRobots} />
+          </div>
+          <div key="status">
+            <FleetStatusChart robots={filteredRobots} />
+          </div>
+          <div key="events">
+            <EventLog events={events} />
+          </div>
+        </ResponsiveGridLayout>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const {
     robots,
@@ -30,7 +74,6 @@ function App() {
   } = useFleetData();
 
   const { formatRelativeTime } = useRelativeTime();
-  const { width: gridWidth, containerRef: gridRef } = useContainerWidth();
 
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [query, setQuery] = useState("");
@@ -72,45 +115,7 @@ function App() {
         />
 
         {showDashboard && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <FleetStats robots={filteredRobots} />
-            <div ref={gridRef}>
-              {gridWidth > 0 && (
-                <ResponsiveGridLayout
-                  className="layout"
-                  layouts={{
-                    lg: [
-                      { i: "telemetry", x: 0, y: 0, w: 8, h: 6 },
-                      { i: "status", x: 8, y: 0, w: 4, h: 3 },
-                      { i: "events", x: 8, y: 3, w: 4, h: 3 }
-                    ],
-                    md: [
-                      { i: "telemetry", x: 0, y: 0, w: 10, h: 6 },
-                      { i: "status", x: 0, y: 6, w: 5, h: 3 },
-                      { i: "events", x: 5, y: 6, w: 5, h: 3 }
-                    ]
-                  }}
-                  breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-                  cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-                  rowHeight={100}
-                  width={gridWidth}
-                  draggableHandle=".drag-handle"
-                  isDraggable={true}
-                  isResizable={true}
-                >
-                  <div key="telemetry">
-                    <FleetMap robots={filteredRobots} />
-                  </div>
-                  <div key="status">
-                    <FleetStatusChart robots={filteredRobots} />
-                  </div>
-                  <div key="events">
-                    <EventLog events={events} />
-                  </div>
-                </ResponsiveGridLayout>
-              )}
-            </div>
-          </div>
+          <DashboardView filteredRobots={filteredRobots} events={events} />
         )}
 
         {showTelemetry && (

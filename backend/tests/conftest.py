@@ -25,6 +25,7 @@ test_engine = create_async_engine(
 TestSessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
+    expire_on_commit=False,
     bind=test_engine,
     class_=AsyncSession,
 )
@@ -82,10 +83,13 @@ def mock_redis(monkeypatch):
     monkeypatch.setattr(cache, "set", mock_set)
     monkeypatch.setattr(cache, "clear", mock_clear)
 
-@pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def client():
+    from httpx import AsyncClient, ASGITransport
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        yield client
 
 
 @pytest.fixture

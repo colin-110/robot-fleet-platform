@@ -1,65 +1,132 @@
+# ==============================================================================
 # Python
+# ==============================================================================
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
 # Virtual Environments
-.venv/
-venv/
+.env
+.venv
 env/
+venv/
 ENV/
+env.bak/
+venv.bak/
 backend/.venv/
 
-# Environment files (NEVER commit secrets)
-.env
-*.env
-!.env.example
+# Pytest / Coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
 
-# Databases
+# Type Checkers & Linters
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+*.py.rej
+
+# ==============================================================================
+# Databases / Data
+# ==============================================================================
 *.db
 *.sqlite
 *.sqlite3
+docker-data/
 
-# Alembic
-alembic/versions/
+# Alembic migrations
+alembic/versions/*
+!alembic/versions/.gitkeep
 
-# Logs
-*.log
+# ==============================================================================
+# Environment / Secrets
+# ==============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
 
-# Pytest / Coverage
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Type Checkers
-.mypy_cache/
-.ruff_cache/
-
-# Node.js
+# ==============================================================================
+# Node.js & Frontend
+# ==============================================================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store
 
 # Frontend Build Output
 dist/
 build/
 .vite/
+.next/
+out/
 
-# VS Code
-.vscode/
-
-# JetBrains
-.idea/
-
+# ==============================================================================
 # OS Files
+# ==============================================================================
 .DS_Store
-Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+ehthumbs_vista.db
+[Tt]humbs.db
 desktop.ini
 
-# Docker
-docker-data/
+# ==============================================================================
+# IDEs / Editors
+# ==============================================================================
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 
-# Temporary Files
+.idea/
+*.swp
+*.swo
+*~
+.gemini/
+
+# ==============================================================================
+# Logs & Temporary Files
+# ==============================================================================
+*.log
 *.tmp
 *.temp

@@ -12,7 +12,18 @@ from pydantic import BaseModel, Field
 
 class CommandCreate(BaseModel):
     """Command payload sent from frontend to robot."""
-    action: str
+    command_type: str
+    payload: dict | None = None
+    timeout_seconds: int | None = None
+    idempotency_key: str | None = None
+
+
+class CommandStatusUpdate(BaseModel):
+    """Status update for an existing command."""
+    status: str
+    error_code: str | None = None
+    error_message: str | None = None
+    result: dict | None = None
 
 
 class TelemetryCreate(BaseModel):

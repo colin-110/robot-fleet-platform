@@ -25,7 +25,7 @@ function RobotCard({ robot }) {
   const [loadingAction, setLoadingAction] = useState("");
 
   const handleCommand = async (action) => {
-    const API_BASE = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
+    const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
     setLoadingAction(action);
     try {
       await axios.post(`${API_BASE}/api/v1/commands/${robot.robot_id}`, { action });

@@ -16,6 +16,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
@@ -48,10 +49,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
-    # Startup: ensure tables exist (safe for first run)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
+    # Database initialization is now handled by prestart.py
+
     logger.info(
         "Robot Fleet Platform started  env=%s  cors=%s",
         settings.app_env,
@@ -76,6 +75,7 @@ app = FastAPI(
     description="Mission dispatch, telemetry ingestion, and predictive maintenance",
     version="1.0.0",
     lifespan=lifespan,
+    default_response_class=ORJSONResponse,
 )
 
 # ── Middleware (order matters: outermost first) ─────────────────────

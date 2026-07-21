@@ -11,12 +11,18 @@ from sqlalchemy import engine_from_config, pool
 
 from app.config import get_settings
 from app.database import Base
+import app.models
 
 # Alembic Config object
 config = context.config
 
 # Override sqlalchemy.url from app settings
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+url = get_settings().database_url
+if "+asyncpg" in url:
+    url = url.replace("+asyncpg", "")
+if "+aiosqlite" in url:
+    url = url.replace("+aiosqlite", "")
+config.set_main_option("sqlalchemy.url", url)
 
 # Python logging
 if config.config_file_name is not None:
