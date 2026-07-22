@@ -62,10 +62,12 @@ def mock_redis(monkeypatch):
     """Mock Redis to avoid event loop issues and cache pollution."""
     from app.websocket_manager import manager
     from app.cache import cache
+    from app import middleware
 
     async def mock_broadcast(*args, **kwargs):
         pass
     monkeypatch.setattr(manager, "broadcast", mock_broadcast)
+    monkeypatch.setattr(middleware, "get_redis", lambda: None)
 
     # In-memory mock for cache
     _store = {}
