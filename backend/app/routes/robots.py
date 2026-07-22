@@ -16,8 +16,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["robots"])
 
 
+from fastapi import APIRouter, Depends, Query
+
 @router.get("/robots/status", response_model=list[RobotStatusResponse])
-async def robot_status(db: AsyncSession = Depends(get_db)):
+async def robot_status(
+    limit: int = Query(50, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db)
+):
     """Return current status summary for all robots."""
     service = RobotService(db)
-    return await service.get_fleet_status()
+    return await service.get_fleet_status(limit=limit, skip=skip)

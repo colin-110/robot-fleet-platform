@@ -13,6 +13,7 @@ from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
 from app.services.command_service import CommandService
 from app.websocket_manager import manager
+from app.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ async def send_command(
     robot_id: int,
     command: CommandCreate,
     db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
 ):
     """Queue a command for a specific robot and broadcast it."""
     service = CommandService(db)
@@ -35,6 +37,7 @@ async def send_command(
 async def get_commands(
     robot_id: int,
     db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
 ):
     """Simulator polling endpoint to fetch pending commands atomically."""
     repo = CommandRepository(db)
@@ -78,6 +81,7 @@ async def update_command_status(
     command_id: str,
     update_data: CommandStatusUpdate,
     db: AsyncSession = Depends(get_db),
+    _=Depends(verify_api_key),
 ):
     """Update the status of an existing command."""
     service = CommandService(db)

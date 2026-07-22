@@ -15,7 +15,8 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, Query
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Gauge, Histogram
+from fastapi import FastAPI, WebSocket, Query, Response
 from fastapi.responses import ORJSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -133,6 +134,24 @@ async def health_check():
         status="ok" if db_status == "healthy" else "degraded",
         database=db_status,
     )
+
+
+# ── Metrics Definitions ─────────────────────────────────────────────
+
+telemetry_ingested_total = Counter(
+    "telemetry_ingested_total", "Total number of telemetry readings ingested"
+)
+websocket_connections_active = Gauge(
+    "websocket_connections_active", "Number of active WebSocket connections"
+)
+db_write_latency_seconds = Histogram(
+    "db_write_latency_seconds", "Latency of database writes in seconds"
+)
+
+@app.get("/metrics", tags=["observability"])
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ── WebSocket ───────────────────────────────────────────────────────

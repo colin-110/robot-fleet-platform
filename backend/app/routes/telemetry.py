@@ -44,10 +44,11 @@ async def create_telemetry_batch(
 
 @router.get("/telemetry", response_model=List[TelemetryResponse])
 async def get_telemetry(
-    limit: int = 50, 
+    limit: int = 50,
+    skip: int = 0,
     db: AsyncSession = Depends(get_db),
     _=Depends(verify_api_key),
 ):
     """Return the most recent telemetry rows."""
     service = TelemetryService(db)
-    return await service.get_recent(limit=min(limit, 200))
+    return await service.get_recent(limit=min(limit, 200), skip=skip)
