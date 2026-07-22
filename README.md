@@ -3,11 +3,16 @@
   <p><strong>A Distributed, High-Throughput System for Real-Time Telemetry Ingestion and Predictive Maintenance</strong></p>
   
   [![CI Pipeline](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-blue?style=for-the-badge&logo=github)](https://github.com/placeholder)
-  [![Python Version](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+  [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
   [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
+  [![Redux](https://img.shields.io/badge/Redux-Toolkit-764ABC?style=for-the-badge&logo=redux&logoColor=white)](https://redux-toolkit.js.org/)
   [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-  [![Redis Streams](https://img.shields.io/badge/Redis-Streams-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
   [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org/)
+  [![Redis Streams](https://img.shields.io/badge/Redis-Streams-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+  [![Prometheus](https://img.shields.io/badge/Prometheus-Monitoring-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)](https://prometheus.io/)
+  [![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?style=for-the-badge&logo=grafana&logoColor=white)](https://grafana.com/)
+  [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com/)
+  [![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20S3-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 
   [**Live Interactive Demonstration**](http://robot-fleet-dashboard-349627593894.s3-website-us-east-1.amazonaws.com)
 
@@ -86,6 +91,61 @@ graph TB
   Worker -->|"Batch INSERT"| DB
   SVC_R & SVC_A -->|"Async SQLAlchemy"| DB
 ```
+
+---
+
+## AWS Production Cloud Architecture
+
+To guarantee high availability, fault tolerance, and horizontal scalability during extreme traffic spikes, the platform is designed to be deployed across a robust AWS ecosystem utilizing Elastic Load Balancing and Managed Data Services.
+
+```mermaid
+graph TB
+  subgraph "AWS Cloud Infrastructure"
+    direction TB
+    
+    subgraph "Edge & Content Delivery"
+      CF["Amazon CloudFront\n(Global CDN)"]
+      S3["Amazon S3\n(React Frontend Hosting)"]
+      CF --- S3
+    end
+
+    subgraph "Traffic Routing Layer"
+      ALB["Application Load Balancer (ALB)\n(HTTP & WebSocket Routing)"]
+    end
+
+    subgraph "Compute: Auto Scaling Group"
+      ASG_1["EC2 Instance 1\n(FastAPI Gateway)"]
+      ASG_2["EC2 Instance 2\n(FastAPI Gateway)"]
+      ASG_N["EC2 Instance N\n(FastAPI Gateway)"]
+    end
+
+    subgraph "Managed Data Services"
+      RDS["Amazon RDS\n(PostgreSQL Multi-AZ)"]
+      ELC["Amazon ElastiCache\n(Redis Cluster)"]
+    end
+    
+    subgraph "Background Processing"
+      ECS["ECS / Dedicated EC2 Worker\n(Telemetry Batch Ingestion)"]
+    end
+
+    CF -->|"API Requests / WSS"| ALB
+    ALB --> ASG_1 & ASG_2 & ASG_N
+    
+    ASG_1 & ASG_2 & ASG_N -->|"XADD (Buffering)"| ELC
+    ASG_1 & ASG_2 & ASG_N -->|"Async Read"| RDS
+    
+    ELC -->|"XREADGROUP"| ECS
+    ECS -->|"Batch INSERT"| RDS
+  end
+```
+
+### AWS Architectural Enhancements
+
+*   **Elastic Load Balancing (ALB):** Distributes incoming HTTP requests and maintains persistent WebSocket connections across multiple backend instances, preventing any single node from being overwhelmed.
+*   **Horizontal Scaling (Auto Scaling Groups):** The FastAPI gateways are stateless. CPU or network triggers automatically provision additional EC2 instances to absorb unexpected spikes in robot telemetry.
+*   **Managed Persistence (RDS Multi-AZ):** PostgreSQL is hosted on Amazon RDS with Multi-AZ deployments for automated failover, daily snapshots, and high availability.
+*   **High-Throughput Caching (ElastiCache):** Replaces the localized Redis container with a managed ElastiCache cluster, guaranteeing microsecond latency for the Pub/Sub broadcasting and telemetry buffering.
+*   **Edge Delivery (S3 + CloudFront):** The React SPA is statically compiled and hosted on S3, distributed globally via CloudFront to ensure minimal load times for fleet operators worldwide.
 
 ---
 
