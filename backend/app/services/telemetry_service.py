@@ -14,6 +14,8 @@ from app.repositories.telemetry_repo import TelemetryRepository
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
 from fastapi import BackgroundTasks
+from app.ml.anomaly_detector import add_telemetry_and_detect_anomalies
+from app.models import Event
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -63,6 +65,21 @@ class TelemetryService:
             payload = data.model_dump(mode='json')
             payload["timestamp"] = ts_str
             
+            anomalies = add_telemetry_and_detect_anomalies(payload)
+            if anomalies:
+                for anomaly in anomalies:
+                    new_event = Event(robot_id=data.robot_id, message=anomaly, timestamp=datetime.now(timezone.utc))
+                    self.repo.db.add(new_event)
+                await self.repo.db.commit()
+                # Also broadcast
+                for anomaly in anomalies:
+                    evt_payload = {"type": "EVENT", "robot_id": data.robot_id, "message": anomaly, "timestamp": ts_str}
+                    if background_tasks:
+                        background_tasks.add_task(manager.broadcast, evt_payload)
+                    else:
+                        await manager.broadcast(evt_payload)
+
+            
             # Broadcast immediately to WebSockets via stream (this also adds to Redis stream for worker)
             if background_tasks:
                 background_tasks.add_task(manager.broadcast, payload)
@@ -72,33 +89,86 @@ class TelemetryService:
             return {"message": "Telemetry queued in Redis", "id": 0}
         else:
             telemetry = await self.repo.insert(data)
+            
+            payload = _telemetry_to_broadcast_dict(telemetry)
+            anomalies = add_telemetry_and_detect_anomalies(payload)
+            if anomalies:
+                for anomaly in anomalies:
+                    new_event = Event(robot_id=data.robot_id, message=anomaly, timestamp=datetime.now(timezone.utc))
+                    self.repo.db.add(new_event)
+                await self.repo.db.commit()
+                for anomaly in anomalies:
+                    evt_payload = {"type": "EVENT", "robot_id": data.robot_id, "message": anomaly, "timestamp": payload["timestamp"]}
+                    if background_tasks:
+                        background_tasks.add_task(manager.broadcast, evt_payload)
+                    else:
+                        await manager.broadcast(evt_payload)
+                        
             if background_tasks:
                 background_tasks.add_task(manager.broadcast, _telemetry_to_broadcast_dict(telemetry))
             else:
                 await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
             return {"message": "Telemetry received", "id": telemetry.id}
 
-    async def ingest_batch(self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None) -> dict:
-        """Persist a batch of telemetry readings."""
+    async def ingest_batch(self, data: list[TelemetryCreate], background_tasks: BackgroundTasks) -> dict:
+        """Batch ingestion for high-throughput simulator pushing."""
+        from app.main import telemetry_ingested_total
+        telemetry_ingested_total.inc(len(data))
+        
+        ts_now = datetime.now(timezone.utc)
+        ts_str = ts_now.isoformat().replace("+00:00", "Z")
+        
         if settings.use_redis_buffer:
-            ts_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            payloads = []
+            events_to_insert = []
             for d in data:
                 payload = d.model_dump(mode='json')
                 payload["timestamp"] = ts_str
-                if background_tasks:
-                    background_tasks.add_task(manager.broadcast, payload)
-                else:
-                    await manager.broadcast(payload)
+                
+                anomalies = add_telemetry_and_detect_anomalies(payload)
+                if anomalies:
+                    for anomaly in anomalies:
+                        events_to_insert.append(Event(robot_id=d.robot_id, message=anomaly, timestamp=ts_now))
+                        payloads.append({"type": "EVENT", "robot_id": d.robot_id, "message": anomaly, "timestamp": ts_str})
+                        
+                payloads.append(payload)
+                
+            if events_to_insert:
+                self.repo.db.add_all(events_to_insert)
+                await self.repo.db.commit()
+                
+            if background_tasks:
+                background_tasks.add_task(manager.broadcast_batch, payloads)
+            else:
+                await manager.broadcast_batch(payloads)
+                
             return {"message": f"{len(data)} telemetry readings queued in Redis"}
         else:
+            payloads = []
+            events_to_insert = []
             for d in data:
                 telemetry = await self.repo.insert(d)
-                if background_tasks:
-                    background_tasks.add_task(manager.broadcast, _telemetry_to_broadcast_dict(telemetry))
-                else:
-                    await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
+                payload = _telemetry_to_broadcast_dict(telemetry)
+                
+                anomalies = add_telemetry_and_detect_anomalies(payload)
+                if anomalies:
+                    for anomaly in anomalies:
+                        events_to_insert.append(Event(robot_id=d.robot_id, message=anomaly, timestamp=ts_now))
+                        payloads.append({"type": "EVENT", "robot_id": d.robot_id, "message": anomaly, "timestamp": payload["timestamp"]})
+                
+                payloads.append(payload)
+                
+            if events_to_insert:
+                self.repo.db.add_all(events_to_insert)
+                await self.repo.db.commit()
+                
+            if background_tasks:
+                background_tasks.add_task(manager.broadcast_batch, payloads)
+            else:
+                await manager.broadcast_batch(payloads)
+                
             return {"message": f"{len(data)} telemetry readings received"}
 
-    async def get_recent(self, limit: int = 50) -> list[Telemetry]:
+    async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the most recent telemetry rows."""
-        return await self.repo.get_recent(limit)
+        return await self.repo.get_recent(limit=limit, skip=skip)
