@@ -18,13 +18,21 @@ settings = get_settings()
 
 
 class ConnectionManager:
-    """Manages WebSocket connections and broadcasts telemetry updates."""
+    """Manages active WebSocket connections and broadcasts messages."""
 
     def __init__(self) -> None:
         self.active_connections: list[WebSocket] = []
         self.redis = get_redis()
         self.stream_name = "telemetry_stream"
         self._listener_task = None
+        # Use lazy import for metrics to avoid circular dependencies
+        self._gauge = None
+
+    def _get_gauge(self):
+        if self._gauge is None:
+            from app.main import websocket_connections_active
+            self._gauge = websocket_connections_active
+        return self._gauge
 
     @property
     def connection_count(self) -> int:
@@ -38,6 +46,7 @@ class ConnectionManager:
         logger.info(
             "WebSocket connected (total: %d)", self.connection_count
         )
+        self._get_gauge().inc()
 
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a WebSocket connection."""
@@ -46,6 +55,7 @@ class ConnectionManager:
             logger.info(
                 "WebSocket disconnected (total: %d)", self.connection_count
             )
+            self._get_gauge().dec()
 
     async def broadcast(self, data: dict) -> None:
         """Publish data to Redis Streams (handles scaling/persistence)."""
@@ -54,6 +64,18 @@ class ConnectionManager:
             await self.redis.xadd(self.stream_name, {"payload": orjson.dumps(data).decode("utf-8")}, maxlen=10000)
         except Exception:
             logger.exception("Failed to publish to Redis Stream")
+
+    async def broadcast_batch(self, data_list: list[dict]) -> None:
+        """Publish multiple messages to Redis Streams in a single pipeline."""
+        if not data_list:
+            return
+        try:
+            pipeline = self.redis.pipeline()
+            for data in data_list:
+                pipeline.xadd(self.stream_name, {"payload": orjson.dumps(data).decode("utf-8")}, maxlen=10000)
+            await pipeline.execute()
+        except Exception:
+            logger.exception("Failed to publish batch to Redis Stream")
 
     async def listen_to_redis(self) -> None:
         """Background task that reads from Redis Streams and forwards to WebSockets."""

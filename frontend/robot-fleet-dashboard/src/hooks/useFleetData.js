@@ -62,6 +62,8 @@ export default function useFleetData() {
   // ── WebSocket + Polling ──────────────────────────────────────────
 
   const { isConnected: socketConnected, lastMessage } = useWebSocket(`${WS_BASE}/ws`);
+  const pendingUpdates = useRef({ robots: {}, events: [] });
+  const updateTimer = useRef(null);
 
   useEffect(() => {
     if (lastMessage) {
@@ -70,22 +72,43 @@ export default function useFleetData() {
       try {
         if (lastMessage.type) {
           if (lastMessage.type.startsWith("COMMAND") || lastMessage.type === "EVENT") {
-            setEvents(prev => [lastMessage, ...prev].slice(0, 50));
+            pendingUpdates.current.events.unshift(lastMessage);
           }
-        } else if (lastMessage.robot_id) {
-          // It's a live telemetry update
-          setRobots(prevRobots => {
-            const index = prevRobots.findIndex(r => r.robot_id === lastMessage.robot_id);
-            if (index >= 0) {
-              const newRobots = [...prevRobots];
-              newRobots[index] = { ...newRobots[index], ...lastMessage };
-              return newRobots;
-            }
-            return [...prevRobots, lastMessage];
-          });
+        } else if (lastMessage.robot_id && lastMessage.battery !== undefined) {
+          // Buffer the live telemetry update
+          pendingUpdates.current.robots[lastMessage.robot_id] = lastMessage;
         }
       } catch(e) {
         // ignore parse errors
+      }
+
+      if (!updateTimer.current) {
+        updateTimer.current = setTimeout(() => {
+          const updates = pendingUpdates.current;
+          pendingUpdates.current = { robots: {}, events: [] };
+          updateTimer.current = null;
+          
+          const robotIds = Object.keys(updates.robots);
+          if (robotIds.length > 0) {
+            setRobots(prevRobots => {
+              const newRobots = [...prevRobots];
+              for (const id of robotIds) {
+                const msg = updates.robots[id];
+                const index = newRobots.findIndex(r => String(r.robot_id) === String(msg.robot_id));
+                if (index >= 0) {
+                  newRobots[index] = { ...newRobots[index], ...msg };
+                } else {
+                  newRobots.push(msg);
+                }
+              }
+              return newRobots;
+            });
+          }
+          
+          if (updates.events.length > 0) {
+            setEvents(prev => [...updates.events, ...prev].slice(0, 50));
+          }
+        }, 100); // Throttle state updates to 10Hz
       }
     }
   }, [lastMessage]);
