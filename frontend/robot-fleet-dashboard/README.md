@@ -1,50 +1,50 @@
 <div align="center">
-  <h1>🖥️ Robot Fleet Platform: Frontend Dashboard</h1>
-  <p><strong>A sleek, high-performance, real-time SPA built with React 18, Vite, and Redux.</strong></p>
+  <h1>Robot Fleet Platform: Frontend Dashboard</h1>
+  <p><strong>A high-performance, real-time Single Page Application built with React 18, Vite, and Redux Toolkit.</strong></p>
 </div>
 
 ---
 
-## 📖 Overview
+## Overview
 
-The **FleetOps Dashboard** is the interactive control center for the Robot Fleet Platform. It ingests thousands of WebSocket telemetry events per second and renders them seamlessly onto a live interactive map and statistical charts—without freezing the browser.
+The **FleetOps Dashboard** serves as the interactive control center for the Robot Fleet Platform. Engineered to ingest thousands of WebSocket telemetry events per second, it renders live geographical data and complex statistical charts synchronously without degrading browser frame rates.
 
-Designed with modern UI/UX principles, the dashboard focuses on situational awareness, alerting fleet managers to predictive maintenance warnings and hardware anomalies in real-time.
+Designed utilizing modern UI/UX principles, the dashboard prioritizes situational awareness, immediately surfacing predictive maintenance warnings and hardware anomalies to fleet operators.
 
-## ✨ Core Features & UI Highlights
+## Core Features
 
-*   🗺️ **Real-Time Interactive Map (Leaflet.js)**
-    *   Tracks the precise geolocation (X/Y coordinates) of the entire fleet.
-    *   Dynamic map markers indicate robot status (Active, Charging, Low Power, Overheating) with color-coded alerts.
-*   📈 **Live Hardware Analytics (Recharts)**
-    *   Plots fleet-wide battery health, thermal distributions, and component degradation over time.
-    *   Sub-50ms reactivity ensures charts update instantaneously with incoming WebSocket streams.
-*   🧠 **Predictive Maintenance Alerts**
-    *   Surface-level toasts and dedicated alert panels notify operators of Machine Learning Z-Score anomalies (e.g., sudden battery drops or critical thermal spikes).
-*   🚀 **Performance First (Vite + React 18)**
-    *   Utilizes React 18's concurrent features and strict component memoization to ensure that pushing 500+ state updates per second doesn't drop rendering frames.
-
----
-
-## 🛠️ Tech Stack
-
-*   **Core**: [React 18](https://reactjs.org/) + TypeScript support
-*   **Build Tool**: [Vite](https://vitejs.dev/) (blazing fast HMR and optimized production bundles)
-*   **State Management**: [Redux Toolkit](https://redux-toolkit.js.org/) (for predictable, centralized state)
-*   **Mapping**: [Leaflet.js](https://leafletjs.com/) + `react-leaflet`
-*   **Charting**: [Recharts](https://recharts.org/) (composable charting library)
-*   **Styling**: Vanilla CSS with modern Flexbox/Grid layouts and dynamic variables.
+*   **Real-Time Interactive Map (Leaflet.js)**
+    *   Tracks precise geospatial coordinates of the entire robotic fleet.
+    *   Dynamic map markers continuously update robot status (Active, Charging, Low Power, Overheating) applying strict color-coded taxonomy.
+*   **Live Hardware Analytics (Recharts)**
+    *   Renders real-time aggregations of fleet-wide battery health, thermal distributions, and component degradation.
+    *   Sub-50ms reactivity ensures visualizations synchronize instantaneously with the incoming WebSocket data stream.
+*   **Predictive Maintenance Alerting**
+    *   Dedicated alerting mechanisms notify operators of Machine Learning anomalies (e.g., sudden battery depletion or critical thermal threshold breaches) calculated by the backend engine.
+*   **Performance Optimization (Vite + React 18)**
+    *   Leverages React 18's concurrent rendering features and aggressive component memoization to ensure that continuous state mutations (500+ updates per second) do not cause rendering bottlenecks or freeze the main thread.
 
 ---
 
-## 💻 Local Development Setup
+## Technology Stack
+
+*   **Core Framework**: [React 18](https://reactjs.org/) + TypeScript integration
+*   **Build Environment**: [Vite](https://vitejs.dev/) (Optimized for rapid Hot Module Replacement and minimal production bundles)
+*   **State Management**: [Redux Toolkit](https://redux-toolkit.js.org/) (Centralized, predictable state mutations)
+*   **Geospatial Mapping**: [Leaflet.js](https://leafletjs.com/) + `react-leaflet`
+*   **Data Visualization**: [Recharts](https://recharts.org/) (Declarative, component-based charting)
+*   **Styling Architecture**: Vanilla CSS leveraging modern Flexbox/Grid layouts and dynamic custom properties.
+
+---
+
+## Local Development Setup
 
 ### 1. Prerequisites
-Ensure you have [Node.js](https://nodejs.org/) (v16+) installed.
+Ensure [Node.js](https://nodejs.org/) (v16 or higher) is installed on the host machine.
 
-### 2. Install Dependencies
-Navigate to the frontend directory and run npm install. 
-*(Note: On Windows PowerShell, use `npm.cmd` if your execution policy blocks the standard `npm` script).*
+### 2. Dependency Installation
+Navigate to the frontend directory and install the required NPM packages. 
+*(Note: On Windows PowerShell environments, use `npm.cmd` if the execution policy restricts the standard `npm` script).*
 
 ```powershell
 cd frontend/robot-fleet-dashboard
@@ -52,29 +52,29 @@ npm.cmd install
 ```
 
 ### 3. Environment Configuration
-The frontend automatically connects to the backend API. If you are running the backend on a custom host/port, update the API URLs in the Redux slices or environment variables. (By default, it looks for `http://localhost:8000`).
+The application automatically resolves the backend API endpoints. If the backend services are hosted on a non-standard port or external host, update the API configuration within the Redux slices or environment variables. (The default target is `http://localhost:8000`).
 
-### 4. Run the Development Server
-Start the Vite development server with Hot Module Replacement (HMR):
+### 4. Development Server Execution
+Initialize the Vite development server:
 
 ```powershell
 npm.cmd run dev -- --host
 ```
 
-Access the dashboard in your browser at:
-**[http://localhost:5173](http://localhost:5173)**
+Access the dashboard via a standard web browser at:
+**`http://localhost:5173`**
 
 ---
 
-## 🏗️ Architecture & State Management
+## Architecture and State Management Strategies
 
-Handling massive volumes of WebSocket traffic in a React application requires strict architectural patterns to prevent re-render cascading:
+Managing high-frequency WebSocket traffic within a React application necessitates strict architectural patterns to prevent catastrophic re-render cascading:
 
-1. **Throttled Dispatches:** Incoming WebSocket telemetry is throttled/batched before being dispatched to the Redux store to maintain 60FPS UI rendering.
-2. **Selective Subscription:** Components use highly-specific Redux selectors (`useSelector`) to ensure they only re-render when their specific subset of data changes (e.g., a single robot's battery percentage).
-3. **Optimistic Updates:** When fleet managers dispatch commands (e.g., "Return to Base"), the UI updates optimistically while awaiting the strict state machine acknowledgment from the API.
+1. **Throttled Dispatches:** Incoming WebSocket telemetry streams are computationally throttled and batched before mutating the Redux store, safeguarding the 60FPS rendering target.
+2. **Selective Subscription:** UI Components utilize highly-specific Redux selectors (`useSelector`) to guarantee they only trigger a re-render lifecycle when their explicit subset of data is modified (e.g., isolating a single agent's battery scalar).
+3. **Optimistic Updates:** When fleet managers dispatch operational commands (e.g., "Return to Base"), the user interface updates optimistically to ensure immediate perceived responsiveness, prior to receiving the strict state machine acknowledgment from the API backend.
 
 ---
 
-## 📄 License
+## License
 This project is licensed under the MIT License.
