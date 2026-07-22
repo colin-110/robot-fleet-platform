@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import aiohttp
 
-API_KEY = "fleet-secret-key-2026"
+API_KEY = "new-secure-api-key-889900"
 HEADERS = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
 
 
@@ -345,7 +345,7 @@ async def run_all_tests(base_url):
     print(f"Target: {base_url}")
     print()
 
-    connector = aiohttp.TCPConnector(limit=500)
+    connector = aiohttp.TCPConnector(limit=2500)
     async with aiohttp.ClientSession(connector=connector) as session:
         try:
             async with session.get(f"{base_url}/health") as resp:
@@ -365,8 +365,8 @@ async def run_all_tests(base_url):
         print("-" * 70)
         print("TEST 1: Single Telemetry POST Throughput")
         print("-" * 70)
-        for conc in [1, 10, 50, 100]:
-            r = await test_single_telemetry(session, base_url, concurrency=conc, num_requests=conc * 10)
+        for conc in [1, 10, 50, 100, 500, 1500, 2000]:
+            r = await test_single_telemetry(session, base_url, concurrency=conc, num_requests=conc * 2)
             print(r.summary())
             all_results.append(r)
 
@@ -374,8 +374,8 @@ async def run_all_tests(base_url):
         print("-" * 70)
         print("TEST 2: Batch Telemetry POST Throughput")
         print("-" * 70)
-        for conc in [1, 10, 50]:
-            r = await test_batch_telemetry(session, base_url, concurrency=conc, num_batches=conc * 5, batch_size=50)
+        for conc in [1, 10, 50, 100, 500]:
+            r = await test_batch_telemetry(session, base_url, concurrency=conc, num_batches=conc * 2, batch_size=50)
             print(r.summary())
             all_results.append(r)
 
@@ -383,14 +383,14 @@ async def run_all_tests(base_url):
         print("-" * 70)
         print("TEST 3: REST GET Latency")
         print("-" * 70)
-        for conc in [1, 10, 50]:
-            r = await test_get_endpoint(session, base_url, "/api/v1/robots/status", conc, conc * 10,
+        for conc in [1, 10, 50, 500, 1500, 2000]:
+            r = await test_get_endpoint(session, base_url, "/api/v1/robots/status", conc, conc * 2,
                                          name=f"GET /robots/status (concurrency={conc})")
             print(r.summary())
             all_results.append(r)
 
-        for conc in [1, 10, 50]:
-            r = await test_get_endpoint(session, base_url, "/api/v1/analytics/fleet", conc, conc * 10,
+        for conc in [1, 10, 50, 500, 1500, 2000]:
+            r = await test_get_endpoint(session, base_url, "/api/v1/analytics/fleet", conc, conc * 2,
                                          name=f"GET /analytics/fleet (concurrency={conc})")
             print(r.summary())
             all_results.append(r)
@@ -399,13 +399,13 @@ async def run_all_tests(base_url):
     print("-" * 70)
     print("TEST 4: WebSocket Throughput")
     print("-" * 70)
-    for clients in [5, 20, 50]:
+    for clients in [5, 20, 50, 500, 1500, 2000]:
         r = await test_websocket(base_url, num_clients=clients, duration_s=10)
         print(r.summary())
         all_results.append(r)
 
     # Test 5 + 6
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=500)) as session:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=2500)) as session:
         print("-" * 70)
         print("TEST 5: Sustained Mixed Load (30 seconds)")
         print("-" * 70)
