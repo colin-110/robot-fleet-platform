@@ -29,6 +29,38 @@ CONSUMER_GROUP = "db_writers"
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
 
 
+async def process_batch(db: AsyncSession, messages: list[tuple[bytes, dict[bytes, bytes]]]):
+    """Persist a batch of Redis stream messages into telemetry rows."""
+    if not messages:
+        return None
+
+    last_id = None
+    for msg_id, msg_data in messages:
+        last_id = msg_id
+        try:
+            timestamp_raw = msg_data.get(b"timestamp")
+            timestamp = datetime.now(timezone.utc)
+            if timestamp_raw:
+                timestamp = datetime.fromisoformat(timestamp_raw.decode().replace("Z", "+00:00"))
+
+            add_result = db.add(
+                Telemetry(
+                    robot_id=int(msg_data[b"robot_id"]),
+                    battery=float(msg_data[b"battery"]),
+                    temperature=float(msg_data[b"temperature"]),
+                    speed=float(msg_data[b"speed"]),
+                    timestamp=timestamp,
+                )
+            )
+            if asyncio.iscoroutine(add_result):
+                await add_result
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+            logger.warning("Skipping invalid telemetry stream message: %s", msg_data)
+
+    await db.commit()
+    return last_id
+
+
 async def redis_to_db_sync_worker():
     """Background worker that batch-saves telemetry from Redis to PostgreSQL."""
     logger.info("Starting Redis-to-DB sync worker...")
