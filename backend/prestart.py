@@ -3,7 +3,7 @@ import logging
 
 from app.database import engine, Base
 # Import models so Base.metadata knows about them
-from app.models import Telemetry, RobotCommand, Robot
+from app.models import Telemetry, RobotCommand, Robot, Event
 
 import subprocess
 

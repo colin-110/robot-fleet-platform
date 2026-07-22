@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.telemetry_repo import TelemetryRepository
+from app.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,17 @@ class RobotService:
     def __init__(self, db: AsyncSession) -> None:
         self.repo = TelemetryRepository(db)
 
-    async def get_fleet_status(self) -> list[dict]:
+    async def get_fleet_status(self, limit: int = 50, skip: int = 0) -> list[dict]:
         """
         Return the current status summary for every robot.
         Uses optimized per-robot queries instead of loading the full table.
+        Results are cached for 10 seconds to reduce DB load.
         """
+        CACHE_KEY = f"fleet_status_summary_{limit}_{skip}"
+        cached = await cache.get(CACHE_KEY)
+        if cached is not None:
+            return cached
+
         grouped = await self.repo.get_recent_per_robot(per_robot_limit=30)
 
         robots = []
@@ -113,4 +120,9 @@ class RobotService:
                 robots.append(summary)
 
         logger.debug("Fleet status computed for %d robots", len(robots))
-        return robots
+        
+        # Apply pagination after grouping
+        paginated_robots = robots[skip : skip + limit]
+        
+        await cache.set(CACHE_KEY, paginated_robots, ttl_seconds=10.0)
+        return paginated_robots

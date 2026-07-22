@@ -101,3 +101,21 @@ class Telemetry(Base):
             f"<Telemetry id={self.id} robot_id={self.robot_id} "
             f"status={self.status!r} battery={self.battery}>"
         )
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    robot_id = Column(Integer, index=True, nullable=False)
+    message = Column(String(512), nullable=False)
+    timestamp = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),
+    )

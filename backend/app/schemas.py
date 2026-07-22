@@ -32,6 +32,18 @@ class EventCreate(BaseModel):
     message: str
 
 
+class EventResponse(BaseModel):
+    """Event response payload."""
+    id: int
+    robot_id: int
+    message: str
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+
 class TelemetryCreate(BaseModel):
     """Incoming telemetry payload from the simulator."""
 

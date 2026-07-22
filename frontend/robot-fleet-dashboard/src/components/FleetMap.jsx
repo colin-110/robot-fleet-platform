@@ -40,6 +40,7 @@ function FleetMap({ robots }) {
           />
           {robots.map(robot => {
             // Simulator Y maps to Latitude, X maps to Longitude
+            if (!isFinite(robot.y) || !isFinite(robot.x)) return null;
             const lat = CENTER_LAT + (robot.y * 0.0001);
             const lng = CENTER_LNG + (robot.x * 0.0001);
             return (
