@@ -2,10 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 const WS_API_KEY = import.meta.env.VITE_WS_API_KEY || 'fleet-secret-key-2026';
 
-export function useWebSocket(url) {
+export function useWebSocket(url, onMessage) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState(null);
   const ws = useRef(null);
+  const connectRef = useRef(null);
+  const onMessageRef = useRef(onMessage);
   const reconnectTimeout = useRef(null);
   const pingInterval = useRef(null);
   const shouldReconnect = useRef(true);
@@ -34,6 +36,7 @@ export function useWebSocket(url) {
       try {
         const data = JSON.parse(event.data);
         setLastMessage(data);
+        onMessageRef.current?.(data);
       } catch (err) {
         console.error('WebSocket message parsing failed:', err);
       }
@@ -44,7 +47,7 @@ export function useWebSocket(url) {
       clearInterval(pingInterval.current);
       if (shouldReconnect.current) {
         reconnectTimeout.current = setTimeout(() => {
-          connect();
+          connectRef.current?.();
         }, 3000);
       }
     };
@@ -54,6 +57,14 @@ export function useWebSocket(url) {
       ws.current.close();
     };
   }, [url]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
 
   useEffect(() => {
     connect();

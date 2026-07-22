@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState, useCallback, useRef } from "react";
+import { useEffect, useEffectEvent, useState, useCallback } from "react";
 import axios from "axios";
 import { useWebSocket } from "./useWebSocket";
 
@@ -61,34 +61,31 @@ export default function useFleetData() {
 
   // ── WebSocket + Polling ──────────────────────────────────────────
 
-  const { isConnected: socketConnected, lastMessage } = useWebSocket(`${WS_BASE}/ws`);
+  const handleLastMessage = useCallback((message) => {
+    setLastWsAt(Date.now());
 
-  useEffect(() => {
-    if (lastMessage) {
-      setLastWsAt(Date.now());
-      
-      try {
-        if (lastMessage.type) {
-          if (lastMessage.type.startsWith("COMMAND") || lastMessage.type === "EVENT") {
-            setEvents(prev => [lastMessage, ...prev].slice(0, 50));
-          }
-        } else if (lastMessage.robot_id) {
-          // It's a live telemetry update
-          setRobots(prevRobots => {
-            const index = prevRobots.findIndex(r => r.robot_id === lastMessage.robot_id);
-            if (index >= 0) {
-              const newRobots = [...prevRobots];
-              newRobots[index] = { ...newRobots[index], ...lastMessage };
-              return newRobots;
-            }
-            return [...prevRobots, lastMessage];
-          });
+    try {
+      if (message.type) {
+        if (message.type.startsWith("COMMAND") || message.type === "EVENT") {
+          setEvents(prev => [message, ...prev].slice(0, 50));
         }
-      } catch(e) {
-        // ignore parse errors
+      } else if (message.robot_id) {
+        // It's a live telemetry update
+        setRobots(prevRobots => {
+          const index = prevRobots.findIndex(r => r.robot_id === message.robot_id);
+          if (index >= 0) {
+            const newRobots = [...prevRobots];
+            newRobots[index] = { ...newRobots[index], ...message };
+            return newRobots;
+          }
+          return [...prevRobots, message];
+        });
       }
+    } catch {
+      // ignore parse errors
     }
-  }, [lastMessage]);
+  }, []);
+  const { isConnected: socketConnected } = useWebSocket(`${WS_BASE}/ws`, handleLastMessage);
 
   useEffect(() => {
     setTimeout(() => refreshAllEvent(), 0);

@@ -39,7 +39,10 @@ async def test_ingest_telemetry_invalid_data(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_get_telemetry_empty(client: AsyncClient):
     """Test GET /telemetry when the database is empty."""
-    response = await client.get("/api/v1/telemetry")
+    response = await client.get(
+        "/api/v1/telemetry",
+        headers={"X-API-Key": "fleet-secret-key-2026"},
+    )
     assert response.status_code == 200
     data = response.json()
     assert data == []
@@ -53,7 +56,7 @@ async def test_get_telemetry_with_data(client: AsyncClient, sample_telemetry: di
     for _ in range(3):
         await client.post("/api/v1/telemetry", json=sample_telemetry, headers=headers)
 
-    response = await client.get("/api/v1/telemetry?limit=2")
+    response = await client.get("/api/v1/telemetry?limit=2", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2  # honors limit
