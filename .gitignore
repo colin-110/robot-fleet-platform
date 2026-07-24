@@ -143,3 +143,14 @@ override.tf.json
 
 # ── Local test artifacts ──
 test.json
+
+# Terraform (state files contain plaintext secrets — never commit)
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+
+# Local scratch / sample data
+test.json
