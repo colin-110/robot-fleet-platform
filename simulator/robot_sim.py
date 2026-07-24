@@ -71,6 +71,8 @@ class RobotState:
     dead_since: float = 0.0
     returning_to_charge: bool = False
     processed_command_ids: list[str] = field(default_factory=list)
+    in_fence: bool = False
+    fence_cooldown_until: float = 0.0
 
 
 def clamp(value: float, lo: float, hi: float):
@@ -545,6 +547,14 @@ async def robot_loop(
                             )
                             if not is_blacked_out:
                                 await emit_telemetry(robot, queue, rng)
+                                try:
+                                    async with client.post(f"{base_api}/events", json={
+                                        "robot_id": robot.robot_id,
+                                        "message": f"Completed {mission.mission_type} mission {mission.mission_id}",
+                                    }, timeout=10.0) as _r:
+                                        await _r.read()
+                                except Exception:
+                                    pass
                             clear_mission(robot)
                             robot.status = "ACTIVE"
                         else:
@@ -586,25 +596,25 @@ async def robot_loop(
             if rng.random() < 0.0025:
                 robot.temperature += rng.uniform(4.0, 9.0)
 
-            # Check geofence
+            # Check geofence. Hysteresis (enter <5m, clear only after >7m) stops a
+            # robot hovering at the boundary from oscillating, and a per-robot
+            # cooldown guarantees we never spam the same entry event.
             dist_to_fence = math.hypot(robot.x - 15.0, robot.y - 10.0)
-            if dist_to_fence < 5.0:
-                if not getattr(robot, 'in_fence', False):
-                    robot.in_fence = True
+            if dist_to_fence < 5.0 and not robot.in_fence:
+                robot.in_fence = True
+                if now >= robot.fence_cooldown_until and not is_blacked_out:
+                    robot.fence_cooldown_until = now + 45.0
                     safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
-                    if not is_blacked_out:
-                        try:
-                            async with client.post(f"{base_api}/events", json={
-                                "robot_id": robot.robot_id,
-                                "message": "Entered Restricted Zone!"
-                            }, timeout=10.0) as _r:
-                                await _r.read()
-                        except Exception:
-                            pass
-            else:
-                if getattr(robot, 'in_fence', False):
-                    robot.in_fence = False
-                    safe_print(f"[R{robot.robot_id:02d}] EXITED RESTRICTED ZONE")
+                    try:
+                        async with client.post(f"{base_api}/events", json={
+                            "robot_id": robot.robot_id,
+                            "message": "Entered Restricted Zone!"
+                        }, timeout=10.0) as _r:
+                            await _r.read()
+                    except Exception:
+                        pass
+            elif dist_to_fence > 7.0 and robot.in_fence:
+                robot.in_fence = False
 
             robot.battery = clamp(robot.battery, 0.0, 100.0)
             robot.temperature = clamp(robot.temperature, 22.0, 99.0)
