@@ -1,55 +1,59 @@
 /**
- * Shared constants — single source of truth for status colors,
- * risk tones, and configuration values.
- *
- * Previously duplicated across RobotCard, AlertsPanel, and
- * PredictiveMaintenancePanel.
+ * Shared constants — single source of truth for status colors
+ * and configuration values.
  */
 
 // ── Status metadata ────────────────────────────────────────────────
 
 export const STATUS_META = {
   DEAD: {
-    border: "rgba(0, 0, 0, 0.82)",
-    pillBg: "rgba(0, 0, 0, 0.92)",
-    pillText: "#ffffff",
-    dot: "dotBlack",
-    alertAccent: "#0f172a",
+    border: "rgba(110, 118, 129, 0.35)",
+    pillBg: "rgba(110, 118, 129, 0.14)",
+    pillText: "#8b94a3",
+    dot: "dotGray",
+    alertAccent: "#6e7681",
   },
   OFFLINE: {
-    border: "rgba(100, 116, 139, 0.52)",
-    pillBg: "rgba(100, 116, 139, 0.16)",
-    pillText: "#cbd5e1",
+    border: "rgba(139, 148, 163, 0.35)",
+    pillBg: "rgba(139, 148, 163, 0.14)",
+    pillText: "#aab2c0",
     dot: "dotGray",
-    alertAccent: "#94a3b8",
+    alertAccent: "#8b94a3",
+  },
+  STOPPED: {
+    border: "rgba(139, 148, 163, 0.35)",
+    pillBg: "rgba(139, 148, 163, 0.14)",
+    pillText: "#aab2c0",
+    dot: "dotGray",
+    alertAccent: "#8b94a3",
   },
   OVERHEATING: {
-    border: "rgba(239, 68, 68, 0.52)",
-    pillBg: "rgba(239, 68, 68, 0.14)",
-    pillText: "hsl(var(--bad))",
+    border: "rgba(248, 81, 73, 0.4)",
+    pillBg: "rgba(248, 81, 73, 0.13)",
+    pillText: "#ff7b72",
     dot: "dotBad",
-    alertAccent: "hsl(var(--bad))",
+    alertAccent: "#f85149",
   },
   "LOW POWER": {
-    border: "rgba(245, 158, 11, 0.52)",
-    pillBg: "rgba(245, 158, 11, 0.14)",
-    pillText: "hsl(var(--warn))",
+    border: "rgba(210, 153, 34, 0.4)",
+    pillBg: "rgba(210, 153, 34, 0.13)",
+    pillText: "#e3b341",
     dot: "dotWarn",
-    alertAccent: "hsl(var(--warn))",
+    alertAccent: "#d29922",
   },
   CHARGING: {
-    border: "rgba(56, 189, 248, 0.52)",
-    pillBg: "rgba(56, 189, 248, 0.14)",
-    pillText: "hsl(var(--info))",
+    border: "rgba(88, 166, 255, 0.4)",
+    pillBg: "rgba(88, 166, 255, 0.13)",
+    pillText: "#79b8ff",
     dot: "dotInfo",
-    alertAccent: "hsl(var(--info))",
+    alertAccent: "#58a6ff",
   },
   ACTIVE: {
-    border: "rgba(34, 197, 94, 0.42)",
-    pillBg: "rgba(34, 197, 94, 0.12)",
-    pillText: "hsl(var(--good))",
+    border: "rgba(63, 185, 80, 0.4)",
+    pillBg: "rgba(63, 185, 80, 0.13)",
+    pillText: "#56d364",
     dot: "dotGood",
-    alertAccent: "hsl(var(--good))",
+    alertAccent: "#3fb950",
   },
 };
 

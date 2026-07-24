@@ -1,9 +1,5 @@
 import { useState } from "react";
-import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
-import "react-grid-layout/css/styles.css";
-import "react-resizable/css/styles.css";
 import "./App.css";
-
 
 import useFleetData from "./hooks/useFleetData";
 import useRelativeTime from "./hooks/useRelativeTime";
@@ -19,45 +15,29 @@ import Sidebar from "./components/Sidebar";
 import LoadingSkeleton from "./components/LoadingSkeleton";
 
 function DashboardView({ filteredRobots, events }) {
-  const { width: gridWidth, containerRef: gridRef } = useContainerWidth();
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className="dash">
       <FleetStats robots={filteredRobots} />
-      <div ref={gridRef} style={{ width: '100%', minHeight: '600px' }}>
-        <ResponsiveGridLayout
-          className="layout"
-          layouts={{
-            lg: [
-              { i: "telemetry", x: 0, y: 0, w: 8, h: 6 },
-              { i: "status", x: 8, y: 0, w: 4, h: 3 },
-              { i: "events", x: 8, y: 3, w: 4, h: 3 }
-            ],
-            md: [
-              { i: "telemetry", x: 0, y: 0, w: 10, h: 6 },
-              { i: "status", x: 0, y: 6, w: 5, h: 3 },
-              { i: "events", x: 5, y: 6, w: 5, h: 3 }
-            ]
-          }}
-          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
-          cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
-          rowHeight={100}
-          width={gridWidth || 1200}
-          draggableHandle=".drag-handle"
-          isDraggable={true}
-          isResizable={true}
-        >
-          <div key="telemetry">
-            <FleetMap robots={filteredRobots} />
-          </div>
-          <div key="status">
-            <FleetStatusChart robots={filteredRobots} />
-          </div>
-          <div key="events">
-            <EventLog events={events} />
-          </div>
-        </ResponsiveGridLayout>
+
+      <div className="dash__main">
+        <div className="dash__map">
+          <FleetMap robots={filteredRobots} />
+        </div>
+        <div className="dash__aside">
+          <FleetStatusChart robots={filteredRobots} />
+          <EventLog events={events} />
+        </div>
       </div>
+    </div>
+  );
+}
+
+function RobotGrid({ robots }) {
+  return (
+    <div className="robotGridPro">
+      {robots.map((robot) => (
+        <RobotCard key={robot.robot_id} robot={robot} />
+      ))}
     </div>
   );
 }
@@ -95,15 +75,12 @@ function App() {
 
   return (
     <div className="app-container">
-      <Sidebar
-        active={activeNav}
-        onChange={(next) => setActiveNav(next)}
-      />
+      <Sidebar active={activeNav} onChange={(next) => setActiveNav(next)} />
 
       <div className="main-content">
         <Navbar
           title="FleetOps"
-          subtitle="Mission dispatch and fleet telemetry"
+          subtitle="Mission dispatch & fleet telemetry"
           socketConnected={socketConnected}
           lastFetchText={formatRelativeTime(lastFetchAt)}
           lastWsText={formatRelativeTime(lastWsAt)}
@@ -116,73 +93,70 @@ function App() {
           error={error}
         />
 
+        <div className="contentInner">
         {isLoading && showDashboard && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <LoadingSkeleton type="stats" />
             <LoadingSkeleton type="cards" />
           </div>
         )}
 
-        {isLoading && showAnalytics && <LoadingSkeleton type="panel" />}
-        {isLoading && showTelemetry && <LoadingSkeleton type="panel" />}
-        {isLoading && showHealth && <LoadingSkeleton type="panel" />}
+        {isLoading && (showAnalytics || showTelemetry || showHealth) && (
+          <LoadingSkeleton type="panel" />
+        )}
 
         {!isLoading && showDashboard && (
-          <DashboardView filteredRobots={filteredRobots} events={events} />
+          <>
+            <DashboardView filteredRobots={filteredRobots} events={events} />
+            <div className="sectionLabel">
+              <h2>Fleet Roster</h2>
+              <span className="subtle">{filteredRobots.length} units</span>
+            </div>
+            <RobotGrid robots={filteredRobots} />
+          </>
         )}
 
         {!isLoading && showTelemetry && (
-          <div style={{ height: "600px" }}>
-            <FleetMap robots={filteredRobots} />
-          </div>
+          <>
+            <div className="dash__map dash__map--tall">
+              <FleetMap robots={filteredRobots} />
+            </div>
+            <div className="sectionLabel">
+              <h2>Fleet Roster</h2>
+              <span className="subtle">{filteredRobots.length} units</span>
+            </div>
+            <RobotGrid robots={filteredRobots} />
+          </>
         )}
 
-        {!isLoading && showAnalytics && (
-          <div>
-            <AnalyticsPanel analytics={analytics} />
-          </div>
-        )}
+        {!isLoading && showAnalytics && <AnalyticsPanel analytics={analytics} />}
 
         {!isLoading && showHealth && (
-          <div style={{ display: "grid", gap: 24, height: 400 }}>
+          <div className="healthGrid">
             <FleetStatusChart robots={filteredRobots} />
+            <EventLog events={events} />
           </div>
         )}
 
         {!isLoading && robots.length === 0 && !error && (
-          <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
+          <div className="glass emptyState">
             <div className="section-title">
               <h2>Waiting for telemetry</h2>
             </div>
-            <div className="subtle">
-              No robots yet. Connect simulator and backend.
-            </div>
+            <div className="subtle">No robots yet. Connect the simulator and backend.</div>
           </div>
         )}
 
         {!isLoading && robots.length > 0 && filteredRobots.length === 0 && (
-          <div className="panel" style={{ padding: 24, marginBottom: 16 }}>
+          <div className="glass emptyState">
             <div className="section-title">
               <h2>No results</h2>
-              <button className="btn" onClick={() => setQuery("")}>
-                Clear search
-              </button>
+              <button className="btn" onClick={() => setQuery("")}>Clear search</button>
             </div>
-            <div className="subtle">
-              Try robot id, mission type, or status.
-            </div>
+            <div className="subtle">Try a robot id, mission type, or status.</div>
           </div>
         )}
-
-        {!isLoading && (showDashboard || showTelemetry) && (
-          <div className="dashboard-grid">
-            {filteredRobots.map((robot) => (
-              <div key={robot.robot_id} className="col-span-4">
-                <RobotCard robot={robot} />
-              </div>
-            ))}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

@@ -58,7 +58,7 @@ function TelemetryChart({ robots }) {
   }));
 
   return (
-    <div className="panel" style={{ padding: 16, height: "100%", display: "flex", flexDirection: "column" }}>
+    <div className="glass" style={{ padding: 16, height: "100%", display: "flex", flexDirection: "column" }}>
       <div className="sectionTitle drag-handle" style={{ cursor: "grab", flexShrink: 0 }}>
         <h2>Fleet telemetry</h2>
         <span className="subtle">

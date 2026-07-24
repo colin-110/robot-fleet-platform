@@ -29,6 +29,80 @@ CONSUMER_GROUP = "db_writers"
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
 
 
+def _payload_to_insert_dict(p: dict) -> dict:
+    """Normalize a decoded telemetry payload into a Telemetry insert row."""
+    ts_raw = p.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    try:
+        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+    except ValueError:
+        ts = datetime.now(timezone.utc)
+
+    mst_raw = p.get("mission_start_time")
+    if isinstance(mst_raw, str):
+        try:
+            mst = datetime.fromisoformat(mst_raw.replace("Z", "+00:00"))
+        except ValueError:
+            mst = None
+    else:
+        mst = None
+
+    return {
+        "robot_id": p.get("robot_id", 0),
+        "battery": p.get("battery", 0.0),
+        "temperature": p.get("temperature", 0.0),
+        "speed": p.get("speed", 0.0),
+        "status": p.get("status", "UNKNOWN"),
+        "mission_id": p.get("mission_id"),
+        "mission_type": p.get("mission_type"),
+        "mission_progress": p.get("mission_progress"),
+        "mission_start_time": mst,
+        "battery_health": p.get("battery_health"),
+        "motor_health": p.get("motor_health"),
+        "sensor_health": p.get("sensor_health"),
+        "network_health": p.get("network_health"),
+        "x": p.get("x"),
+        "y": p.get("y"),
+        "timestamp": ts,
+    }
+
+
+async def process_batch(session: AsyncSession, stream_messages: list) -> list:
+    """Parse a batch of Redis-stream telemetry entries and bulk-insert them.
+
+    ``stream_messages`` is a list of ``(msg_id, fields)`` tuples as returned by
+    ``XREADGROUP``, where ``fields`` carries a JSON ``"payload"``. Non-telemetry
+    payloads (events/commands — anything without a ``battery`` field) and
+    undecodable payloads are skipped, but every message id seen is returned so
+    the caller can ``XACK`` the whole batch and avoid reprocessing.
+    """
+    message_ids: list = []
+    insert_dicts: list = []
+
+    for msg_id, fields in stream_messages:
+        message_ids.append(msg_id)
+        payload_raw = fields.get("payload") if fields else None
+        if not payload_raw:
+            continue
+        try:
+            decoded = orjson.loads(payload_raw)
+        except orjson.JSONDecodeError:
+            logger.warning("Failed to decode Redis payload: %s", payload_raw)
+            continue
+        # Only telemetry objects carry a battery reading; ignore events/commands.
+        if "battery" in decoded:
+            insert_dicts.append(_payload_to_insert_dict(decoded))
+
+    if insert_dicts:
+        await session.execute(insert(Telemetry).values(insert_dicts))
+        await session.commit()
+        logger.info(
+            "Successfully batched and saved %d telemetry records to database.",
+            len(insert_dicts),
+        )
+
+    return message_ids
+
+
 async def redis_to_db_sync_worker():
     """Background worker that batch-saves telemetry from Redis to PostgreSQL."""
     logger.info("Starting Redis-to-DB sync worker...")
@@ -46,90 +120,45 @@ async def redis_to_db_sync_worker():
     
     while True:
         try:
-            payloads = []
             message_ids = []
-            
-            # Block for up to 500ms waiting for new messages
+
             messages = await redis.xreadgroup(
-                CONSUMER_GROUP, CONSUMER_NAME, 
-                {STREAM_KEY: ">"}, 
-                count=100, block=500
+                CONSUMER_GROUP, CONSUMER_NAME,
+                {STREAM_KEY: "0"},
+                count=100
             )
-            
+
+            if not messages or not messages[0][1]:
+                try:
+                    res = await redis.execute_command("XAUTOCLAIM", STREAM_KEY, CONSUMER_GROUP, CONSUMER_NAME, "60000", "0", "COUNT", "100")
+                    if res and len(res) >= 2 and res[1]:
+                        continue
+                except Exception as e:
+                    logger.warning("XAUTOCLAIM failed: %s", e)
+
+                messages = await redis.xreadgroup(
+                    CONSUMER_GROUP, CONSUMER_NAME,
+                    {STREAM_KEY: ">"},
+                    count=100, block=500
+                )
+
             if messages:
-                for stream, stream_msgs in messages:
-                    for msg_id, msg_data in stream_msgs:
-                        payload_raw = msg_data.get("payload")
-                        if payload_raw:
-                            try:
-                                decoded = orjson.loads(payload_raw)
-                                # Only process telemetry objects (ignore events/commands)
-                                if "battery" in decoded:
-                                    payloads.append(decoded)
-                                message_ids.append(msg_id)
-                            except orjson.JSONDecodeError:
-                                logger.warning("Failed to decode Redis payload: %s", payload_raw)
-                                message_ids.append(msg_id)
-                
-            if payloads:
-                insert_dicts = []
-                for p in payloads:
-                    ts_raw = p.get("timestamp") or datetime.now(timezone.utc).isoformat()
-                    try:
-                        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-                    except ValueError:
-                        ts = datetime.now(timezone.utc)
-                        
-                    mst_raw = p.get("mission_start_time")
-                    if isinstance(mst_raw, str):
-                        try:
-                            mst = datetime.fromisoformat(mst_raw.replace("Z", "+00:00"))
-                        except ValueError:
-                            mst = None
-                    else:
-                        mst = None
-                    
-                    insert_dicts.append({
-                        "robot_id": p.get("robot_id", 0),
-                        "battery": p.get("battery", 0.0),
-                        "temperature": p.get("temperature", 0.0),
-                        "speed": p.get("speed", 0.0),
-                        "status": p.get("status", "UNKNOWN"),
-                        "mission_id": p.get("mission_id"),
-                        "mission_type": p.get("mission_type"),
-                        "mission_progress": p.get("mission_progress"),
-                        "mission_start_time": mst,
-                        "battery_health": p.get("battery_health"),
-                        "motor_health": p.get("motor_health"),
-                        "sensor_health": p.get("sensor_health"),
-                        "network_health": p.get("network_health"),
-                        "x": p.get("x"),
-                        "y": p.get("y"),
-                        "timestamp": ts
-                    })
-                
-                # Perform bulk insert
-                async with AsyncSessionLocal() as session:
-                    async with session.begin():
-                        stmt = insert(Telemetry).values(insert_dicts)
-                        await session.execute(stmt)
-                        
-                logger.info("Successfully batched and saved %d telemetry records to database.", len(insert_dicts))
-                
-                # Acknowledge messages in Redis stream so they are removed from PEL
-                if message_ids:
-                    await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
-                    
-                # Reset retry delay on successful database write
-                retry_delay = 2.0
-            
-            if not payloads:
-                # Loop immediately handles blocking wait next iteration
-                pass
-            else:
-                # Yield briefly before checking queue again
+                stream_messages = []
+                for _stream, stream_msgs in messages:
+                    stream_messages.extend(stream_msgs)
+
+                if stream_messages:
+                    async with AsyncSessionLocal() as session:
+                        message_ids = await process_batch(session, stream_messages)
+                    # Reset retry delay on a successful drain of the batch.
+                    retry_delay = 2.0
+
+            # Acknowledge messages in Redis stream so they are removed from PEL
+            if message_ids:
+                await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
+                # Yield briefly before checking the queue again.
                 await asyncio.sleep(0.05)
-                
+
         except asyncio.CancelledError:
             logger.info("Sync worker task cancelled. Exiting.")
             break
@@ -145,25 +174,27 @@ async def db_pruner_task():
     
     while True:
         try:
-            limit_date = datetime.now(timezone.utc) - timedelta(days=settings.retention_days)
-            
-            total_deleted = 0
-            while True:
-                async with AsyncSessionLocal() as session:
-                    async with session.begin():
-                        # Use a subquery to find IDs to delete, with a limit to batch it
-                        subq = select(Telemetry.id).where(Telemetry.timestamp < limit_date).limit(10000).subquery()
-                        stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
-                        result = await session.execute(stmt)
+            lock_acquired = await manager.redis.set("lock:db_pruner", "1", nx=True, ex=3600)
+            if lock_acquired:
+                limit_date = datetime.now(timezone.utc) - timedelta(days=settings.retention_days)
+                
+                total_deleted = 0
+                while True:
+                    async with AsyncSessionLocal() as session:
+                        async with session.begin():
+                            # Use a subquery to find IDs to delete, with a limit to batch it
+                            subq = select(Telemetry.id).where(Telemetry.timestamp < limit_date).limit(10000).subquery()
+                            stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
+                            result = await session.execute(stmt)
+                            
+                            deleted_count = result.rowcount
+                            total_deleted += deleted_count
+                            
+                    if deleted_count == 0:
+                        break
+                    await asyncio.sleep(0.1) # Yield to avoid locking DB too hard
                         
-                        deleted_count = result.rowcount
-                        total_deleted += deleted_count
-                        
-                if deleted_count == 0:
-                    break
-                await asyncio.sleep(0.1) # Yield to avoid locking DB too hard
-                    
-            logger.info("RETENTION: Pruned %d telemetry records older than %d days.", total_deleted, settings.retention_days)
+                logger.info("RETENTION: Pruned %d telemetry records older than %d days.", total_deleted, settings.retention_days)
             
             # Run once every 24 hours
             await asyncio.sleep(86400)
@@ -214,7 +245,7 @@ async def scan_for_timeouts(session: AsyncSession):
             "command_id": cmd.id,
             "timestamp": now.isoformat().replace("+00:00", "Z"),
         }
-        await manager.broadcast(payload)
+        await manager.broadcast(payload, stream="event_stream")
         
     if expired_commands:
         await session.commit()
@@ -229,8 +260,10 @@ async def timeout_worker_loop():
     try:
         while True:
             try:
-                async with AsyncSessionLocal() as session:
-                    await scan_for_timeouts(session)
+                lock_acquired = await manager.redis.set("lock:timeout_scanner", "1", nx=True, ex=10)
+                if lock_acquired:
+                    async with AsyncSessionLocal() as session:
+                        await scan_for_timeouts(session)
             except Exception as e:
                 logger.error(f"Error in timeout scanner: {e}", exc_info=True)
                 

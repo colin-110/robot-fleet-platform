@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Robot Fleet Platform API",
-    description="Mission dispatch, telemetry ingestion, and predictive maintenance",
+    description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
     default_response_class=ORJSONResponse,
