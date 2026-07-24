@@ -1,32 +1,49 @@
 export default function EventLog({ events }) {
   return (
-    <div className="glassStrong" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <div className="drag-handle" style={{ padding: "16px 20px", cursor: "grab", borderBottom: "1px solid var(--stroke)" }}>
-        <h2 style={{ margin: 0, fontSize: "16px", color: "rgba(226, 232, 240, 0.96)" }}>Live Event Log</h2>
+    <div className="glassStrong" style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div className="panelHead">
+        <h2>Live Event Log</h2>
+        {events && events.length > 0 && (
+          <span className="badge" style={{ background: "var(--accent-weak)", color: "#9dbdff", borderColor: "rgba(79,140,255,0.25)" }}>
+            {events.length}
+          </span>
+        )}
       </div>
-      
-      <div style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: 12, minHeight: 0 }}>
         {events && events.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {events.map((evt, idx) => {
-              const time = new Date(evt.timestamp).toLocaleTimeString();
+              const time = new Date(evt.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
               return (
-                <div key={idx} style={{ padding: "12px", border: "1px solid var(--stroke)", borderRadius: "8px", background: "rgba(2, 6, 23, 0.2)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>{time}</span>
-                    <span className="badge" style={{ background: "rgba(14, 165, 233, 0.1)", color: "var(--info)", fontSize: "10px", padding: "2px 6px" }}>
-                      Robot {evt.robot_id}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: "14px", color: "var(--text)", fontWeight: "500" }}>
-                    {evt.type === "COMMAND" ? `Command Sent: ${evt.action}` : evt.message}
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    gap: 11,
+                    padding: "10px 12px",
+                    borderRadius: "var(--radius-sm)",
+                    background: "var(--bg-2)",
+                    border: "1px solid var(--line)",
+                  }}
+                >
+                  <span style={{ width: 3, borderRadius: 3, background: "var(--accent)", flexShrink: 0 }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, lineHeight: 1.35 }}>
+                      {evt.type === "COMMAND" ? `Command: ${evt.action}` : evt.message}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 11, color: "var(--muted)" }}>
+                      <span>Robot {evt.robot_id}</span>
+                      <span>·</span>
+                      <span>{time}</span>
+                    </div>
                   </div>
                 </div>
               );
             })}
           </div>
         ) : (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)", fontSize: "14px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)", fontSize: 13 }}>
             No recent events
           </div>
         )}

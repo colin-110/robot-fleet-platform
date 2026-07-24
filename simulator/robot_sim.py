@@ -226,7 +226,9 @@ async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng
                 robot
                 for robot in robots
                 if robot.online
-                and robot.status not in {"DEAD", "CHARGING", "OVERHEATING"}
+                # STOPPED robots stay parked until an explicit RESUME command —
+                # the dispatcher must not re-task an emergency-stopped unit.
+                and robot.status not in {"DEAD", "CHARGING", "OVERHEATING", "STOPPED"}
                 and robot.mission is None
                 and not robot.returning_to_charge
                 and robot.battery > 20.0
@@ -393,9 +395,9 @@ async def robot_loop(
                 continue
 
             # Low power / Return to charge triggers
-            if robot.battery <= 20.0 and robot.status not in ("CHARGING", "RETURNING_TO_CHARGE"):
+            if robot.battery <= 30.0 and robot.status not in ("CHARGING", "RETURNING_TO_CHARGE"):
                 robot.status = "LOW POWER"
-                if robot.battery <= 10.0 and robot.mission is not None:
+                if robot.battery <= 25.0 and robot.mission is not None:
                     # Abort active mission to top up
                     safe_print(f"[R{robot.robot_id:02d}] Aborting mission {robot.mission_id} due to low charge ({robot.battery:.1f}%)")
                     clear_mission(robot)
@@ -838,24 +840,24 @@ async def main_async(args, worker_index=0, total_workers=1):
             active_robot_tasks[robot.robot_id] = task
 
         # Start fleet scaling daemon task
-        scaling_task = asyncio.create_task(
-            fleet_scaling_loop(
-                robots=robots,
-                active_robot_tasks=active_robot_tasks,
-                client=client,
-                api_url=args.api_url,
-                queue=telemetry_queue,
-                rng=random.Random(args.seed + 777),
-                ambient=args.ambient,
-                tick_min=args.tick_min,
-                tick_max=args.tick_max,
-                timeout=args.timeout,
-                radius=args.radius,
-                initial_robots_count=args.robots if args.robots > 0 else 55,
-                total_workers=total_workers,
-                worker_index=worker_index,
-            )
-        )
+        # scaling_task = asyncio.create_task(
+        #     fleet_scaling_loop(
+        #         robots=robots,
+        #         active_robot_tasks=active_robot_tasks,
+        #         client=client,
+        #         api_url=args.api_url,
+        #         queue=telemetry_queue,
+        #         rng=random.Random(args.seed + 777),
+        #         ambient=args.ambient,
+        #         tick_min=args.tick_min,
+        #         tick_max=args.tick_max,
+        #         timeout=args.timeout,
+        #         radius=args.radius,
+        #         initial_robots_count=args.robots if args.robots > 0 else 55,
+        #         total_workers=total_workers,
+        #         worker_index=worker_index,
+        #     )
+        # )
 
         try:
             while True:
@@ -864,7 +866,7 @@ async def main_async(args, worker_index=0, total_workers=1):
             pass
         finally:
             dispatcher_task.cancel()
-            scaling_task.cancel()
+            # scaling_task.cancel()
             batcher_task.cancel()
             for task in list(active_robot_tasks.values()):
                 task.cancel()

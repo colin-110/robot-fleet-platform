@@ -58,49 +58,53 @@ class TelemetryRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_recent_per_robot(self, per_robot_limit: int = 30) -> dict[int, list[Telemetry]]:
+    async def get_recent_per_robot(
+        self, per_robot_limit: int = 30, window_minutes: int = 15
+    ) -> dict[int, list[Telemetry]]:
         """
         Return the most recent *per_robot_limit* rows **per robot**.
 
-        Uses a SQL window function so we only fetch the rows we need
-        instead of loading the full table.
-
-        Returns:
-            ``{robot_id: [rows oldest→newest]}``
+        Only rows within the last *window_minutes* are considered.  This keeps
+        the query bounded to a small, index-friendly tail of the table instead
+        of scanning/sorting the entire telemetry history, which grows without
+        bound while the fleet is running.  Robots that have not reported within
+        the window are treated as gone from the current fleet.
         """
-        subquery = (
+        # Use a window function to avoid N+1 queries.  The WHERE clause limits
+        # the scan to the recent tail of the table (uses the timestamp index),
+        # so the query cost stays flat as history grows.
+        subq = (
             select(
                 Telemetry,
-                func.row_number()
-                .over(
+                func.row_number().over(
                     partition_by=Telemetry.robot_id,
-                    order_by=Telemetry.timestamp.desc(),
-                )
-                .label("rn"),
+                    order_by=Telemetry.timestamp.desc()
+                ).label("rn")
+            )
+            .where(
+                Telemetry.timestamp
+                > func.now() - text(f"INTERVAL '{int(window_minutes)} minutes'")
             )
             .subquery()
         )
-
-        telemetry_alias = aliased(Telemetry, subquery)
-        try:
-            stmt = (
-                select(telemetry_alias)
-                .filter(subquery.c.rn <= per_robot_limit)
-                .order_by(telemetry_alias.robot_id, telemetry_alias.timestamp.asc())
-            )
-            result = await self.db.execute(stmt)
-            rows = list(result.scalars().all())
-        except SQLAlchemyError:
-            rows = []
-
-        # Fallback: if the window-function approach raises on some DB
-        # drivers, use the simpler grouped approach.
-        if not rows:
-            rows = await self._get_recent_per_robot_fallback(per_robot_limit)
+        
+        telemetry_alias = aliased(Telemetry, subq)
+        stmt = (
+            select(telemetry_alias)
+            .where(subq.c.rn <= per_robot_limit)
+            .order_by(telemetry_alias.robot_id, telemetry_alias.timestamp.desc())
+        )
+        
+        result = await self.db.execute(stmt)
+        rows = result.scalars().all()
 
         grouped: dict[int, list[Telemetry]] = {}
         for row in rows:
             grouped.setdefault(row.robot_id, []).append(row)
+            
+        for rid in grouped:
+            grouped[rid] = list(reversed(grouped[rid]))  # oldest first
+            
         return grouped
 
     async def _get_recent_per_robot_fallback(self, per_robot_limit: int) -> list[Telemetry]:
@@ -185,12 +189,13 @@ class TelemetryRepository:
         return trend
 
     async def get_mission_completions(self) -> list[dict]:
-        """Returns count of completed missions by type."""
+        """Returns count of completed missions by type in the last 24 hours."""
         stmt = (
             select(
                 Telemetry.mission_type,
                 func.count(func.distinct(Telemetry.mission_id)).label("count")
             )
+            .filter(Telemetry.timestamp > func.now() - text("INTERVAL '1 day'"))
             .filter(Telemetry.mission_progress >= 100.0)
             .filter(Telemetry.mission_type.isnot(None))
             .group_by(Telemetry.mission_type)

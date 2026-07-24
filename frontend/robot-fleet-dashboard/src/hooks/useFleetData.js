@@ -35,7 +35,12 @@ export default function useFleetData() {
   const API_PREFIX = `${API_BASE}/api/v1`;
 
   const fetchRobots = async () => {
-    const response = await axios.get(`${API_PREFIX}/robots/status`);
+    // Ask for the whole fleet — the default page size used to clip it to 50.
+    const response = await axios.get(`${API_PREFIX}/robots/status`, {
+      params: { limit: 1000 },
+    });
+    // Replace (not merge) with the authoritative snapshot. This prunes robots
+    // that have been retired or have gone stale, so counts can't drift upward.
     setRobots(Array.isArray(response.data) ? response.data : []);
   };
 
@@ -45,14 +50,18 @@ export default function useFleetData() {
   };
 
   const refreshAll = useCallback(async () => {
+    // Robots gate the first paint, so fetch them first and reveal the UI as
+    // soon as they land. Analytics is heavier and must NOT block rendering —
+    // fire it independently.
     try {
-      await Promise.all([fetchRobots(), fetchAnalytics()]);
+      await fetchRobots();
       setLastFetchAt(Date.now());
       setError("");
     } catch (requestError) {
       console.error(requestError);
       setError("Backend is unreachable.");
     }
+    fetchAnalytics().catch(console.error);
   }, [API_PREFIX]);
 
   const refreshAllEvent = useEffectEvent(async () => {
@@ -61,11 +70,12 @@ export default function useFleetData() {
 
   // ── WebSocket + Polling ──────────────────────────────────────────
 
-  const { isConnected: socketConnected, lastMessage } = useWebSocket(`${WS_BASE}/ws`);
   const pendingUpdates = useRef({ robots: {}, events: [] });
   const updateTimer = useRef(null);
 
-  useEffect(() => {
+  // Plain handler (not useEffectEvent): useWebSocket keeps it in a ref, so the
+  // latest closure is always used and identity churn is harmless.
+  const handleMessage = (lastMessage) => {
     if (lastMessage) {
       setLastWsAt(Date.now());
       
@@ -78,7 +88,7 @@ export default function useFleetData() {
           // Buffer the live telemetry update
           pendingUpdates.current.robots[lastMessage.robot_id] = lastMessage;
         }
-      } catch(e) {
+      } catch {
         // ignore parse errors
       }
 
@@ -111,28 +121,32 @@ export default function useFleetData() {
         }, 100); // Throttle state updates to 10Hz
       }
     }
-  }, [lastMessage]);
+  };
+
+  const { isConnected: socketConnected } = useWebSocket(`${WS_BASE}/ws`, handleMessage);
+
+
 
   useEffect(() => {
     setTimeout(() => refreshAllEvent(), 0);
+    // Always re-sync the authoritative snapshot, even while the WebSocket is
+    // connected. The WS only ever *adds/updates* robots, so without this poll
+    // retired/dead robots would linger forever and inflate the fleet counts.
+    // The REST snapshot replaces the list, pruning anything no longer present.
     const pollTimer = setInterval(() => {
-      if (!socketConnected) {
-        refreshAllEvent();
-      } else {
-        fetchAnalytics().catch(console.error);
-      }
+      refreshAllEvent();
     }, 5000);
 
     return () => {
       clearInterval(pollTimer);
     };
-  }, [socketConnected]);
+  }, []);
 
   return {
     robots,
 
     analytics,
-    isLoading: lastFetchAt === 0 && !error,
+    isLoading: lastFetchAt === 0 && robots.length === 0 && !error,
     error,
     socketConnected,
     lastFetchAt,

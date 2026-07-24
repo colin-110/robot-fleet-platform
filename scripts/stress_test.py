@@ -308,29 +308,35 @@ async def test_db_write_verification(session, base_url):
     payload = make_telemetry_payload(robot_id=unique_id)
 
     t0 = time.monotonic()
-    async with session.post(f"{base_url}/api/v1/telemetry", json=payload, headers=HEADERS) as resp:
-        result.total_requests += 1
-        if resp.status == 200:
-            result.successful += 1
-        else:
-            result.failed += 1
-            return result
-
-    await asyncio.sleep(3.0)
-
-    async with session.get(f"{base_url}/api/v1/robots/status") as resp:
-        result.total_requests += 1
-        if resp.status == 200:
-            data = await resp.json()
-            found = any(r.get("robot_id") == unique_id for r in data)
-            if found:
+    try:
+        async with session.post(f"{base_url}/api/v1/telemetry", json=payload, headers=HEADERS) as resp:
+            result.total_requests += 1
+            if resp.status == 200:
                 result.successful += 1
-                print(f"    OK: Robot {unique_id} found in fleet status after telemetry ingestion")
             else:
                 result.failed += 1
-                print(f"    WARN: Robot {unique_id} NOT found -- may need more time for worker flush")
-        else:
-            result.failed += 1
+                return result
+
+        await asyncio.sleep(3.0)
+
+        async with session.get(f"{base_url}/api/v1/robots/status") as resp:
+            result.total_requests += 1
+            if resp.status == 200:
+                data = await resp.json()
+                found = any(r.get("robot_id") == unique_id for r in data)
+                if found:
+                    result.successful += 1
+                    print(f"    OK: Robot {unique_id} found in fleet status after telemetry ingestion")
+                else:
+                    result.failed += 1
+                    print(f"    WARN: Robot {unique_id} NOT found -- may need more time for worker flush")
+            else:
+                result.failed += 1
+    except Exception as e:
+        result.total_requests += 1
+        result.failed += 1
+        result.errors.append(f"DB verification error: {str(e)[:80]}")
+
 
     result.duration_s = time.monotonic() - t0
     return result

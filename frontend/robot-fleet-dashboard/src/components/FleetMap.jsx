@@ -25,15 +25,13 @@ function FleetMap({ robots }) {
 
   return (
     <div className="glassStrong" style={{ padding: 0, height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <div className="sectionTitle drag-handle" style={{ padding: "16px 16px 0 16px", cursor: "grab", flexShrink: 0 }}>
-        <h2 style={{ margin: 0, fontSize: "16px", color: "rgba(226, 232, 240, 0.96)" }}>Live Fleet Map</h2>
-        <span className="subtle">
-          {robots.length} active robots
-        </span>
+      <div className="panelHead">
+        <h2>Live Fleet Map</h2>
+        <span className="subtle">{robots.length} active robots</span>
       </div>
 
-      <div style={{ flexGrow: 1, position: "relative", marginTop: 8 }}>
-        <MapContainer center={[CENTER_LAT, CENTER_LNG]} zoom={17} style={{ height: "100%", width: "100%" }}>
+      <div style={{ flexGrow: 1, position: "relative" }}>
+        <MapContainer center={[CENTER_LAT, CENTER_LNG]} zoom={17} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
           <TileLayer
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution="&copy; <a href='https://carto.com/'>CartoDB</a>"

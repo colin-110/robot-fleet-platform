@@ -1,26 +1,55 @@
 """
 Shared test fixtures for the robot fleet backend.
 
-Uses an in-memory SQLite database for fast, isolated tests.
+These tests run against **PostgreSQL**, not SQLite: the application relies on
+Postgres-specific SQL (``date_trunc``, ``INTERVAL`` arithmetic, and atomic
+``UPDATE ... WHERE status='PENDING'`` dispatch) that SQLite cannot execute.
+CI provisions a dedicated ``fleet_test_db`` Postgres service and points
+``DATABASE_URL`` at it (see ``.github/workflows/ci.yml``). To run locally,
+export ``DATABASE_URL`` to a throwaway Postgres database whose name contains
+``test`` — for example::
+
+    createdb fleet_test_db
+    DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fleet_test_db \
+        pytest
 """
 
+import os
+
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.database import Base, get_db
 from app.main import app
 from app.cache import cache
+from app.auth import verify_api_key
+from app.config import get_settings
 
-# ── In-memory SQLite for tests ──────────────────────────────────────
+# ── Resolve the Postgres test database ──────────────────────────────
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
-
-test_engine = create_async_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
+_RAW_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/fleet_test_db",
 )
+
+# Safety guard: this suite calls ``drop_all`` between tests. Refuse to run
+# against any database whose name doesn't look like a test database so we can
+# never accidentally wipe a development or production schema.
+_DB_NAME = _RAW_URL.rsplit("/", 1)[-1].split("?")[0]
+if "test" not in _DB_NAME.lower():
+    raise RuntimeError(
+        f"Refusing to run the test suite against database {_DB_NAME!r}: its name "
+        "must contain 'test'. Point DATABASE_URL at a throwaway test database."
+    )
+
+TEST_DATABASE_URL = _RAW_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# NullPool: each test recreates the schema, so we don't want connections held
+# open across the create/drop cycle.
+test_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
 TestSessionLocal = sessionmaker(
     autocommit=False,
@@ -30,6 +59,10 @@ TestSessionLocal = sessionmaker(
     class_=AsyncSession,
 )
 
+# Telemetry ingestion has two code paths; tests assert on synchronous DB writes,
+# so pin the buffer off regardless of the ambient environment.
+get_settings().use_redis_buffer = False
+
 
 async def override_get_db():
     """Dependency override that yields a test database session."""
@@ -37,29 +70,35 @@ async def override_get_db():
         yield session
 
 
-# Override the DB dependency for all tests
+# Route the app at the test database and disable API-key auth for tests. The
+# auth mechanism is trivial (a single shared key) and isn't the unit under test
+# here; overriding it keeps every test from having to carry the header.
 app.dependency_overrides[get_db] = override_get_db
+app.dependency_overrides[verify_api_key] = lambda: None
 
 
 @pytest.fixture(autouse=True)
 def setup_database():
     import asyncio
+
     async def init_db():
         async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         await cache.clear()
-    
+
     async def drop_db():
         async with test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
-            
+
     asyncio.run(init_db())
     yield
     asyncio.run(drop_db())
 
+
 @pytest.fixture(autouse=True)
 def mock_redis(monkeypatch):
-    """Mock Redis to avoid event loop issues and cache pollution."""
+    """Mock Redis so tests don't need a live broadcast/cache backend."""
     from app.websocket_manager import manager
     from app.cache import cache
     from app import middleware
@@ -85,7 +124,6 @@ def mock_redis(monkeypatch):
     monkeypatch.setattr(cache, "set", mock_set)
     monkeypatch.setattr(cache, "clear", mock_clear)
 
-import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def client():
@@ -94,10 +132,16 @@ async def client():
         yield client
 
 
-@pytest.fixture
-def db():
-    """Raw database session for direct DB operations in tests."""
-    return TestSessionLocal()
+@pytest_asyncio.fixture
+async def db():
+    """Raw database session for direct DB assertions in tests.
+
+    Yields inside a context manager so the session (and its connection) is
+    always closed/rolled back after the test. Leaving it open would hold an
+    'idle in transaction' lock that blocks the teardown ``DROP TABLE``.
+    """
+    async with TestSessionLocal() as session:
+        yield session
 
 
 @pytest.fixture

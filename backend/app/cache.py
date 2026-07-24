@@ -1,8 +1,8 @@
 """
 Redis-backed distributed cache.
 
-Designed for caching computed results like analytics and
-predictive maintenance scores across all API instances.
+Designed for caching computed results like fleet analytics
+across all API instances.
 """
 
 import json
