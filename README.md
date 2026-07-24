@@ -1,11 +1,11 @@
 <div align="center">
   <h1>Robot Fleet Telemetry Platform</h1>
-  <p><strong>A Distributed, High-Throughput System for Real-Time Telemetry Ingestion and Predictive Maintenance</strong></p>
+  <p><strong>A Distributed, High-Throughput System for Real-Time Telemetry Ingestion and Live Fleet Monitoring</strong></p>
   
   [![CI Pipeline](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-blue?style=for-the-badge&logo=github)](https://github.com/placeholder)
   [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
   [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
-  [![Redux](https://img.shields.io/badge/Redux-Toolkit-764ABC?style=for-the-badge&logo=redux&logoColor=white)](https://redux-toolkit.js.org/)
+  [![Vite](https://img.shields.io/badge/Vite-Build-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
   [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
   [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org/)
   [![Redis Streams](https://img.shields.io/badge/Redis-Streams-DC382D?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
@@ -22,7 +22,7 @@
 
 ## Executive Summary
 
-The **Robot Fleet Telemetry Platform** is a production-grade, distributed web application engineered to address the complexities of high-velocity data ingestion. Designed for scenarios involving thousands of concurrent robotic agents, the platform processes real-time telemetry data, performs continuous statistical analysis for predictive maintenance, and maintains sub-50ms latencies for live dashboard state synchronization.
+The **Robot Fleet Telemetry Platform** is a production-grade, distributed web application engineered to address the complexities of high-velocity data ingestion. Designed for scenarios involving thousands of concurrent robotic agents, the platform processes real-time telemetry data, derives live fleet state, and streams it to operator dashboards with low-latency WebSocket synchronization.
 
 This project was developed to demonstrate proficiency in scalable system design, asynchronous event-driven architectures, and modern full-stack development methodologies.
 
@@ -34,13 +34,9 @@ This project was developed to demonstrate proficiency in scalable system design,
 
 ### 2. Real-Time State Synchronization via WebSockets
 *   **Challenge:** Polling the server for live geolocation and metric updates degrades performance and introduces unacceptable latency for a live monitoring dashboard.
-*   **Solution:** Engineered a robust, stateful WebSocket broadcasting service. Telemetry ingested into the system is concurrently pushed to Redis for persistent storage and broadcasted directly to active WebSocket connections. The React front-end utilizes optimized Redux selectors and React 18's concurrent features to render 500+ state mutations per second without frame dropping.
+*   **Solution:** Engineered a WebSocket broadcasting service backed by Redis Streams so every stateless API instance receives and fans out the same live feed. Each client connection gets a bounded outbound queue drained by a dedicated sender task, with drop-oldest backpressure so a slow consumer sheds stale frames instead of stalling the broadcast loop. The React front-end coalesces incoming updates and commits them in throttled 10 Hz batches, keeping the dashboard smooth under a high-frequency stream.
 
-### 3. Statistical Predictive Maintenance
-*   **Challenge:** Hardware failures in automated fleets lead to significant downtime.
-*   **Solution:** Integrated a continuous anomaly detection engine that calculates real-time Z-Scores and linear extrapolation on thermal and battery metrics. This identifies abnormal hardware degradation patterns and dispatches proactive maintenance alerts before critical failures occur.
-
-### 4. Idempotent Command Dispatch
+### 3. Idempotent Command Dispatch
 *   **Challenge:** Network instability between the server and edge devices can result in duplicate command executions (e.g., redundant "Return to Base" directives).
 *   **Solution:** Designed an idempotent command dispatch protocol utilizing explicit state machine transitions (Pending → Executing → Completed). The system guarantees exactly-once execution semantics regardless of network retries.
 
@@ -66,7 +62,6 @@ graph TB
     SVC_T["Telemetry Ingestion"]
     SVC_R["Robot State Synchronization"]
     SVC_A["Aggregated Analytics"]
-    SVC_ML["Anomaly Detection Engine"]
   end
 
   subgraph "Data & Messaging Layer"
@@ -81,7 +76,7 @@ graph TB
   SIM -->|"High-Volume POST"| API
   DASH <-->|"REST + WebSockets"| API
   API --> MW
-  MW --> SVC_T & SVC_R & SVC_A & SVC_ML
+  MW --> SVC_T & SVC_R & SVC_A
 
   SVC_A -->|"Cached Queries (10s TTL)"| CACHE
   SVC_T -->|"XADD (Buffering)"| CACHE
@@ -151,26 +146,53 @@ graph TB
 
 ## Scalability and Load Testing
 
-The platform architecture has been rigorously benchmarked to ensure production readiness. Because telemetry writes are decoupled via Redis Streams, the primary performance constraint shifts from database I/O to network bandwidth and CPU scheduling for WebSocket broadcasting.
+Because telemetry writes are decoupled via Redis Streams, the primary performance constraint shifts from database I/O to CPU scheduling for the WebSocket broadcast fan-out. The numbers below come from the bundled suite ([`scripts/stress_test.py`](./scripts/stress_test.py)) run against the full Docker Compose stack on a single developer machine (Docker Desktop / WSL2) while the simulator was also generating live traffic. They are reproducible, not aspirational — treat them as a single-node lower bound, since the API tier is stateless and scales horizontally behind a load balancer.
 
-**Verified Benchmarks:**
-- **Concurrent Connections:** Successfully handles **2,000+** concurrent WebSocket clients.
-- **Ingestion Resilience:** Absorbs significant telemetry traffic spikes without degrading response times, utilizing the Redis buffer.
-- **P99 Latency:** Maintained strictly **< 50ms** under sustained, mixed-load operations.
+**Real-time broadcast fan-out (the headline result):**
+
+| Concurrent WS clients | Connection failures | Messages delivered (10s) | Fan-out throughput |
+| :--- | :--- | :--- | :--- |
+| 500 | 0 | 67,692 | ~6,800 msg/s |
+| 1,500 | 0 | 171,331 | ~17,100 msg/s |
+| **2,000** | **0** | **177,957** | **~17,800 msg/s** |
+
+Every client received the live feed with zero dropped connections, validating the bounded-queue-per-connection design.
+
+**HTTP request latency (single node):**
+
+| Ingest concurrency | Success | p50 | p99 |
+| :--- | :--- | :--- | :--- |
+| 1 | 100% | 8 ms | 16 ms |
+| 10 | 100% | 62 ms | 63 ms |
+| 50 | 100% | 219 ms | 375 ms |
+
+A 30-second sustained mixed-load run (POST ingest + status/analytics reads at concurrency 50) completed **2,870 requests with zero failures** at a p50 of ~407 ms.
+
+**Honest limitations (single-node ceiling):** synchronous HTTP throughput plateaus around 125–250 req/s per node and, beyond ~500 simultaneous ingest requests, latency climbs into the multi-second range and the node begins shedding load (HTTP 500s at 1,500–2,000 concurrency). This is the expected saturation point of one stateless instance and is precisely what the horizontal Auto Scaling Group + load balancer design addresses — additional API nodes each drain the same shared Redis stream, so ingest and fan-out capacity scale linearly with node count.
 
 ---
 
 ## Local Development and Deployment
 
-The easiest way to instantiate the entire ecosystem (Database, Redis, Backend, Async Worker, React Frontend, and the Simulator) is via Docker.
+The easiest way to instantiate the entire ecosystem locally is via Docker. However, for cloud deployment, this repository utilizes **Terraform (Infrastructure as Code)** to automatically provision the robust AWS architecture detailed above.
 
-### 1. Repository Configuration
+### Infrastructure as Code (Terraform)
+The Terraform configuration (`terraform/main.tf`) is fully parameterized and strictly configured by default to utilize **AWS Free Tier** resources (`t3.micro` ASG, Single-AZ RDS, Single-Node ElastiCache) to prevent unexpected billing. It can be instantly scaled to an enterprise production environment by modifying `variables.tf`.
+
+To provision the AWS Cloud Infrastructure:
+```powershell
+cd scripts
+.\deploy_terraform.ps1
+```
+
+### Local Docker Deployment
+1. **Repository Configuration**
 ```bash
 git clone https://github.com/your-username/robot-fleet-platform.git
 cd robot-fleet-platform
 ```
 
-### 2. Launch the Stack
+2. **Launch the Stack**
 ```bash
 # Builds the frontend, backend, and simulator, while provisioning Postgres and Redis containers
 docker-compose up --build -d
@@ -195,7 +217,7 @@ python scripts/stress_test.py --base-url http://localhost:8000
 | Directory | Description |
 | :--- | :--- |
 | [`/backend`](./backend) | FastAPI application, SQLAlchemy ORM models, Alembic migrations, and the decoupled Redis worker. |
-| [`/frontend`](./frontend) | React 18, Vite, Redux, Recharts, and Leaflet.js dashboard source code. |
+| [`/frontend`](./frontend) | React 18, Vite, Recharts, and Leaflet.js dashboard source code. |
 | [`/simulator`](./simulator) | High-performance asynchronous Python script simulating thousands of robotic agents with physical states (battery degradation, thermal physics, dynamic routing). |
 | [`/scripts`](./scripts) | Continuous Integration deployment scripts, AWS EC2 provisioning automations, and rigorous load testing tools. |
 

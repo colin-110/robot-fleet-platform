@@ -131,3 +131,15 @@ desktop.ini
 *.log
 *.tmp
 *.temp
+# ── Terraform (state can contain plaintext secrets — never commit) ──
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+
+# ── Local test artifacts ──
+test.json

@@ -58,7 +58,7 @@ services:
 
   simulator:
     build: ./simulator
-    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}", "--workers", "4", "--robots", "200" ]
+    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}", "--workers", "4", "--robots", "40" ]
     env_file:
       - ./backend/.env
     restart: unless-stopped

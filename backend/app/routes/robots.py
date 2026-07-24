@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Query
 
 @router.get("/robots/status", response_model=list[RobotStatusResponse])
 async def robot_status(
-    limit: int = Query(50, ge=1, le=1000),
+    limit: int = Query(1000, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db)
 ):

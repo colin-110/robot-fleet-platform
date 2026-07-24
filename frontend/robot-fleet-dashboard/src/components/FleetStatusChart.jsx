@@ -37,11 +37,12 @@ export default function FleetStatusChart({ robots }) {
 
   return (
     <div className="glassStrong" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <div className="drag-handle" style={{ padding: "16px 20px", cursor: "grab", borderBottom: "1px solid var(--stroke)" }}>
-        <h2 style={{ margin: 0, fontSize: "16px", color: "rgba(226, 232, 240, 0.96)" }}>Status Distribution</h2>
+      <div className="panelHead">
+        <h2>Status Distribution</h2>
+        <span className="subtle">{robots.length} units</span>
       </div>
-      
-      <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
+
+      <div style={{ flex: 1, position: "relative", minHeight: 0, padding: "8px 0" }}>
         {data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>

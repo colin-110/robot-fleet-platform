@@ -2,7 +2,7 @@
 Telemetry data model with optimized indexes.
 
 The composite index on (robot_id, timestamp) is the primary query pattern
-used by status derivation, predictive maintenance, and analytics.
+used by status derivation and analytics.
 """
 
 from datetime import datetime, timezone

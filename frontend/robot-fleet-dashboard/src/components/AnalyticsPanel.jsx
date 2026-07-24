@@ -31,7 +31,7 @@ function AnalyticsPanel({ analytics }) {
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div className="twoColumnGrid">
-        <div className="panel colSpan7" style={chartCardStyle}>
+        <div className="glass colSpan7" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Fleet Health Trend</h2>
             <span className="subtle">Recent telemetry windows</span>
@@ -57,7 +57,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="panel colSpan5" style={chartCardStyle}>
+        <div className="glass colSpan5" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Robot Status Breakdown</h2>
             <span className="subtle">Current fleet state</span>
@@ -87,7 +87,7 @@ function AnalyticsPanel({ analytics }) {
       </div>
 
       <div className="analyticsGrid">
-        <div className="panel" style={chartCardStyle}>
+        <div className="glass" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Battery Distribution</h2>
             <span className="subtle">Latest robot snapshot</span>
@@ -103,7 +103,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="panel" style={chartCardStyle}>
+        <div className="glass" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Temperature Distribution</h2>
             <span className="subtle">Latest robot snapshot</span>
@@ -119,7 +119,7 @@ function AnalyticsPanel({ analytics }) {
           </ResponsiveContainer>
         </div>
 
-        <div className="panel" style={chartCardStyle}>
+        <div className="glass" style={chartCardStyle}>
           <div className="sectionTitle">
             <h2>Mission Completion Count</h2>
             <span className="subtle">Completed missions</span>
