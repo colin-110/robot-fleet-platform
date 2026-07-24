@@ -15,9 +15,14 @@ export default function EventLog({ events }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {events.map((evt, idx) => {
               const time = new Date(evt.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+              const msg = evt.type === "COMMAND" ? `Command: ${evt.action}` : (evt.message || "");
+              const accent = /restricted|zone/i.test(msg) ? "#d29922"
+                : /completed/i.test(msg) ? "#3fb950"
+                : evt.type && evt.type.startsWith("COMMAND") ? "#58a6ff"
+                : "var(--accent)";
               return (
                 <div
-                  key={idx}
+                  key={`${evt.robot_id}-${evt.timestamp}-${idx}`}
                   style={{
                     display: "flex",
                     gap: 11,
@@ -27,10 +32,10 @@ export default function EventLog({ events }) {
                     border: "1px solid var(--line)",
                   }}
                 >
-                  <span style={{ width: 3, borderRadius: 3, background: "var(--accent)", flexShrink: 0 }} />
+                  <span style={{ width: 3, borderRadius: 3, background: accent, flexShrink: 0 }} />
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, lineHeight: 1.35 }}>
-                      {evt.type === "COMMAND" ? `Command: ${evt.action}` : evt.message}
+                      {msg}
                     </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 11, color: "var(--muted)" }}>
                       <span>Robot {evt.robot_id}</span>
