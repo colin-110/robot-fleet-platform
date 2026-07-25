@@ -81,7 +81,10 @@ export default function useFleetData() {
       
       try {
         if (lastMessage.type) {
-          if (lastMessage.type.startsWith("COMMAND") || lastMessage.type === "EVENT") {
+          // Only surface meaningful fleet events (zone entries, mission
+          // completions). Raw command status broadcasts have no message and
+          // would flood the log with blank rows.
+          if (lastMessage.type === "EVENT" && lastMessage.message) {
             pendingUpdates.current.events.unshift(lastMessage);
           }
         } else if (lastMessage.robot_id && lastMessage.battery !== undefined) {
