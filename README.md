@@ -14,7 +14,7 @@
   [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com/)
   [![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20S3-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 
-  [**Live Interactive Demonstration**](http://robot-fleet-dashboard-349627593894.s3-website-us-east-1.amazonaws.com)
+  [**Live Interactive Demonstration**](https://d14zlr0p01xdp8.cloudfront.net)
 
 </div>
 
