@@ -171,9 +171,9 @@ Measured with [`scripts/stress_test.py`](./scripts/stress_test.py) against the f
 | :--- | :--- | :--- | :--- |
 | 500 | 0 | 67,692 | ~6,800 msg/s |
 | 1,500 | 0 | 171,331 | ~17,100 msg/s |
-| **2,000** | **0** | **177,957** | **~17,800 msg/s** |
+| **2,000** | **0–17** | **~152k–178k** | **~15,000–18,000 msg/s** |
 
-Zero dropped connections at 2,000 clients — validating the bounded-queue design.
+Across repeated runs the fan-out tier sustained **2,000 concurrent clients at ~15,000–18,000 msg/s with >99% delivery** (0–17 dropped out of 2,000) — validating the bounded-queue design.
 
 **HTTP ingest latency (single node):**
 
@@ -183,7 +183,9 @@ Zero dropped connections at 2,000 clients — validating the bounded-queue desig
 | 10 | 100% | 62 ms | 63 ms |
 | 50 | 100% | 219 ms | 375 ms |
 
-A **30-second sustained mixed-load** run (ingest + status/analytics reads at concurrency 50) completed **2,870 requests with 0 failures**, p50 ~407 ms.
+A **30-second sustained mixed-load** run (ingest + status/analytics reads at concurrency 50) completed **~2,900–3,900 requests with 0 failures**, p50 ~380–410 ms across runs.
+
+> **On variance:** all numbers are from a **single dev machine running the entire stack** (API, worker, DB, Redis, and the simulator) simultaneously, so results move with host load — a fresh machine reproduces the higher figures, a busy one the lower. The WebSocket tier is consistently strong; HTTP throughput is the honest single-node ceiling (see [Limitations](#-limitations--known-issues-honest-section)) and is exactly what horizontal scaling addresses.
 
 ---
 
