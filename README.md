@@ -174,16 +174,10 @@ A 30-second sustained mixed-load run (POST ingest + status/analytics reads at co
 
 ## Local Development and Deployment
 
-The easiest way to instantiate the entire ecosystem locally is via Docker. However, for cloud deployment, this repository utilizes **Terraform (Infrastructure as Code)** to automatically provision the robust AWS architecture detailed above.
+The easiest way to instantiate the entire ecosystem locally is via Docker.
 
-### Infrastructure as Code (Terraform)
-The Terraform configuration (`terraform/main.tf`) is fully parameterized and strictly configured by default to utilize **AWS Free Tier** resources (`t3.micro` ASG, Single-AZ RDS, Single-Node ElastiCache) to prevent unexpected billing. It can be instantly scaled to an enterprise production environment by modifying `variables.tf`.
-
-To provision the AWS Cloud Infrastructure:
-```powershell
-cd scripts
-.\deploy_terraform.ps1
-```
+### Cloud Deployment (AWS Free Tier)
+The stack runs on AWS Free Tier: a single `t3.micro` EC2 instance runs the full application via Docker Compose, backed by managed **Amazon RDS (PostgreSQL)** and **ElastiCache (Redis)**. On boot the instance pulls this repository and launches the backend, worker, frontend (nginx), and simulator — the React SPA is served on port 80 and proxies REST/WebSocket traffic to the backend. The GitHub Actions pipeline additionally builds and publishes versioned container images to the GitHub Container Registry on every push to `main`.
 
 ### Local Docker Deployment
 1. **Repository Configuration**
