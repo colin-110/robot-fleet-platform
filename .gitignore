@@ -154,3 +154,6 @@ override.tf.json
 
 # Local scratch / sample data
 test.json
+
+# Terraform variable files (may contain secrets)
+*.tfvars
