@@ -1,6 +1,6 @@
 <div align="center">
-  <h1>🤖 Robot Fleet Telemetry Platform</h1>
-  <p><strong>A distributed, event-driven system for real-time ingestion, monitoring, and control of a robot fleet.</strong></p>
+  <h1>🤖 Real-Time Robot Fleet Monitoring & Control Platform</h1>
+  <p><strong>A distributed, event-driven system for real-time telemetry ingestion, live monitoring, and bidirectional control of a robot fleet.</strong></p>
 
   [![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/colin-110/robot-fleet-platform/actions)
   [![Python](https://img.shields.io/badge/Python-3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
@@ -38,7 +38,7 @@
 
 ## 🎯 What It Is
 
-The **Robot Fleet Telemetry Platform** simulates and monitors a fleet of autonomous robots in real time. Each robot streams high-frequency telemetry — battery, temperature, speed, GPS position, component health, and mission progress — into a backend that ingests it, derives live fleet state, and pushes updates to an operator dashboard over WebSockets. Operators can also **send commands** back to individual robots (Return to Base, Emergency Stop, Resume).
+The **Real-Time Robot Fleet Monitoring & Control Platform** (branded **FleetOps** in the UI) simulates and monitors a fleet of autonomous robots in real time. Each robot streams high-frequency telemetry — battery, temperature, speed, GPS position, component health, and mission progress — into a backend that ingests it, derives live fleet state, and pushes updates to an operator dashboard over WebSockets. Operators can also **send commands** back to individual robots (Return to Base, Emergency Stop, Resume).
 
 It was built to demonstrate **event-driven, asynchronous system design** end to end: high-velocity ingestion, decoupled processing, real-time fan-out, an idempotent command protocol, containerization, CI/CD, and a live cloud deployment.
 
