@@ -13,6 +13,8 @@
 
   ### 🔗 [**Live Demo**](https://d14zlr0p01xdp8.cloudfront.net) &nbsp;·&nbsp; [Report a Bug](https://github.com/colin-110/robot-fleet-platform/issues)
 
+  <img src="docs/images/dashboard-overview.png" alt="FleetOps — real-time robot fleet operations dashboard" width="100%">
+
 </div>
 
 ---
@@ -41,6 +43,14 @@ The **Robot Fleet Telemetry Platform** simulates and monitors a fleet of autonom
 It was built to demonstrate **event-driven, asynchronous system design** end to end: high-velocity ingestion, decoupled processing, real-time fan-out, an idempotent command protocol, containerization, CI/CD, and a live cloud deployment.
 
 > **In one sentence:** a full-stack, real-time IoT/robotics telemetry system with a decoupled ingestion pipeline (Redis Streams → async worker → PostgreSQL) and a live React operations console.
+
+### 📸 Screenshots
+
+| Fleet Analytics — trends, distributions & mission stats | Live Fleet Map — geospatial tracking + geofence |
+| :---: | :---: |
+| <img src="docs/images/analytics.png" alt="Fleet analytics view" width="100%"> | <img src="docs/images/telemetry-map.png" alt="Live fleet map view" width="100%"> |
+| **Fleet Roster — per-unit telemetry & controls** | **Real-time status & event log** |
+| <img src="docs/images/fleet-roster.png" alt="Fleet roster cards" width="100%"> | <img src="docs/images/dashboard-overview.png" alt="Dashboard status panels" width="100%"> |
 
 ---
 
