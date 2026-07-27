@@ -157,3 +157,7 @@ test.json
 
 # Terraform variable files (may contain secrets)
 *.tfvars
+
+# Local archives / scratch files
+*.zip
+compose_fix.yml
