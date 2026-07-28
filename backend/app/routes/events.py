@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.auth import verify_api_key
+from app.auth import verify_api_key, verify_read_access
 from app.database import get_db
 from app.models import Event
 from app.schemas import EventCreate, EventResponse
@@ -51,6 +51,7 @@ async def get_events(
     limit: int = Query(50, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
 ):
     """Get recent events."""
     stmt = select(Event).order_by(Event.timestamp.desc()).offset(skip).limit(limit)

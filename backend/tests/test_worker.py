@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import orjson
@@ -41,9 +42,59 @@ async def test_process_batch_inserts_telemetry():
 
     # Every message id is returned so the caller can XACK the whole batch.
     assert message_ids == ["12345-0", "12345-1"]
-    # Both valid telemetry rows are bulk-inserted in a single committed write.
-    session.execute.assert_awaited_once()
+    # One multi-row INSERT for the telemetry, plus one roster upsert marking
+    # both robots seen — committed together so a robot can never be registered
+    # without the reading that registered it.
+    assert session.execute.await_count == 2
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_batch_registers_robots_with_latest_timestamp():
+    """The roster upsert carries each robot's newest reading in the batch.
+
+    ``last_seen`` must not regress when a batch contains several readings for
+    the same robot, so the upsert takes the maximum rather than whichever row
+    happened to be last in the list.
+    """
+    session = AsyncMock()
+    captured = {}
+
+    async def capture(statement, *args, **kwargs):
+        # The second statement is the roster upsert.
+        captured.setdefault("statements", []).append(statement)
+        return AsyncMock()
+
+    session.execute.side_effect = capture
+
+    messages = [
+        _msg(
+            "1-0",
+            {
+                "robot_id": 4,
+                "battery": 90.0,
+                "temperature": 25.0,
+                "speed": 1.0,
+                "timestamp": "2026-07-22T00:00:05Z",
+            },
+        ),
+        _msg(
+            "1-1",
+            {
+                "robot_id": 4,
+                "battery": 89.0,
+                "temperature": 25.0,
+                "speed": 1.0,
+                "timestamp": "2026-07-22T00:00:01Z",
+            },
+        ),
+    ]
+
+    await process_batch(session, messages)
+
+    upsert = captured["statements"][1]
+    values = upsert.compile().params
+    assert values["last_seen_m0"] == datetime(2026, 7, 22, 0, 0, 5, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

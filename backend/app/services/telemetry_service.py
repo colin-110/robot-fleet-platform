@@ -44,6 +44,39 @@ def _to_iso(value):
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def resolve_timestamp(reported: datetime | None, received_at: datetime) -> datetime:
+    """Decide the authoritative time for a reading.
+
+    Device time is preferred, because only the device knows when it actually
+    took the measurement — and a batch uploaded after a network outage would
+    otherwise collapse onto its upload time, destroying the timeline.
+
+    Two guards. A reading dated far in the future is clamped to server time: a
+    device with a wrong clock would otherwise land in a time bucket that
+    analytics has already summarized, or sit permanently at the head of "most
+    recent" and make a dead robot look alive. Backdated readings are accepted
+    as-is, since that is exactly what legitimate store-and-forward looks like.
+    """
+    if reported is None:
+        return received_at
+
+    if reported.tzinfo is None:
+        reported = reported.replace(tzinfo=timezone.utc)
+    reported = reported.astimezone(timezone.utc)
+
+    skew = (reported - received_at).total_seconds()
+    if skew > settings.max_clock_skew_seconds:
+        logger.warning(
+            "Telemetry timestamp %s is %.0fs ahead of server time; clamping. "
+            "Check the device clock.",
+            reported.isoformat(),
+            skew,
+        )
+        return received_at
+
+    return reported
+
+
 def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
     """Serialize a Telemetry ORM object for WebSocket broadcast."""
     return {
@@ -79,8 +112,9 @@ class TelemetryService:
 
         try:
             if buffered:
+                received_at = datetime.now(timezone.utc)
                 payload = data.model_dump(mode="json")
-                payload["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                payload["timestamp"] = _to_iso(resolve_timestamp(data.timestamp, received_at))
 
                 # XADD both publishes to dashboards and queues the row for the
                 # worker that writes it to PostgreSQL — one hop, not two.
@@ -92,7 +126,9 @@ class TelemetryService:
                 result = {"message": "Telemetry queued in Redis", "id": 0}
             else:
                 db_started = time.perf_counter()
-                telemetry = await self.repo.insert(data)
+                telemetry = await self.repo.insert(
+                    data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
+                )
                 db_write_latency_seconds.labels(mode="direct").observe(
                     time.perf_counter() - db_started
                 )
@@ -118,14 +154,19 @@ class TelemetryService:
         """Batch ingestion for high-throughput simulator pushing."""
         buffered = settings.opt_redis_buffer
         started = time.perf_counter()
-        ts_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        received_at = datetime.now(timezone.utc)
 
         try:
             if buffered:
                 payloads = []
                 for d in data:
                     payload = d.model_dump(mode="json")
-                    payload["timestamp"] = ts_str
+                    # Resolved per reading, not once for the batch. Stamping the
+                    # whole batch with one time collapses readings taken seconds
+                    # apart onto a single instant, which flattens the per-minute
+                    # trend buckets and zeroes the span the battery drain-rate
+                    # extrapolation divides by.
+                    payload["timestamp"] = _to_iso(resolve_timestamp(d.timestamp, received_at))
                     payloads.append(payload)
 
                 if background_tasks:
@@ -138,7 +179,9 @@ class TelemetryService:
                 db_started = time.perf_counter()
                 payloads = []
                 for d in data:
-                    telemetry = await self.repo.insert(d)
+                    telemetry = await self.repo.insert(
+                        d, resolve_timestamp(d.timestamp, received_at)
+                    )
                     payloads.append(_telemetry_to_broadcast_dict(telemetry))
                 db_write_latency_seconds.labels(mode="direct").observe(
                     time.perf_counter() - db_started

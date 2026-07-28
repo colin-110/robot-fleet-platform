@@ -7,6 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import verify_read_access
 from app.database import get_db
 from app.schemas import RobotStatusResponse
 from app.services.robot_service import RobotService
@@ -21,6 +22,7 @@ async def robot_status(
     limit: int = Query(1000, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
 ):
     """Return current status summary for all robots."""
     service = RobotService(db)

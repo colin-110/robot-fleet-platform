@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config import get_settings
-from app.models import Telemetry
+from app.models import Robot, Telemetry
 from app.services.robot_service import RobotService, summarize_robot_history
 
 
@@ -124,11 +124,11 @@ async def test_get_fleet_status_bypasses_cache_when_disabled():
     with (
         patch("app.cache.cache.get", new_callable=AsyncMock) as mock_get,
         patch("app.cache.cache.set", new_callable=AsyncMock) as mock_set,
-        patch.object(
-            service.repo, "get_recent_per_robot", new_callable=AsyncMock
-        ) as mock_repo,
+        patch.object(service.repo, "get_recent_per_robot", new_callable=AsyncMock) as mock_repo,
+        patch.object(service.robots, "list_active", new_callable=AsyncMock) as mock_roster,
     ):
         mock_repo.return_value = {}
+        mock_roster.return_value = []
 
         result = await service.get_fleet_status()
 
@@ -136,3 +136,28 @@ async def test_get_fleet_status_bypasses_cache_when_disabled():
         mock_get.assert_not_called()
         mock_set.assert_not_called()
         mock_repo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_fleet_status_lists_roster_even_with_no_telemetry():
+    """The fleet list comes from the roster, not from whoever reported recently.
+
+    Guards the regression directly: with an empty telemetry result the old
+    implementation returned nothing, silently hiding every robot in the fleet.
+    """
+    service = RobotService(AsyncMock())
+
+    with (
+        patch.object(service.repo, "get_recent_per_robot", new_callable=AsyncMock) as mock_repo,
+        patch.object(service.robots, "list_active", new_callable=AsyncMock) as mock_roster,
+    ):
+        mock_repo.return_value = {}
+        mock_roster.return_value = [
+            Robot(id=1, is_active=True, last_seen=None),
+            Robot(id=2, is_active=True, last_seen=None),
+        ]
+
+        result = await service.get_fleet_status()
+
+        assert [r["robot_id"] for r in result] == [1, 2]
+        assert all(r["status"] == "OFFLINE" for r in result)

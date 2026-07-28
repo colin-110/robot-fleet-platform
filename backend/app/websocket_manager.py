@@ -39,6 +39,12 @@ settings = get_settings()
 # Max frames buffered per client before we start dropping the oldest.
 CLIENT_QUEUE_MAXSIZE = 256
 
+# Max entries retained in a Redis Stream. Redis trims the oldest beyond this,
+# including entries a consumer group has not yet acknowledged, so this is the
+# worker's catch-up headroom rather than an unbounded durable log. The worker
+# exports stream length and pending count so falling behind is visible.
+STREAM_MAXLEN = settings.telemetry_stream_maxlen
+
 
 class ConnectionManager:
     """Manages active WebSocket connections and broadcasts messages."""
@@ -114,7 +120,7 @@ class ConnectionManager:
             await self.redis.xadd(
                 target_stream,
                 {"payload": orjson.dumps(data).decode("utf-8")},
-                maxlen=10000,
+                maxlen=STREAM_MAXLEN,
             )
         except Exception:
             logger.exception("Failed to publish to Redis Stream")
@@ -130,7 +136,7 @@ class ConnectionManager:
                 pipeline.xadd(
                     target_stream,
                     {"payload": orjson.dumps(data).decode("utf-8")},
-                    maxlen=10000,
+                    maxlen=STREAM_MAXLEN,
                 )
             await pipeline.execute()
         except Exception:

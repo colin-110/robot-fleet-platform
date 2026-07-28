@@ -61,6 +61,46 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     db_max_overflow: int = 50
 
+    # ── Fleet state ─────────────────────────────────────────────────
+
+    # A robot is reported OFFLINE once this many seconds have passed since its
+    # last reading. Single source of truth: previously three different
+    # thresholds (60/180/300) were checked in two places, two of which were
+    # unreachable.
+    offline_after_seconds: int = 60
+
+    # How far back the fleet-status query scans for telemetry. Robots with no
+    # reading inside this window still appear — sourced from the robot registry
+    # and rendered OFFLINE — rather than disappearing from the fleet entirely.
+    fleet_window_minutes: int = 15
+
+    # Rows of history per robot used to derive status and extrapolate battery
+    # drain rate.
+    fleet_history_per_robot: int = 30
+
+    # ── Ingest ──────────────────────────────────────────────────────
+
+    # Devices may report their own measurement time, which is what makes
+    # store-and-forward possible: a robot that buffers readings through a
+    # network outage can upload them with their real timestamps. A wrong device
+    # clock would otherwise poison time-bucketed analytics, so a reading dated
+    # more than this many seconds in the future is clamped to server time.
+    max_clock_skew_seconds: int = 300
+
+    # Max entries retained in the telemetry Redis Stream. Redis trims the
+    # oldest beyond this — including entries a consumer group has not yet
+    # acknowledged — so this is the worker's catch-up headroom, not an
+    # unbounded durable log. The worker exports stream length and pending
+    # count as metrics so falling behind is visible rather than silent.
+    telemetry_stream_maxlen: int = 100_000
+
+    # ── Access control ──────────────────────────────────────────────
+
+    # Whether the read-only endpoints (fleet status, analytics, events) require
+    # an API key. Defaults to public so the hosted demo works without shipping
+    # a key to every browser; set true for any deployment with real data.
+    require_auth_for_reads: bool = False
+
     # ── Optimization flags (all default ON; flip OFF to benchmark) ──
 
     # Ingest path: XADD to a Redis Stream and return immediately, versus a

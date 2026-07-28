@@ -7,6 +7,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import verify_read_access
 from app.database import get_db
 from app.schemas import FleetAnalyticsResponse
 from app.services.analytics_service import AnalyticsService
@@ -17,7 +18,10 @@ router = APIRouter(prefix="/api/v1", tags=["analytics"])
 
 
 @router.get("/analytics/fleet", response_model=FleetAnalyticsResponse)
-async def fleet_analytics(db: AsyncSession = Depends(get_db)):
+async def fleet_analytics(
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
+):
     """Return fleet-wide analytics (trends, distributions, missions)."""
     service = AnalyticsService(db)
     return await service.get_fleet_analytics()

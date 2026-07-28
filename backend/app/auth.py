@@ -26,3 +26,18 @@ async def verify_api_key(x_api_key: str = Header(None)):
     """FastAPI dependency: reject requests without a valid API key."""
     if not is_valid_api_key(x_api_key):
         raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
+async def verify_read_access(x_api_key: str = Header(None)):
+    """Auth for read-only endpoints, gated by ``REQUIRE_AUTH_FOR_READS``.
+
+    The hosted demo serves fleet status and analytics publicly so the dashboard
+    works without shipping a key to every browser. That is a deliberate choice
+    for a demo with synthetic data, not an oversight — but it is the wrong
+    default for real fleet positions, so it is a setting rather than a
+    hardcoded exemption.
+    """
+    if not settings.require_auth_for_reads:
+        return
+    if not is_valid_api_key(x_api_key):
+        raise HTTPException(status_code=401, detail="Invalid API Key")
