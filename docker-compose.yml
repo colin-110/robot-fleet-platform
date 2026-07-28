@@ -10,6 +10,17 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       - PYTHONPATH=.
+      # Metrics are aggregated across the 4 uvicorn workers via mmap files in
+      # this directory. Without it, /metrics reports whichever worker answered.
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+      # Optimization flags — default on. scripts/benchmark_matrix.py flips one
+      # at a time to measure its individual contribution.
+      - OPT_REDIS_BUFFER=${OPT_REDIS_BUFFER:-true}
+      - OPT_READ_CACHE=${OPT_READ_CACHE:-true}
+      - OPT_ORJSON=${OPT_ORJSON:-true}
+      - OPT_ASGI_MIDDLEWARE=${OPT_ASGI_MIDDLEWARE:-true}
+      - OPT_BOUNDED_FANOUT=${OPT_BOUNDED_FANOUT:-true}
+      - OPT_BATCH_INSERT=${OPT_BATCH_INSERT:-true}
     restart: unless-stopped
     depends_on:
       db:
@@ -31,6 +42,8 @@ services:
       - ./backend/.env
     environment:
       - PYTHONPATH=.
+      - OPT_REDIS_BUFFER=${OPT_REDIS_BUFFER:-true}
+      - OPT_BATCH_INSERT=${OPT_BATCH_INSERT:-true}
     restart: unless-stopped
     depends_on:
       db:

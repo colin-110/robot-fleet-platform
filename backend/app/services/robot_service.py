@@ -7,22 +7,38 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repositories.telemetry_repo import TelemetryRepository
 from app.cache import cache
+from app.config import get_settings
+from app.repositories.telemetry_repo import TelemetryRepository
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize a timestamp to UTC.
+
+    Rows read back from Postgres carry tzinfo, but SQLite (and some drivers)
+    hand back naive datetimes. Treat naive values as already-UTC rather than
+    letting them silently compare against aware ones.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _derive_status(latest, age_seconds: float) -> str:
     """Derive status with timeout fallbacks."""
     if age_seconds > 300:
         return "OFFLINE"
-    
+
     if latest.status:
         if age_seconds > 60:
             return "OFFLINE"
         return latest.status.upper()
-        
+
     return "ACTIVE"
 
 
@@ -30,48 +46,32 @@ def summarize_robot_history(rows) -> dict | None:
     """Condenses recent telemetry history into a single status payload."""
     if not rows:
         return None
-        
+
     # Assume rows are ordered oldest to newest from the DB window function
     latest = rows[-1]
-    
+
     now = datetime.now(timezone.utc)
-    ts = latest.timestamp
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    else:
-        ts = ts.astimezone(timezone.utc)
-        
+    ts = _as_utc(latest.timestamp)
     age_seconds = (now - ts).total_seconds()
-    
+
     status = _derive_status(latest, age_seconds)
     if age_seconds > 180:
         status = "OFFLINE"
-    
-    
+
     # Calculate linear drain rate over the history window
     runtime = None
     if len(rows) >= 2:
         oldest = rows[0]
-        old_ts = oldest.timestamp
-        if old_ts.tzinfo is None:
-            old_ts = old_ts.replace(tzinfo=timezone.utc)
-        else:
-            old_ts = old_ts.astimezone(timezone.utc)
-            
+        old_ts = _as_utc(oldest.timestamp)
         dt_minutes = (ts - old_ts).total_seconds() / 60.0
         dbattery = oldest.battery - latest.battery
-        
+
         if dt_minutes > 0 and dbattery > 0:
             drain_per_minute = dbattery / dt_minutes
             effective_battery = latest.battery * (latest.battery_health / 100.0)
             runtime = round(effective_battery / drain_per_minute, 1)
 
-    mst = latest.mission_start_time
-    if mst:
-        if mst.tzinfo is None:
-            mst = mst.replace(tzinfo=timezone.utc)
-        else:
-            mst = mst.astimezone(timezone.utc)
+    mst = _as_utc(latest.mission_start_time)
 
     return {
         "robot_id": latest.robot_id,
@@ -81,7 +81,9 @@ def summarize_robot_history(rows) -> dict | None:
         "status": status,
         "mission_id": latest.mission_id,
         "mission_type": latest.mission_type,
-        "mission_progress": round(latest.mission_progress, 1) if latest.mission_progress is not None else None,
+        "mission_progress": round(latest.mission_progress, 1)
+        if latest.mission_progress is not None
+        else None,
         "mission_start_time": mst.isoformat().replace("+00:00", "Z") if mst else None,
         "last_seen": ts.isoformat().replace("+00:00", "Z"),
         "runtime_remaining_minutes": runtime,
@@ -107,9 +109,12 @@ class RobotService:
         Results are cached for 10 seconds to reduce DB load.
         """
         CACHE_KEY = f"fleet_status_summary_{limit}_{skip}"
-        cached = await cache.get(CACHE_KEY)
-        if cached is not None:
-            return cached
+        use_cache = settings.opt_read_cache
+
+        if use_cache:
+            cached = await cache.get(CACHE_KEY)
+            if cached is not None:
+                return cached
 
         grouped = await self.repo.get_recent_per_robot(per_robot_limit=30)
 
@@ -120,9 +125,10 @@ class RobotService:
                 robots.append(summary)
 
         logger.debug("Fleet status computed for %d robots", len(robots))
-        
+
         # Apply pagination after grouping
         paginated_robots = robots[skip : skip + limit]
-        
-        await cache.set(CACHE_KEY, paginated_robots, ttl_seconds=10.0)
+
+        if use_cache:
+            await cache.set(CACHE_KEY, paginated_robots, ttl_seconds=10.0)
         return paginated_robots

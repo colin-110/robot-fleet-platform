@@ -20,38 +20,7 @@ class CommandRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    # ── Write ───────────────────────────────────────────────────────
-
-    async def insert(self, command: RobotCommand) -> RobotCommand:
-        """Persist a new command and return it."""
-        self.db.add(command)
-        await self.db.commit()
-        await self.db.refresh(command)
-        return command
-
-    async def save(self, command: RobotCommand) -> None:
-        """Commit pending changes on an existing command."""
-        await self.db.commit()
-        await self.db.refresh(command)
-
     # ── Read ────────────────────────────────────────────────────────
-
-    async def get_by_id(self, command_id: str) -> RobotCommand | None:
-        """Fetch a single command by its ID."""
-        stmt = select(RobotCommand).where(RobotCommand.id == command_id)
-        result = await self.db.execute(stmt)
-        return result.scalars().first()
-
-    async def get_by_idempotency_key(
-        self, robot_id: int, idempotency_key: str
-    ) -> RobotCommand | None:
-        """Fetch a command by robot_id + idempotency_key."""
-        stmt = select(RobotCommand).where(
-            RobotCommand.robot_id == robot_id,
-            RobotCommand.idempotency_key == idempotency_key,
-        )
-        result = await self.db.execute(stmt)
-        return result.scalars().first()
 
     async def get_next_pending(self, robot_id: int) -> RobotCommand | None:
         """Get the oldest PENDING command for a robot (FIFO dispatch)."""
@@ -69,9 +38,7 @@ class CommandRepository:
 
     # ── Atomic Dispatch ─────────────────────────────────────────────
 
-    async def try_dispatch(
-        self, command_id: str, now: datetime | None = None
-    ) -> bool:
+    async def try_dispatch(self, command_id: str, now: datetime | None = None) -> bool:
         """
         Atomically update a PENDING command to DISPATCHED.
 

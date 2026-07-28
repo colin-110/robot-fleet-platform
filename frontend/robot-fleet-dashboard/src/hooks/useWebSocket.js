@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 
-const WS_API_KEY = import.meta.env.VITE_WS_API_KEY || 'fleet-secret-key-2026';
+// No hardcoded fallback: a key baked in here ships to every browser that loads
+// the bundle. Configure VITE_WS_API_KEY at build time.
+const WS_API_KEY = import.meta.env.VITE_WS_API_KEY || '';
 
 export function useWebSocket(url, onMessage) {
   const [isConnected, setIsConnected] = useState(false);

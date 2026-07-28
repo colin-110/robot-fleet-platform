@@ -49,17 +49,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
-          pip install black flake8
-      - name: Check formatting (Black)
-        run: cd backend && black --check app tests || echo "::warning::Black formatting issues (non-blocking)"
+          pip install ruff
+      # Blocking, unlike the previous `|| echo warning` step which could never
+      # fail the build.
+      - name: Lint (ruff)
+        run: |
+          cd backend && ruff check app tests
+          cd .. && ruff check scripts simulator
+      - name: Check formatting (ruff format)
+        run: cd backend && ruff format --check app tests
       - name: Run Pytest
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db
           REDIS_URL: redis://localhost:6379/0
-          TELEMETRY_API_KEY: fleet-secret-key-2026
-          USE_REDIS_BUFFER: "false"
+          TELEMETRY_API_KEY: ci-test-key-not-a-real-secret
+          OPT_REDIS_BUFFER: "false"
           PYTHONPATH: .
-        run: cd backend && pytest tests/ -v
+        run: cd backend && pytest tests/ -v --cov=app --cov-report=term-missing
 
   # ── CI: Frontend Lint & Build ──────────────────────────────────────
   frontend-build:

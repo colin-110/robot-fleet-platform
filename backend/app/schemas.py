@@ -4,14 +4,14 @@ Pydantic schemas for request validation and response serialization.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, ConfigDict, Field
 
 # ── Request Schemas ─────────────────────────────────────────────────
 
 
 class CommandCreate(BaseModel):
     """Command payload sent from frontend to robot."""
+
     command_type: str
     payload: dict | None = None
     timeout_seconds: int | None = None
@@ -20,6 +20,7 @@ class CommandCreate(BaseModel):
 
 class CommandStatusUpdate(BaseModel):
     """Status update for an existing command."""
+
     status: str
     error_code: str | None = None
     error_message: str | None = None
@@ -28,20 +29,20 @@ class CommandStatusUpdate(BaseModel):
 
 class EventCreate(BaseModel):
     """Incoming event payload from a robot."""
+
     robot_id: int
     message: str
 
 
 class EventResponse(BaseModel):
     """Event response payload."""
+
     id: int
     robot_id: int
     message: str
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
-
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TelemetryCreate(BaseModel):
@@ -66,6 +67,7 @@ class TelemetryCreate(BaseModel):
 
 class TelemetryResponse(BaseModel):
     """Telemetry response payload."""
+
     id: int
     robot_id: int
     battery: float
@@ -84,8 +86,7 @@ class TelemetryResponse(BaseModel):
     y: float | None = None
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ── Response Schemas ────────────────────────────────────────────────
@@ -164,3 +165,6 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     version: str = "1.0.0"
+    # Active opt_* flags. Exposed so the benchmark harness can verify the stack
+    # booted in the configuration it intends to measure.
+    optimizations: dict[str, bool] = {}
