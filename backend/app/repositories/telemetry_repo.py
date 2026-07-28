@@ -24,8 +24,14 @@ class TelemetryRepository:
 
     # ── Write ───────────────────────────────────────────────────────
 
-    async def insert(self, data: TelemetryCreate) -> Telemetry:
-        """Persist a single telemetry reading and return the ORM row."""
+    async def insert(self, data: TelemetryCreate, timestamp: datetime | None = None) -> Telemetry:
+        """Persist a single telemetry reading and return the ORM row.
+
+        ``timestamp`` is the already-resolved measurement time (device time
+        where reported, server time otherwise). The caller resolves it so that
+        clock-skew handling lives in one place rather than being duplicated
+        across the buffered and direct write paths.
+        """
         telemetry = Telemetry(
             robot_id=data.robot_id,
             battery=data.battery,
@@ -42,7 +48,7 @@ class TelemetryRepository:
             network_health=data.network_health,
             x=data.x,
             y=data.y,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=timestamp or datetime.now(timezone.utc),
         )
         self.db.add(telemetry)
         await self.db.commit()
