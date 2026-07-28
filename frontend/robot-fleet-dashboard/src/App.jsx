@@ -3,6 +3,7 @@ import "./App.css";
 
 import useFleetData from "./hooks/useFleetData";
 import useRelativeTime from "./hooks/useRelativeTime";
+import { matchesQuery } from "./utils/search";
 
 import AnalyticsPanel from "./components/AnalyticsPanel";
 import EventLog from "./components/EventLog";
@@ -60,13 +61,7 @@ function App() {
   const [activeNav, setActiveNav] = useState("Dashboard");
   const [query, setQuery] = useState("");
 
-  const filteredRobots = robots.filter((robot) => {
-    if (!query) return true;
-    const haystack =
-      `${robot.robot_id} ${robot.status} ` +
-      `${robot.mission_type ?? ""} ${robot.mission_id ?? ""}`;
-    return haystack.toLowerCase().includes(query.toLowerCase());
-  });
+  const filteredRobots = robots.filter((robot) => matchesQuery(robot, query));
 
   const showDashboard = activeNav === "Dashboard";
   const showTelemetry = activeNav === "Telemetry";
