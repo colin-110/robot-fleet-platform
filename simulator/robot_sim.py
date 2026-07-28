@@ -1,17 +1,16 @@
 import argparse
 import asyncio
+import contextlib
 import logging
 import math
+import multiprocessing
 import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-
-import aiohttp
-import multiprocessing
-import sys
 from urllib.parse import urlparse, urlunparse
 
+import aiohttp
 
 try:
     import uvloop
@@ -214,6 +213,25 @@ async def post_telemetry(client: aiohttp.ClientSession, api_url: str, payload: d
             await asyncio.sleep(0.5 * (2 ** attempt))
 
 
+async def patch_command_status(
+    client: aiohttp.ClientSession, base_api: str, cmd_id: str, status: str, **extra
+) -> None:
+    """Best-effort command status transition.
+
+    Failures are logged and swallowed: a robot that can't report its progress
+    should keep executing the command, and the backend's timeout sweeper will
+    reconcile anything left dangling.
+    """
+    payload = {"status": status, **extra}
+    try:
+        async with client.patch(
+            f"{base_api}/commands/{cmd_id}/status", json=payload
+        ) as response:
+            await response.read()
+    except Exception as exc:
+        logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
+
+
 async def dispatcher_loop(*, robots: list[RobotState], queue: list[Mission], rng: random.Random, radius: float):
     mission_counter = 1
     while True:
@@ -291,8 +309,10 @@ async def robot_loop(
             # Poll commands if not blacked out
             if not is_blacked_out:
                 try:
-                    cmd_url = f"{base_api}/commands/{robot.robot_id}"
-                    async with client.get(cmd_url, timeout=10.0) as cmd_resp:
+                    # POST /claim, not GET: claiming transitions commands to
+                    # DISPATCHED, so it is not a safe method.
+                    cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
+                    async with client.post(cmd_url, timeout=10.0) as cmd_resp:
                         if cmd_resp.status == 200:
                             data = await cmd_resp.json()
                             for cmd_obj in data:
@@ -300,29 +320,21 @@ async def robot_loop(
                                 cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
                                 
                                 if cmd_id in robot.processed_command_ids:
-                                    # End-to-end idempotency: return existing result
-                                    try:
-                                        async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "COMPLETED", "result": {"message": "Already processed"}}) as _r: await _r.read()
-                                    except Exception:
-                                        pass
+                                    # End-to-end idempotency: replay the result
+                                    # rather than executing the command twice.
+                                    await patch_command_status(
+                                        client, base_api, cmd_id, "COMPLETED",
+                                        result={"message": "Already processed"},
+                                    )
                                     continue
-                                    
+
                                 robot.processed_command_ids.append(cmd_id)
                                 if len(robot.processed_command_ids) > 100:
                                     robot.processed_command_ids.pop(0)
-                                
-                                # Acknowledge command receipt
-                                try:
-                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "ACKNOWLEDGED"}) as _r: await _r.read()
-                                except Exception:
-                                    pass
-                                    
-                                # Start execution
-                                try:
-                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": "EXECUTING"}) as _r: await _r.read()
-                                except Exception:
-                                    pass
-                                    
+
+                                await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
+                                await patch_command_status(client, base_api, cmd_id, "EXECUTING")
+
                                 status_to_patch = "COMPLETED"
 
                                 if cmd_action == "RETURN_TO_BASE":
@@ -344,11 +356,9 @@ async def robot_loop(
                                 else:
                                     status_to_patch = "FAILED"
                                     
-                                # Complete command
-                                try:
-                                    async with client.patch(f"{base_api}/commands/{cmd_id}/status", json={"status": status_to_patch}) as _r: await _r.read()
-                                except Exception:
-                                    pass
+                                await patch_command_status(
+                                    client, base_api, cmd_id, status_to_patch
+                                )
                 except Exception as e:
                     logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
@@ -444,10 +454,9 @@ async def robot_loop(
             elif robot.status == "CHARGING":
                 robot.speed = 0.0
                 
-                if robot.temperature >= 80.0:
-                    if not robot.charging_suspended:
-                        robot.charging_suspended = True
-                        safe_print(f"[R{robot.robot_id:02d}] Thermal safety: Charging suspended due to overheating ({robot.temperature:.1f}C)")
+                if robot.temperature >= 80.0 and not robot.charging_suspended:
+                    robot.charging_suspended = True
+                    safe_print(f"[R{robot.robot_id:02d}] Thermal safety: Charging suspended due to overheating ({robot.temperature:.1f}C)")
                 
                 if robot.charging_suspended:
                     robot.status = "OVERHEATING"
@@ -884,10 +893,8 @@ async def main_async(args, worker_index=0, total_workers=1):
 
 
 def worker_process(args, worker_index, total_workers):
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main_async(args, worker_index, total_workers))
-    except KeyboardInterrupt:
-        pass
 
 def main():
     parser = argparse.ArgumentParser(description="Mission-based robot fleet simulator")

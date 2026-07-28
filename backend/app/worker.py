@@ -1,25 +1,24 @@
 import asyncio
-import orjson
 import logging
-import sys
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-import socket
 import signal
+import socket
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from sqlalchemy import insert, delete, update, func
-from sqlalchemy.future import select
+import orjson
+from sqlalchemy import delete, func, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import Telemetry, RobotCommand
+from app.metrics import db_write_latency_seconds, worker_batch_size
+from app.models import RobotCommand, Telemetry
 from app.websocket_manager import manager
 
 # Configure logging for worker
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
@@ -67,13 +66,19 @@ def _payload_to_insert_dict(p: dict) -> dict:
 
 
 async def process_batch(session: AsyncSession, stream_messages: list) -> list:
-    """Parse a batch of Redis-stream telemetry entries and bulk-insert them.
+    """Parse a batch of Redis-stream telemetry entries and persist them.
 
     ``stream_messages`` is a list of ``(msg_id, fields)`` tuples as returned by
     ``XREADGROUP``, where ``fields`` carries a JSON ``"payload"``. Non-telemetry
     payloads (events/commands — anything without a ``battery`` field) and
     undecodable payloads are skipped, but every message id seen is returned so
     the caller can ``XACK`` the whole batch and avoid reprocessing.
+
+    With ``OPT_BATCH_INSERT`` on (default) the whole batch goes out as one
+    multi-row INSERT in a single transaction. With it off, each row is its own
+    INSERT + COMMIT — the naive approach, and the baseline the benchmark
+    compares against. The difference is round trips: one per batch versus one
+    per row, each carrying full transaction-commit overhead.
     """
     message_ids: list = []
     insert_dicts: list = []
@@ -93,11 +98,26 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
             insert_dicts.append(_payload_to_insert_dict(decoded))
 
     if insert_dicts:
-        await session.execute(insert(Telemetry).values(insert_dicts))
-        await session.commit()
+        started = time.perf_counter()
+
+        if settings.opt_batch_insert:
+            await session.execute(insert(Telemetry).values(insert_dicts))
+            await session.commit()
+            mode = "batch"
+        else:
+            for row in insert_dicts:
+                await session.execute(insert(Telemetry).values(row))
+                await session.commit()
+            mode = "row_by_row"
+
+        elapsed = time.perf_counter() - started
+        db_write_latency_seconds.labels(mode=mode).observe(elapsed)
+        worker_batch_size.observe(len(insert_dicts))
         logger.info(
-            "Successfully batched and saved %d telemetry records to database.",
+            "Persisted %d telemetry records (%s) in %.1f ms.",
             len(insert_dicts),
+            mode,
+            elapsed * 1000,
         )
 
     return message_ids
@@ -107,39 +127,44 @@ async def redis_to_db_sync_worker():
     """Background worker that batch-saves telemetry from Redis to PostgreSQL."""
     logger.info("Starting Redis-to-DB sync worker...")
     redis = manager.redis
-    
+
     retry_delay = 2.0  # seconds
     max_retry_delay = 30.0
-    
+
     # Ensure consumer group exists
     try:
         await redis.xgroup_create(STREAM_KEY, CONSUMER_GROUP, id="0", mkstream=True)
     except Exception as e:
         if "BUSYGROUP" not in str(e):
             logger.error("Failed to create consumer group: %s", e)
-    
+
     while True:
         try:
             message_ids = []
 
             messages = await redis.xreadgroup(
-                CONSUMER_GROUP, CONSUMER_NAME,
-                {STREAM_KEY: "0"},
-                count=100
+                CONSUMER_GROUP, CONSUMER_NAME, {STREAM_KEY: "0"}, count=100
             )
 
             if not messages or not messages[0][1]:
                 try:
-                    res = await redis.execute_command("XAUTOCLAIM", STREAM_KEY, CONSUMER_GROUP, CONSUMER_NAME, "60000", "0", "COUNT", "100")
+                    res = await redis.execute_command(
+                        "XAUTOCLAIM",
+                        STREAM_KEY,
+                        CONSUMER_GROUP,
+                        CONSUMER_NAME,
+                        "60000",
+                        "0",
+                        "COUNT",
+                        "100",
+                    )
                     if res and len(res) >= 2 and res[1]:
                         continue
                 except Exception as e:
                     logger.warning("XAUTOCLAIM failed: %s", e)
 
                 messages = await redis.xreadgroup(
-                    CONSUMER_GROUP, CONSUMER_NAME,
-                    {STREAM_KEY: ">"},
-                    count=100, block=500
+                    CONSUMER_GROUP, CONSUMER_NAME, {STREAM_KEY: ">"}, count=100, block=500
                 )
 
             if messages:
@@ -163,42 +188,59 @@ async def redis_to_db_sync_worker():
             logger.info("Sync worker task cancelled. Exiting.")
             break
         except Exception as e:
-            logger.error("Error in database sync worker: %s. Retrying in %.1fs...", e, retry_delay, exc_info=True)
+            logger.error(
+                "Error in database sync worker: %s. Retrying in %.1fs...",
+                e,
+                retry_delay,
+                exc_info=True,
+            )
             await asyncio.sleep(retry_delay)
             retry_delay = min(max_retry_delay, retry_delay * 2.0)
 
 
 async def db_pruner_task():
     """Daily database telemetry pruner to maintain bounded disk footprint."""
-    logger.info("Starting database retention pruner (retention=%d days)...", settings.retention_days)
-    
+    logger.info(
+        "Starting database retention pruner (retention=%d days)...", settings.retention_days
+    )
+
     while True:
         try:
             lock_acquired = await manager.redis.set("lock:db_pruner", "1", nx=True, ex=3600)
             if lock_acquired:
                 limit_date = datetime.now(timezone.utc) - timedelta(days=settings.retention_days)
-                
+
                 total_deleted = 0
                 while True:
-                    async with AsyncSessionLocal() as session:
-                        async with session.begin():
-                            # Use a subquery to find IDs to delete, with a limit to batch it
-                            subq = select(Telemetry.id).where(Telemetry.timestamp < limit_date).limit(10000).subquery()
-                            stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
-                            result = await session.execute(stmt)
-                            
-                            deleted_count = result.rowcount
-                            total_deleted += deleted_count
-                            
+                    # Delete in bounded chunks: a single unbounded DELETE over a
+                    # day of telemetry would hold locks long enough to stall
+                    # ingestion.
+                    async with AsyncSessionLocal() as session, session.begin():
+                        subq = (
+                            select(Telemetry.id)
+                            .where(Telemetry.timestamp < limit_date)
+                            .limit(10000)
+                            .subquery()
+                        )
+                        stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
+                        result = await session.execute(stmt)
+
+                        deleted_count = result.rowcount
+                        total_deleted += deleted_count
+
                     if deleted_count == 0:
                         break
-                    await asyncio.sleep(0.1) # Yield to avoid locking DB too hard
-                        
-                logger.info("RETENTION: Pruned %d telemetry records older than %d days.", total_deleted, settings.retention_days)
-            
+                    await asyncio.sleep(0.1)  # Yield to avoid locking DB too hard
+
+                logger.info(
+                    "RETENTION: Pruned %d telemetry records older than %d days.",
+                    total_deleted,
+                    settings.retention_days,
+                )
+
             # Run once every 24 hours
             await asyncio.sleep(86400)
-            
+
         except asyncio.CancelledError:
             logger.info("Retention pruner task cancelled. Exiting.")
             break
@@ -210,19 +252,19 @@ async def db_pruner_task():
 async def scan_for_timeouts(session: AsyncSession):
     """Scan for commands that have expired and mark them as TIMEOUT."""
     now = datetime.now(timezone.utc)
-        
+
     # Find commands where expires_at < now and status not in terminal states
     stmt = select(RobotCommand).where(
         RobotCommand.expires_at < now,
-        RobotCommand.status.not_in(["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"])
+        RobotCommand.status.not_in(["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"]),
     )
-    
+
     result = await session.execute(stmt)
     expired_commands = result.scalars().all()
-    
+
     for cmd in expired_commands:
         logger.info(f"Command {cmd.id} timed out. Updating status to TIMEOUT.")
-        
+
         # Update to TIMEOUT
         update_stmt = (
             update(RobotCommand)
@@ -231,11 +273,11 @@ async def scan_for_timeouts(session: AsyncSession):
                 status="TIMEOUT",
                 completed_at=func.now(),
                 error_code="TIMEOUT",
-                error_message=f"Command did not complete within {cmd.timeout_seconds} seconds"
+                error_message=f"Command did not complete within {cmd.timeout_seconds} seconds",
             )
         )
         await session.execute(update_stmt)
-        
+
         # Broadcast the timeout so the frontend and simulator know
         payload = {
             "type": "COMMAND_UPDATE",
@@ -246,17 +288,18 @@ async def scan_for_timeouts(session: AsyncSession):
             "timestamp": now.isoformat().replace("+00:00", "Z"),
         }
         await manager.broadcast(payload, stream="event_stream")
-        
+
     if expired_commands:
         await session.commit()
 
+
 async def timeout_worker_loop():
     logger.info("Starting timeout worker loop")
-    
+
     # Initialize redis listener for broadcast capability (handled in main or manager, but we'll do it here if it wasn't done)
     if manager._listener_task is None:
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
-    
+
     try:
         while True:
             try:
@@ -266,7 +309,7 @@ async def timeout_worker_loop():
                         await scan_for_timeouts(session)
             except Exception as e:
                 logger.error(f"Error in timeout scanner: {e}", exc_info=True)
-                
+
             await asyncio.sleep(5.0)  # Scan every 5 seconds
     except asyncio.CancelledError:
         logger.info("Timeout scanner task cancelled. Exiting.")
@@ -315,6 +358,7 @@ async def main():
 def handle_sigterm(signum, frame):
     logger.info("Received SIGTERM, shutting down gracefully...")
     raise KeyboardInterrupt()
+
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_sigterm)

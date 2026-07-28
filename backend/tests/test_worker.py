@@ -1,6 +1,7 @@
+from unittest.mock import AsyncMock
+
 import orjson
 import pytest
-from unittest.mock import AsyncMock
 
 from app.worker import process_batch
 
@@ -14,14 +15,26 @@ def _msg(msg_id: str, payload: dict):
 async def test_process_batch_inserts_telemetry():
     session = AsyncMock()
     messages = [
-        _msg("12345-0", {
-            "robot_id": 1, "battery": 100.0, "temperature": 25.0,
-            "speed": 1.0, "timestamp": "2026-07-22T00:00:00Z",
-        }),
-        _msg("12345-1", {
-            "robot_id": 2, "battery": 80.0, "temperature": 30.0,
-            "speed": 0.5, "timestamp": "2026-07-22T00:00:01Z",
-        }),
+        _msg(
+            "12345-0",
+            {
+                "robot_id": 1,
+                "battery": 100.0,
+                "temperature": 25.0,
+                "speed": 1.0,
+                "timestamp": "2026-07-22T00:00:00Z",
+            },
+        ),
+        _msg(
+            "12345-1",
+            {
+                "robot_id": 2,
+                "battery": 80.0,
+                "temperature": 30.0,
+                "speed": 0.5,
+                "timestamp": "2026-07-22T00:00:01Z",
+            },
+        ),
     ]
 
     message_ids = await process_batch(session, messages)
@@ -49,9 +62,14 @@ async def test_process_batch_skips_non_telemetry():
     """Event/command payloads (no `battery` field) are acked but not inserted."""
     session = AsyncMock()
     messages = [
-        ("99-0", {"payload": orjson.dumps(
-            {"type": "EVENT", "robot_id": 5, "message": "Entered zone"}
-        ).decode("utf-8")}),
+        (
+            "99-0",
+            {
+                "payload": orjson.dumps(
+                    {"type": "EVENT", "robot_id": 5, "message": "Entered zone"}
+                ).decode("utf-8")
+            },
+        ),
     ]
 
     message_ids = await process_batch(session, messages)

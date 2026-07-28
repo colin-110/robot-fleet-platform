@@ -7,12 +7,25 @@ used by status derivation and analytics.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Boolean, func, JSON, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
+
 from app.database import Base
 
 
 class Robot(Base):
     """First-class robot entity with identity and metadata."""
+
     __tablename__ = "robots"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -30,6 +43,7 @@ class Robot(Base):
     def __repr__(self) -> str:
         return f"<Robot id={self.id} name={self.name!r} active={self.is_active}>"
 
+
 class RobotCommand(Base):
     __tablename__ = "robot_commands"
 
@@ -42,7 +56,7 @@ class RobotCommand(Base):
     timeout_seconds = Column(Integer, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     max_retries = Column(Integer, default=0, nullable=False)
-    
+
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -53,7 +67,7 @@ class RobotCommand(Base):
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
-    
+
     error_code = Column(String(64), nullable=True)
     error_message = Column(String(255), nullable=True)
     result = Column(JSON, nullable=True)
@@ -63,6 +77,7 @@ class RobotCommand(Base):
         Index("ix_robot_commands_robot_id_status", "robot_id", "status"),
         UniqueConstraint("robot_id", "idempotency_key", name="uix_robot_id_idempotency_key"),
     )
+
 
 class Telemetry(Base):
     __tablename__ = "telemetry"
@@ -102,6 +117,7 @@ class Telemetry(Base):
             f"status={self.status!r} battery={self.battery}>"
         )
 
+
 class Event(Base):
     __tablename__ = "events"
 
@@ -116,6 +132,4 @@ class Event(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (
-        Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),
-    )
+    __table_args__ = (Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),)

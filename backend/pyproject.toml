@@ -1,2 +1,32 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__init__.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "C4",   # comprehensions
+    "SIM",  # simplification
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends() in defaults is the documented idiom
+    "SIM105",  # contextlib.suppress is not always clearer than try/except/pass
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally import fixtures they don't reference directly.
+"tests/*" = ["F811", "F401"]

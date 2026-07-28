@@ -16,16 +16,23 @@ Usage:
 
 import argparse
 import asyncio
-import json
+import os
 import random
 import statistics
-import time
 import sys
+import time
 from dataclasses import dataclass, field
 
 import aiohttp
 
-API_KEY = "new-secure-api-key-889900"
+# Never hardcode the key: a value committed here is a value that leaks.
+API_KEY = os.environ.get("TELEMETRY_API_KEY", "")
+if not API_KEY:
+    sys.exit(
+        "TELEMETRY_API_KEY is not set. Export the key the stack is running with:\n"
+        "    export TELEMETRY_API_KEY=$(grep TELEMETRY_API_KEY backend/.env | cut -d= -f2)"
+    )
+
 HEADERS = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
 
 
@@ -209,19 +216,25 @@ async def test_websocket(base_url, num_clients, duration_s=10):
     async def ws_client(client_id):
         count = 0
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=duration_s + 5)) as ws:
-                    end_time = time.monotonic() + duration_s
-                    while time.monotonic() < end_time:
-                        try:
-                            msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                if msg.data != "ping":
-                                    count += 1
-                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                                break
-                        except asyncio.TimeoutError:
-                            continue
+            async with (
+                aiohttp.ClientSession() as session,
+                session.ws_connect(
+                    ws_url, timeout=aiohttp.ClientTimeout(total=duration_s + 5)
+                ) as ws,
+            ):
+                end_time = time.monotonic() + duration_s
+                while time.monotonic() < end_time:
+                    try:
+                        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+                        # "ping" is the server's keepalive, not fleet telemetry —
+                        # counting it would inflate the throughput figure.
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            if msg.data != "ping":
+                                count += 1
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+                    except asyncio.TimeoutError:
+                        continue
         except Exception as e:
             result.errors.append(f"Client {client_id}: {str(e)[:80]}")
             result.failed += 1

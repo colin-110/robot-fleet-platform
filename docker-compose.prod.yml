@@ -9,8 +9,15 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # No wildcard default: a wildcard origin cannot be combined with
+      # credentials, and APP_ENV=production rejects it outright at startup.
+      - CORS_ORIGINS=${CORS_ORIGINS:?set CORS_ORIGINS to the dashboard origin}
       - PYTHONPATH=.
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+      # nginx on the host, then CloudFront in front of it. Without this the
+      # rate limiter keys every request on the proxy's IP and degrades into a
+      # single global bucket for the whole fleet.
+      - TRUSTED_PROXY_COUNT=${TRUSTED_PROXY_COUNT:-2}
     restart: unless-stopped
     networks:
       - fleet_net

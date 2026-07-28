@@ -17,12 +17,11 @@ import asyncio
 import math
 import sys
 import time
-from typing import List, Tuple
 
 import httpx
 
 
-def calculate_percentiles(latencies: List[float]) -> dict:
+def calculate_percentiles(latencies: list[float]) -> dict:
     """Calculate p50, p95, p99, and max from a sorted list of latencies (ms)."""
     if not latencies:
         return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0, "mean": 0.0}
@@ -75,7 +74,7 @@ async def run_benchmark(
         for i in range(num_robots)
     ]
 
-    latencies: List[float] = []
+    latencies: list[float] = []
     errors: int = 0
     total_requests: int = 0
 

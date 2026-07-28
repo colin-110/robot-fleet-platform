@@ -4,7 +4,7 @@ Robot Fleet Platform — FastAPI application entry point.
 Features:
   - Versioned API routes under /api/v1/
   - WebSocket endpoint for real-time telemetry
-  - Health check endpoint
+  - Health check endpoint (reports active optimization flags)
   - Structured logging
   - Rate limiting and request tracing middleware
   - CORS configuration from environment
@@ -15,21 +15,28 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Gauge, Histogram
-from fastapi import FastAPI, WebSocket, Query, Response
-from fastapi.responses import ORJSONResponse
+from fastapi import FastAPI, Query, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, ORJSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
+from app import metrics
+from app.auth import is_valid_api_key
 from app.config import get_settings
-from app.database import Base, engine
-from app.middleware import RateLimitMiddleware, RequestIDMiddleware
-from app.routes.telemetry import router as telemetry_router
-from app.routes.commands import router as commands_router
-from app.routes.robots import router as robots_router
+from app.database import engine
+from app.middleware import (
+    LegacyRateLimitMiddleware,
+    LegacyRequestIDMiddleware,
+    RateLimitMiddleware,
+    RequestIDMiddleware,
+)
 from app.routes.analytics import router as analytics_router
+from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
+from app.routes.robots import router as robots_router
+from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
 from app.websocket_manager import manager
 
@@ -45,31 +52,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
-
-
 # ── Lifespan ────────────────────────────────────────────────────────
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
-    # Database initialization is now handled by prestart.py
-
+    # Database schema is created by prestart.py before workers start.
     logger.info(
-        "Robot Fleet Platform started  env=%s  cors=%s",
+        "Robot Fleet Platform started  env=%s  cors=%s  optimizations=%s",
         settings.app_env,
         settings.cors_origin_list,
+        settings.optimization_flags(),
     )
-    # Start Redis Pub/Sub listener
+
     manager._listener_task = asyncio.create_task(manager.listen_to_redis())
-    
+
     yield
-    
-    # Shutdown
+
     if manager._listener_task:
         manager._listener_task.cancel()
-        
+
+    # Drop this worker's gauge samples so a restart doesn't leave phantom
+    # connections summed into the multiprocess registry.
+    metrics.mark_worker_exit()
     logger.info("Robot Fleet Platform shutting down")
 
 
@@ -80,28 +86,48 @@ app = FastAPI(
     description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
-    default_response_class=ORJSONResponse,
+    # orjson is faster than stdlib json on float-heavy payloads like telemetry.
+    # Caveat worth knowing: current FastAPI serializes directly via Pydantic
+    # whenever a route declares a `response_model`, bypassing this class
+    # entirely — so it only affects routes without one (command acks, the
+    # telemetry ack, root). The benchmark measures the real effect rather than
+    # assuming the library-level claim applies here.
+    default_response_class=ORJSONResponse if settings.opt_orjson else JSONResponse,
 )
 
 # ── Middleware (order matters: outermost first) ─────────────────────
 
-app.add_middleware(RequestIDMiddleware)
-app.add_middleware(
-    RateLimitMiddleware,
-    max_requests=settings.rate_limit_per_minute,
-    window_seconds=60,
-)
+if settings.opt_asgi_middleware:
+    app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        max_requests=settings.rate_limit_per_minute,
+        window_seconds=60,
+        trusted_proxy_count=settings.trusted_proxy_count,
+    )
+else:
+    app.add_middleware(LegacyRequestIDMiddleware)
+    app.add_middleware(
+        LegacyRateLimitMiddleware,
+        max_requests=settings.rate_limit_per_minute,
+        window_seconds=60,
+        trusted_proxy_count=settings.trusted_proxy_count,
+    )
+
+# A wildcard origin cannot be combined with credentials — the spec forbids it
+# and browsers reject the response. cors_allow_credentials drops credentials
+# automatically when the origin list is "*". APP_ENV=production rejects the
+# wildcard outright at config load.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ── Routes ──────────────────────────────────────────────────────────
 
-# Versioned API
 app.include_router(telemetry_router)
 app.include_router(commands_router)
 app.include_router(robots_router)
@@ -121,7 +147,11 @@ def root():
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
-    """Health check endpoint — verifies database connectivity."""
+    """Health check — verifies database connectivity and reports active flags.
+
+    The optimization flags are exposed so the benchmark harness can assert the
+    stack actually came up in the configuration it intended to measure.
+    """
     db_status = "healthy"
     try:
         async with engine.connect() as conn:
@@ -133,25 +163,14 @@ async def health_check():
     return HealthResponse(
         status="ok" if db_status == "healthy" else "degraded",
         database=db_status,
+        optimizations=settings.optimization_flags(),
     )
 
 
-# ── Metrics Definitions ─────────────────────────────────────────────
-
-telemetry_ingested_total = Counter(
-    "telemetry_ingested_total", "Total number of telemetry readings ingested"
-)
-websocket_connections_active = Gauge(
-    "websocket_connections_active", "Number of active WebSocket connections"
-)
-db_write_latency_seconds = Histogram(
-    "db_write_latency_seconds", "Latency of database writes in seconds"
-)
-
 @app.get("/metrics", tags=["observability"])
-async def metrics():
-    """Prometheus metrics endpoint."""
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+async def prometheus_metrics():
+    """Prometheus metrics endpoint (multiprocess-aware)."""
+    return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ── WebSocket ───────────────────────────────────────────────────────
@@ -166,7 +185,7 @@ async def websocket_endpoint(
 
     Requires ``?api_key=<key>`` query parameter for authentication.
     """
-    if api_key != settings.telemetry_api_key:
+    if not is_valid_api_key(api_key):
         await websocket.close(code=4001, reason="Invalid or missing API key")
         return
 

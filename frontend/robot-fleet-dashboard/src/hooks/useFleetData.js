@@ -34,22 +34,25 @@ export default function useFleetData() {
   // Use /api/v1 prefix for new backend, fall back to root for backward compat
   const API_PREFIX = `${API_BASE}/api/v1`;
 
-  const fetchRobots = async () => {
-    // Ask for the whole fleet — the default page size used to clip it to 50.
-    const response = await axios.get(`${API_PREFIX}/robots/status`, {
-      params: { limit: 1000 },
-    });
-    // Replace (not merge) with the authoritative snapshot. This prunes robots
-    // that have been retired or have gone stale, so counts can't drift upward.
-    setRobots(Array.isArray(response.data) ? response.data : []);
-  };
-
-  const fetchAnalytics = async () => {
-    const response = await axios.get(`${API_PREFIX}/analytics/fleet`);
-    setAnalytics(response.data || {});
-  };
-
+  // Defined inside the callback: they close over nothing but API_PREFIX and the
+  // (stable) state setters, so hoisting them out only made them invisible to
+  // the exhaustive-deps check without making them any more reusable.
   const refreshAll = useCallback(async () => {
+    const fetchRobots = async () => {
+      // Ask for the whole fleet — the default page size used to clip it to 50.
+      const response = await axios.get(`${API_PREFIX}/robots/status`, {
+        params: { limit: 1000 },
+      });
+      // Replace (not merge) with the authoritative snapshot. This prunes robots
+      // that have been retired or have gone stale, so counts can't drift upward.
+      setRobots(Array.isArray(response.data) ? response.data : []);
+    };
+
+    const fetchAnalytics = async () => {
+      const response = await axios.get(`${API_PREFIX}/analytics/fleet`);
+      setAnalytics(response.data || {});
+    };
+
     // Robots gate the first paint, so fetch them first and reveal the UI as
     // soon as they land. Analytics is heavier and must NOT block rendering —
     // fire it independently.
