@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 #
-# Remove leaked secrets and bulk files from this repository's git history.
+# Remove leaked secrets and committed build artifacts from this repo's history.
 #
 # WHY THIS IS NEEDED
 #   backend/.env was committed in 5 commits (6e1c1c3 .. 007a863) containing a
 #   live Neon PostgreSQL connection string, password included. Deleting the file
 #   in a later commit does not remove it — `git log -p` still serves it to
-#   anyone who clones. robot-fleet.zip (59 MB) is likewise still in the pack,
-#   which is why a ~5k-line project clones as ~90 MB.
+#   anyone who clones.
+#
+#   Two sets of bulk files are also stranded in the pack: robot-fleet.zip
+#   (59 MB) and frontend/robot-fleet-dashboard/.npm-cache (509 blobs, 58 MB of
+#   npm tarballs). Both are gitignored and untracked today, but history still
+#   carries them — which is why a ~5k-line project clones as ~90 MB.
 #
 # READ BEFORE RUNNING
 #   This rewrites every commit SHA from the first offending commit onward and
@@ -42,7 +46,9 @@ fi
 
 # ── 1. Full backup ──────────────────────────────────────────────────
 # A mirror clone keeps every ref exactly as it is now. If the rewrite goes
-# wrong, this is what you restore from.
+# wrong, this is what you restore from:
+#   git remote add backup <path> && git fetch backup '+refs/heads/*:refs/remotes/backup/*'
+#   git reset --hard backup/<branch>
 BACKUP="../robot-fleet-platform-backup-$(date +%Y%m%d-%H%M%S).git"
 echo ">> Backing up to $BACKUP"
 git clone --mirror . "$BACKUP"
@@ -55,18 +61,29 @@ echo ">> Backup complete."
 ORIGIN_URL="$(git remote get-url origin 2>/dev/null || echo '')"
 
 # ── 3. Strip the offending paths from every commit ──────────────────
-echo ">> Removing backend/.env, .env, and robot-fleet.zip from all history"
+echo ">> Removing leaked secrets and committed build artifacts from all history"
 git filter-repo --force \
     --invert-paths \
     --path backend/.env \
     --path .env \
-    --path robot-fleet.zip
+    --path robot-fleet.zip \
+    --path frontend/robot-fleet-dashboard/.npm-cache
 
-# ── 4. Belt and braces: scrub the leaked password string itself ──────
-# Catches any other commit that happened to paste the connection string into a
-# script, note, or log. Edit replacements.txt to add anything else you know of.
-cat > /tmp/replacements.txt <<'EOF'
-regex:postgresql://[^\s"']*:[^\s"'@]*@[^\s"']*==>postgresql://REDACTED:REDACTED@REDACTED/REDACTED
+# ── 4. Belt and braces: scrub the leaked credential itself ──────────
+# Catches any commit that pasted the connection string into a script or note
+# rather than into backend/.env.
+#
+# This pattern is deliberately anchored to the specific leaked Neon user and
+# host. A generic postgresql://user:pass@host/db pattern also matches every
+# localhost and placeholder URL in the repo — the CI service URL, the conftest
+# default, the .env.example template — and rewriting those silently breaks both
+# the test suite (conftest requires a database name containing "test") and the
+# CI job. Only redact the credential that actually leaked.
+LEAKED_DB_USER='neondb_owner'
+LEAKED_DB_HOST='ep-sparkling-block-aq8h1exs-pooler\.c-8\.us-east-1\.aws\.neon\.tech'
+
+cat > /tmp/replacements.txt <<EOF
+regex:postgresql://${LEAKED_DB_USER}:[^@[:space:]"']+@${LEAKED_DB_HOST}[^[:space:]"']*==>postgresql://REDACTED:REDACTED@REDACTED/neondb
 EOF
 git filter-repo --force --replace-text /tmp/replacements.txt
 rm -f /tmp/replacements.txt
@@ -87,8 +104,19 @@ echo "Rewrite complete. Repo size now:"
 git count-objects -vH | grep size-pack
 echo
 echo "VERIFY before pushing:"
-echo "  git log --all --oneline -- backend/.env robot-fleet.zip   # expect empty"
-echo "  git log --all -p | grep -i 'neondb_owner'                 # expect empty"
+echo "  # 1. secret + bulk files gone from history (expect empty):"
+echo "  git log --all --oneline -- backend/.env robot-fleet.zip \\"
+echo "      frontend/robot-fleet-dashboard/.npm-cache"
+echo
+echo "  # 2. credential gone (this script names the user, so exclude it):"
+echo "  git log --all -p -- . ':(exclude)scripts/scrub_git_history.sh' \\"
+echo "      | grep -i 'neondb_owner'"
+echo
+echo "  # 3. harmless localhost/example URLs survived intact (expect matches):"
+echo "  grep -r 'fleet_test_db' .github/workflows/ci.yml backend/tests/conftest.py"
+echo
+echo "  # 4. authorship preserved, so the contribution graph survives:"
+echo "  git log --format='%an <%ae>' | sort | uniq -c"
 echo
 echo "Then push (this overwrites the remote):"
 echo "  git push --force-with-lease origin --all"
