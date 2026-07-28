@@ -16,12 +16,11 @@ import asyncio
 import math
 import sys
 import time
-from typing import List
 
 import websockets
 
 
-def calculate_percentiles(latencies: List[float]) -> dict:
+def calculate_percentiles(latencies: list[float]) -> dict:
     if not latencies:
         return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0, "mean": 0.0}
     s = sorted(latencies)
@@ -45,7 +44,7 @@ def calculate_percentiles(latencies: List[float]) -> dict:
 async def client_worker(
     ws_url: str,
     duration: int,
-    latencies: List[float],
+    latencies: list[float],
     stats: dict,
 ):
     try:
@@ -54,7 +53,9 @@ async def client_worker(
             start = time.perf_counter()
             while time.perf_counter() - start < duration:
                 try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    # The frame body is irrelevant here — this test measures how
+                    # many frames the fan-out tier delivers, not their content.
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
                     stats["messages_received"] += 1
                 except asyncio.TimeoutError:
                     pass
@@ -72,7 +73,7 @@ async def run_ws_benchmark(
     duration: int,
 ):
     url = f"{base_ws_url.rstrip('/')}/ws?api_key={api_key}"
-    latencies: List[float] = []
+    latencies: list[float] = []
     stats = {
         "connected": 0,
         "failed_connections": 0,

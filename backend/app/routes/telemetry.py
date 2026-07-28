@@ -4,15 +4,14 @@ API v1 routes — Telemetry ingestion and retrieval.
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
 
+from app.auth import verify_api_key
 from app.config import get_settings
 from app.database import get_db
 from app.schemas import TelemetryCreate, TelemetryResponse
 from app.services.telemetry_service import TelemetryService
-from app.auth import verify_api_key
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -31,9 +30,10 @@ async def create_telemetry(
     service = TelemetryService(db)
     return await service.ingest(data, background_tasks)
 
+
 @router.post("/telemetry/batch")
 async def create_telemetry_batch(
-    data: List[TelemetryCreate],
+    data: list[TelemetryCreate],
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     _=Depends(verify_api_key),
@@ -42,7 +42,8 @@ async def create_telemetry_batch(
     service = TelemetryService(db)
     return await service.ingest_batch(data, background_tasks)
 
-@router.get("/telemetry", response_model=List[TelemetryResponse])
+
+@router.get("/telemetry", response_model=list[TelemetryResponse])
 async def get_telemetry(
     limit: int = 50,
     skip: int = 0,

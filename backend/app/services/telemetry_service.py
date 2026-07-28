@@ -1,18 +1,35 @@
 """
 Telemetry service — ingest + broadcast + read.
+
+Two ingest paths, selected by ``OPT_REDIS_BUFFER``:
+
+**Buffered (default).** The request handler does a single Redis ``XADD`` and
+returns. A separate worker process drains the stream and bulk-inserts into
+PostgreSQL. Request latency is decoupled from database I/O, so an ingest spike
+queues in Redis instead of blocking on disk.
+
+**Direct (baseline).** ``INSERT`` + ``COMMIT`` inline on the request path. Every
+robot's reading holds a connection from the pool for a full database round trip.
+Retained so the benchmark can measure what the buffer actually saves.
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 
+from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.metrics import (
+    db_write_latency_seconds,
+    telemetry_ingest_seconds,
+    telemetry_ingested_total,
+)
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
-from fastapi import BackgroundTasks
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -57,60 +74,89 @@ class TelemetryService:
 
     async def ingest(self, data: TelemetryCreate, background_tasks: BackgroundTasks = None) -> dict:
         """Persist telemetry, broadcast to WebSocket clients, return ack."""
-        if settings.use_redis_buffer:
-            ts_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            payload = data.model_dump(mode='json')
-            payload["timestamp"] = ts_str
+        buffered = settings.opt_redis_buffer
+        started = time.perf_counter()
 
-            # Broadcast immediately to WebSockets via stream (this also adds to
-            # the Redis stream that the worker drains into PostgreSQL).
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast, payload)
+        try:
+            if buffered:
+                payload = data.model_dump(mode="json")
+                payload["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+                # XADD both publishes to dashboards and queues the row for the
+                # worker that writes it to PostgreSQL — one hop, not two.
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast, payload)
+                else:
+                    await manager.broadcast(payload)
+
+                result = {"message": "Telemetry queued in Redis", "id": 0}
             else:
-                await manager.broadcast(payload)
+                db_started = time.perf_counter()
+                telemetry = await self.repo.insert(data)
+                db_write_latency_seconds.labels(mode="direct").observe(
+                    time.perf_counter() - db_started
+                )
 
-            return {"message": "Telemetry queued in Redis", "id": 0}
-        else:
-            telemetry = await self.repo.insert(data)
+                broadcast = _telemetry_to_broadcast_dict(telemetry)
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast, broadcast)
+                else:
+                    await manager.broadcast(broadcast)
 
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast, _telemetry_to_broadcast_dict(telemetry))
-            else:
-                await manager.broadcast(_telemetry_to_broadcast_dict(telemetry))
-            return {"message": "Telemetry received", "id": telemetry.id}
+                result = {"message": "Telemetry received", "id": telemetry.id}
+        finally:
+            telemetry_ingest_seconds.labels(path="single", buffered=str(buffered).lower()).observe(
+                time.perf_counter() - started
+            )
 
-    async def ingest_batch(self, data: list[TelemetryCreate], background_tasks: BackgroundTasks) -> dict:
+        telemetry_ingested_total.labels(path="single").inc()
+        return result
+
+    async def ingest_batch(
+        self, data: list[TelemetryCreate], background_tasks: BackgroundTasks
+    ) -> dict:
         """Batch ingestion for high-throughput simulator pushing."""
-        from app.main import telemetry_ingested_total
-        telemetry_ingested_total.inc(len(data))
-
+        buffered = settings.opt_redis_buffer
+        started = time.perf_counter()
         ts_str = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-        if settings.use_redis_buffer:
-            payloads = []
-            for d in data:
-                payload = d.model_dump(mode='json')
-                payload["timestamp"] = ts_str
-                payloads.append(payload)
+        try:
+            if buffered:
+                payloads = []
+                for d in data:
+                    payload = d.model_dump(mode="json")
+                    payload["timestamp"] = ts_str
+                    payloads.append(payload)
 
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast_batch, payloads)
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast_batch, payloads)
+                else:
+                    await manager.broadcast_batch(payloads)
+
+                result = {"message": f"{len(data)} telemetry readings queued in Redis"}
             else:
-                await manager.broadcast_batch(payloads)
+                db_started = time.perf_counter()
+                payloads = []
+                for d in data:
+                    telemetry = await self.repo.insert(d)
+                    payloads.append(_telemetry_to_broadcast_dict(telemetry))
+                db_write_latency_seconds.labels(mode="direct").observe(
+                    time.perf_counter() - db_started
+                )
 
-            return {"message": f"{len(data)} telemetry readings queued in Redis"}
-        else:
-            payloads = []
-            for d in data:
-                telemetry = await self.repo.insert(d)
-                payloads.append(_telemetry_to_broadcast_dict(telemetry))
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast_batch, payloads)
+                else:
+                    await manager.broadcast_batch(payloads)
 
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast_batch, payloads)
-            else:
-                await manager.broadcast_batch(payloads)
+                result = {"message": f"{len(data)} telemetry readings received"}
+        finally:
+            telemetry_ingest_seconds.labels(path="batch", buffered=str(buffered).lower()).observe(
+                time.perf_counter() - started
+            )
 
-            return {"message": f"{len(data)} telemetry readings received"}
+        telemetry_ingested_total.labels(path="batch").inc(len(data))
+        return result
 
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the most recent telemetry rows."""

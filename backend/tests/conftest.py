@@ -18,15 +18,15 @@ import os
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
+from app.auth import verify_api_key
+from app.cache import cache
+from app.config import get_settings
 from app.database import Base, get_db
 from app.main import app
-from app.cache import cache
-from app.auth import verify_api_key
-from app.config import get_settings
 
 # ── Resolve the Postgres test database ──────────────────────────────
 
@@ -61,7 +61,11 @@ TestSessionLocal = sessionmaker(
 
 # Telemetry ingestion has two code paths; tests assert on synchronous DB writes,
 # so pin the buffer off regardless of the ambient environment.
-get_settings().use_redis_buffer = False
+get_settings().opt_redis_buffer = False
+
+# The read-through cache is mocked with an in-memory dict below, but several
+# tests assert on freshly computed values, so keep it off by default.
+get_settings().opt_read_cache = False
 
 
 async def override_get_db():
@@ -99,12 +103,13 @@ def setup_database():
 @pytest.fixture(autouse=True)
 def mock_redis(monkeypatch):
     """Mock Redis so tests don't need a live broadcast/cache backend."""
-    from app.websocket_manager import manager
-    from app.cache import cache
     from app import middleware
+    from app.cache import cache
+    from app.websocket_manager import manager
 
     async def mock_broadcast(*args, **kwargs):
         pass
+
     monkeypatch.setattr(manager, "broadcast", mock_broadcast)
     monkeypatch.setattr(middleware, "get_redis", lambda: None)
 
@@ -127,8 +132,11 @@ def mock_redis(monkeypatch):
 
 @pytest_asyncio.fixture
 async def client():
-    from httpx import AsyncClient, ASGITransport
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
         yield client
 
 

@@ -1,0 +1,436 @@
+{
+  "meta": {
+    "host": "12 CPU, win32",
+    "repeats": 3,
+    "generated": "2026-07-28 14:40:52"
+  },
+  "experiments": [
+    {
+      "key": "redis_buffer",
+      "flag": "OPT_REDIS_BUFFER",
+      "title": "Redis Stream ingest buffer",
+      "claim": "Decoupling the write path from PostgreSQL with a Redis Stream",
+      "workload": "ingest",
+      "concurrency": 50,
+      "requests": 800,
+      "repeats": 3,
+      "baseline_label": "Synchronous INSERT on request path",
+      "optimized_label": "XADD to Redis Stream, worker persists",
+      "headline_metric": "p99 latency",
+      "headline_delta_pct": 87.6,
+      "throughput_unit": "msg/s",
+      "scale_label": "concurrency",
+      "baseline": {
+        "p50_ms": 318.77,
+        "p95_ms": 1095.81,
+        "p99_ms": 1270.57,
+        "mean_ms": 375.64,
+        "rps": 130.9,
+        "successful": 800,
+        "failed": 0,
+        "p99_runs_ms": [
+          1335.05,
+          1243.73,
+          1270.57
+        ],
+        "rps_runs": [
+          123.8,
+          129.7,
+          130.9
+        ]
+      },
+      "optimized": {
+        "p50_ms": 102.96,
+        "p95_ms": 154.35,
+        "p99_ms": 157.82,
+        "mean_ms": 111.11,
+        "rps": 437.5,
+        "successful": 800,
+        "failed": 0,
+        "p99_runs_ms": [
+          152.94,
+          162.83,
+          157.82
+        ],
+        "rps_runs": [
+          459.6,
+          445.6,
+          437.5
+        ]
+      },
+      "deltas": {
+        "p50_pct": 67.7,
+        "p95_pct": 85.9,
+        "p99_pct": 87.6,
+        "mean_pct": 70.4,
+        "rps_pct": 234.3
+      }
+    },
+    {
+      "key": "read_cache",
+      "flag": "OPT_READ_CACHE",
+      "title": "Redis read-through cache",
+      "claim": "Caching computed fleet status behind a 10s TTL",
+      "workload": "read_status",
+      "concurrency": 50,
+      "requests": 600,
+      "repeats": 3,
+      "baseline_label": "Recompute window-function query per request",
+      "optimized_label": "Redis cache hit",
+      "headline_metric": "p99 latency",
+      "headline_delta_pct": 97.6,
+      "throughput_unit": "msg/s",
+      "scale_label": "concurrency",
+      "baseline": {
+        "p50_ms": 7002.29,
+        "p95_ms": 9232.64,
+        "p99_ms": 11172.03,
+        "mean_ms": 6973.95,
+        "rps": 6.9,
+        "successful": 600,
+        "failed": 0,
+        "p99_runs_ms": [
+          11172.03,
+          12907.99,
+          10471.57
+        ],
+        "rps_runs": [
+          6.9,
+          7.0,
+          7.0
+        ]
+      },
+      "optimized": {
+        "p50_ms": 204.08,
+        "p95_ms": 253.79,
+        "p99_ms": 264.89,
+        "mean_ms": 212.33,
+        "rps": 228.0,
+        "successful": 600,
+        "failed": 0,
+        "p99_runs_ms": [
+          264.89,
+          253.58,
+          315.45
+        ],
+        "rps_runs": [
+          228.0,
+          227.9,
+          229.2
+        ]
+      },
+      "deltas": {
+        "p50_pct": 97.1,
+        "p95_pct": 97.3,
+        "p99_pct": 97.6,
+        "mean_pct": 97.0,
+        "rps_pct": 3207.5
+      }
+    },
+    {
+      "key": "analytics_cache",
+      "flag": "OPT_READ_CACHE",
+      "title": "Redis cache on analytics aggregation",
+      "claim": "Caching multi-aggregate analytics behind a 10s TTL",
+      "workload": "read_analytics",
+      "concurrency": 50,
+      "requests": 400,
+      "repeats": 3,
+      "baseline_label": "Recompute all aggregations per request",
+      "optimized_label": "Redis cache hit",
+      "headline_metric": "p99 latency",
+      "headline_delta_pct": 92.4,
+      "throughput_unit": "msg/s",
+      "scale_label": "concurrency",
+      "baseline": {
+        "p50_ms": 848.51,
+        "p95_ms": 1861.64,
+        "p99_ms": 2169.47,
+        "mean_ms": 962.49,
+        "rps": 50.0,
+        "successful": 400,
+        "failed": 0,
+        "p99_runs_ms": [
+          2169.47,
+          2137.36,
+          2261.14
+        ],
+        "rps_runs": [
+          50.0,
+          49.9,
+          49.6
+        ]
+      },
+      "optimized": {
+        "p50_ms": 71.6,
+        "p95_ms": 157.86,
+        "p99_ms": 164.53,
+        "mean_ms": 81.0,
+        "rps": 586.9,
+        "successful": 400,
+        "failed": 0,
+        "p99_runs_ms": [
+          161.41,
+          175.39,
+          164.53
+        ],
+        "rps_runs": [
+          638.0,
+          585.7,
+          586.9
+        ]
+      },
+      "deltas": {
+        "p50_pct": 91.6,
+        "p95_pct": 91.5,
+        "p99_pct": 92.4,
+        "mean_pct": 91.6,
+        "rps_pct": 1073.6
+      }
+    },
+    {
+      "key": "asgi_middleware",
+      "flag": "OPT_ASGI_MIDDLEWARE",
+      "title": "Pure ASGI middleware",
+      "claim": "Replacing two BaseHTTPMiddleware layers with pure ASGI middleware",
+      "workload": "health",
+      "concurrency": 50,
+      "requests": 2000,
+      "repeats": 3,
+      "baseline_label": "Starlette BaseHTTPMiddleware (task + anyio streams)",
+      "optimized_label": "Pure ASGI send-wrapper",
+      "headline_metric": "p99 latency",
+      "headline_delta_pct": 49.5,
+      "throughput_unit": "msg/s",
+      "scale_label": "concurrency",
+      "baseline": {
+        "p50_ms": 83.84,
+        "p95_ms": 146.68,
+        "p99_ms": 176.35,
+        "mean_ms": 91.07,
+        "rps": 536.7,
+        "successful": 2000,
+        "failed": 0,
+        "p99_runs_ms": [
+          168.19,
+          176.35,
+          176.74
+        ],
+        "rps_runs": [
+          497.8,
+          536.7,
+          523.5
+        ]
+      },
+      "optimized": {
+        "p50_ms": 43.55,
+        "p95_ms": 85.14,
+        "p99_ms": 89.0,
+        "mean_ms": 47.99,
+        "rps": 1009.3,
+        "successful": 2000,
+        "failed": 0,
+        "p99_runs_ms": [
+          84.52,
+          90.46,
+          89.0
+        ],
+        "rps_runs": [
+          1106.7,
+          1058.8,
+          1009.3
+        ]
+      },
+      "deltas": {
+        "p50_pct": 48.1,
+        "p95_pct": 42.0,
+        "p99_pct": 49.5,
+        "mean_pct": 47.3,
+        "rps_pct": 88.1
+      }
+    },
+    {
+      "key": "orjson",
+      "flag": "OPT_ORJSON",
+      "title": "orjson serialization",
+      "claim": "Serializing float-heavy telemetry responses with orjson",
+      "workload": "read_status",
+      "concurrency": 25,
+      "requests": 600,
+      "repeats": 3,
+      "baseline_label": "stdlib json",
+      "optimized_label": "orjson",
+      "headline_metric": "p99 latency",
+      "headline_delta_pct": 17.9,
+      "throughput_unit": "msg/s",
+      "scale_label": "concurrency",
+      "baseline": {
+        "p50_ms": 122.35,
+        "p95_ms": 168.78,
+        "p99_ms": 223.97,
+        "mean_ms": 125.71,
+        "rps": 193.0,
+        "successful": 600,
+        "failed": 0,
+        "p99_runs_ms": [
+          223.97,
+          195.25,
+          225.83
+        ],
+        "rps_runs": [
+          193.0,
+          190.3,
+          183.9
+        ]
+      },
+      "optimized": {
+        "p50_ms": 93.93,
+        "p95_ms": 148.7,
+        "p99_ms": 183.82,
+        "mean_ms": 98.4,
+        "rps": 247.2,
+        "successful": 600,
+        "failed": 0,
+        "p99_runs_ms": [
+          186.64,
+          155.54,
+          183.82
+        ],
+        "rps_runs": [
+          240.1,
+          256.1,
+          247.2
+        ]
+      },
+      "deltas": {
+        "p50_pct": 23.2,
+        "p95_pct": 11.9,
+        "p99_pct": 17.9,
+        "mean_pct": 21.7,
+        "rps_pct": 28.1
+      }
+    },
+    {
+      "key": "batch_insert",
+      "flag": "OPT_BATCH_INSERT",
+      "title": "Worker bulk INSERT",
+      "claim": "Persisting worker batches as one multi-row INSERT",
+      "workload": "worker_drain",
+      "concurrency": 50,
+      "requests": 10000,
+      "repeats": 3,
+      "baseline_label": "One INSERT + COMMIT per row",
+      "optimized_label": "One multi-row INSERT per batch",
+      "headline_metric": "throughput",
+      "headline_delta_pct": 307.7,
+      "throughput_unit": "rows/s persisted",
+      "scale_label": "a 10,000-row burst",
+      "baseline": {
+        "p50_ms": 41387.97,
+        "p95_ms": 41387.97,
+        "p99_ms": 41387.97,
+        "mean_ms": 41387.97,
+        "rps": 241.6,
+        "successful": 10000,
+        "failed": 0,
+        "p99_runs_ms": [
+          41225.37,
+          41387.97,
+          42067.92
+        ],
+        "rps_runs": [
+          242.6,
+          241.6,
+          237.7
+        ]
+      },
+      "optimized": {
+        "p50_ms": 10151.34,
+        "p95_ms": 10151.34,
+        "p99_ms": 10151.34,
+        "mean_ms": 10151.34,
+        "rps": 985.1,
+        "successful": 10000,
+        "failed": 0,
+        "p99_runs_ms": [
+          10192.73,
+          10117.52,
+          10151.34
+        ],
+        "rps_runs": [
+          981.1,
+          988.4,
+          985.1
+        ]
+      },
+      "deltas": {
+        "p50_pct": 75.5,
+        "p95_pct": 75.5,
+        "p99_pct": 75.5,
+        "mean_pct": 75.5,
+        "rps_pct": 307.7
+      }
+    },
+    {
+      "key": "bounded_fanout",
+      "flag": "OPT_BOUNDED_FANOUT",
+      "title": "Bounded-queue WebSocket fan-out",
+      "claim": "Bounded per-client queues with drop-oldest backpressure",
+      "workload": "ws_fanout",
+      "concurrency": 15,
+      "requests": 300,
+      "repeats": 3,
+      "baseline_label": "asyncio.create_task per client per message",
+      "optimized_label": "Bounded queue + dedicated sender task",
+      "headline_metric": "throughput",
+      "headline_delta_pct": 140.1,
+      "throughput_unit": "msg/s",
+      "scale_label": "300 concurrent WebSocket clients",
+      "baseline": {
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "mean_ms": 0.0,
+        "rps": 5977.3,
+        "successful": 150300,
+        "failed": 0,
+        "p99_runs_ms": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rps_runs": [
+          6209.2,
+          5977.3,
+          6200.0
+        ]
+      },
+      "optimized": {
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "mean_ms": 0.0,
+        "rps": 14351.9,
+        "successful": 360300,
+        "failed": 0,
+        "p99_runs_ms": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rps_runs": [
+          14370.6,
+          14351.9,
+          14048.4
+        ]
+      },
+      "deltas": {
+        "p50_pct": 0.0,
+        "p95_pct": 0.0,
+        "p99_pct": 0.0,
+        "mean_pct": 0.0,
+        "rps_pct": 140.1
+      }
+    }
+  ]
+}

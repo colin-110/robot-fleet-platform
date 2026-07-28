@@ -26,7 +26,6 @@ share/python-wheels/
 MANIFEST
 
 # Virtual Environments
-.env
 .venv
 env/
 venv/
@@ -64,10 +63,6 @@ htmlcov/
 *.sqlite3
 docker-data/
 
-# Alembic migrations
-# alembic/versions/*
-# !alembic/versions/.gitkeep
-
 # ==============================================================================
 # Environment / Secrets
 # ==============================================================================
@@ -77,6 +72,7 @@ docker-data/
 *.pem
 *.key
 *.cert
+*.tfvars
 
 # ==============================================================================
 # Node.js & Frontend
@@ -96,6 +92,17 @@ build/
 .vite/
 .next/
 out/
+
+# ==============================================================================
+# Terraform (state files can contain plaintext secrets — never commit)
+# ==============================================================================
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
 
 # ==============================================================================
 # OS Files
@@ -126,38 +133,11 @@ desktop.ini
 .gemini/
 
 # ==============================================================================
-# Logs & Temporary Files
+# Logs, archives & local scratch
 # ==============================================================================
 *.log
 *.tmp
 *.temp
-# ── Terraform (state can contain plaintext secrets — never commit) ──
-.terraform/
-**/.terraform/*
-*.tfstate
-*.tfstate.*
-*.tfvars
-crash.log
-override.tf
-override.tf.json
-
-# ── Local test artifacts ──
-test.json
-
-# Terraform (state files contain plaintext secrets — never commit)
-**/.terraform/*
-*.tfstate
-*.tfstate.*
-crash.log
-override.tf
-override.tf.json
-
-# Local scratch / sample data
-test.json
-
-# Terraform variable files (may contain secrets)
-*.tfvars
-
-# Local archives / scratch files
 *.zip
+test.json
 compose_fix.yml

@@ -141,18 +141,17 @@ Testing spans **unit, integration, API-contract, state-machine, and load** level
 
 | Metric | Result |
 | :--- | :--- |
-| **Tests** | 24 (22 passing, 2 skipped) |
-| **Line coverage** | **57%** overall |
+| **Tests** | 28 (all passing, 0 skipped) |
 | **Suite runtime** | ~12 s |
 
-**What's tested:** telemetry ingestion & retrieval, fleet-status derivation, the full command lifecycle (valid transitions, terminal immutability, idempotency, timeouts, **concurrent-dispatch race**), analytics aggregation, and the worker's batch-parsing logic.
+**What's tested:** telemetry ingestion & retrieval, fleet-status derivation, the full command lifecycle (valid transitions, terminal immutability, idempotency, timeouts, **concurrent dispatch**, and **concurrent status updates** — two racing PATCHes must not both commit), analytics aggregation against real Postgres `date_trunc`/`INTERVAL` SQL, cache hit/bypass behaviour, and the worker's batch-parsing logic.
 
 **Coverage is honest, not uniform** — the API/route/model/schema layer is well covered (routes 90–100%, schemas & models ~100%), while the long-running async infrastructure (WebSocket manager 25%, worker 38%) is exercised by the live system and load tests rather than unit tests. Closing that gap is listed under [Known Issues](#-limitations--known-issues-honest-section).
 
 ### CI/CD pipeline (GitHub Actions)
 
 On every push / PR to `main`:
-1. **`backend-test`** — pytest against a real Postgres + Redis service.
+1. **`backend-test`** — `ruff check` + `ruff format --check` (both blocking), then pytest against a real Postgres + Redis service with coverage.
 2. **`frontend-build`** — ESLint (0 errors) + production Vite build.
 3. **`publish-images`** — builds & pushes versioned `backend` + `frontend` images to GHCR (on `main`).
 4. **`deploy-aws`** — gated SSM-based rollout (opt-in).
@@ -160,6 +159,41 @@ On every push / PR to `main`:
 ### Load / performance testing
 
 A dedicated async harness ([`scripts/stress_test.py`](./scripts/stress_test.py)) drives single & batch ingest, REST reads, and WebSocket fan-out across a concurrency sweep up to 2,000, plus a sustained mixed-load run. Results in [Performance Benchmarks](#-performance-benchmarks).
+
+### A/B optimization benchmarks
+
+Every optimization in this system sits behind an `OPT_*` flag, and turning one off restores the naive implementation it replaced. [`scripts/benchmark_matrix.py`](./scripts/benchmark_matrix.py) uses that to measure each optimization **in isolation**: it restarts the affected services with the flag off, runs a workload, restarts with it on, runs the identical workload, and reports the delta.
+
+| Flag | Optimized | Baseline it's measured against |
+| :--- | :--- | :--- |
+| `OPT_REDIS_BUFFER` | `XADD` to a Redis Stream, worker persists | Synchronous `INSERT` on the request path |
+| `OPT_READ_CACHE` | Redis read-through cache (10s TTL) | Recompute the aggregation per request |
+| `OPT_ASGI_MIDDLEWARE` | Pure ASGI middleware | Starlette `BaseHTTPMiddleware` |
+| `OPT_ORJSON` | `orjson` response serialization | stdlib `json` |
+| `OPT_BOUNDED_FANOUT` | Bounded per-client queue + sender task | `create_task` per client per message |
+| `OPT_BATCH_INSERT` | One multi-row `INSERT` per batch | One `INSERT` + `COMMIT` per row |
+
+```bash
+python scripts/benchmark_matrix.py --repeats 3
+```
+
+Runs are **interleaved** (off, on, off, on…) so background load on the host biases both arms equally, each configuration is **warmed up** before measurement, and the reported figure is the **median of N runs** with the full per-run spread printed alongside. Before each run the harness reads `/health` and asserts the flags actually came up as requested — a restart that silently kept the old config would otherwise produce a meaningless 0% delta that looks like a real result. Read-path experiments re-seed a fixed dataset first, so results don't depend on what a previous experiment left in the table, and any arm where >5% of requests failed is rejected rather than reported (p99 of zero successful requests is `0.0`, which otherwise reads as "infinitely fast").
+
+**Measured results** — 3 interleaved rounds each, single dev machine, 0 failed requests:
+
+| Optimization | Metric | Baseline | Optimized | Change |
+| :--- | :--- | ---: | ---: | ---: |
+| Redis read-through cache (fleet status) | p99 | 11,172 ms | 265 ms | **−97.6%** |
+| Redis cache (analytics aggregation) | p99 | 2,169 ms | 165 ms | **−92.4%** |
+| Redis Stream ingest buffer | p99 | 1,271 ms | 158 ms | **−87.6%** |
+| Pure ASGI middleware | p99 | 176 ms | 89 ms | **−49.5%** |
+| orjson serialization | p99 | 224 ms | 184 ms | **−17.9%** |
+| Worker bulk `INSERT` | throughput | 242 rows/s | 985 rows/s | **+308%** |
+| Bounded-queue WebSocket fan-out | throughput | 5,977 msg/s | 14,352 msg/s | **+140%** |
+
+Full detail, per-run spread, and methodology in [`docs/benchmarks.md`](./docs/benchmarks.md) (plus a machine-readable `benchmarks.json`).
+
+> Two of these initially measured wrong, which is worth stating because it's the failure mode this kind of harness exists to catch. The bulk-`INSERT` experiment first reported +1.1% — it was timing the HTTP request, but with the Redis buffer on the request only does an `XADD`, so both arms ran identical code. The analytics-cache experiment first reported +0.0% — every request had failed, and p99 of an empty sample is zero. Both are now measured correctly and the harness fails loudly on the second class of error.
 
 ### Codebase size
 
@@ -247,9 +281,10 @@ I'd rather be upfront about where this stands than oversell it.
 | :--- | :--- | :--- |
 | **HTTP throughput** | Single-node synchronous ingest plateaus at ~125–250 req/s; beyond ~500 concurrent requests, latency climbs and the node sheds load (HTTP 500s at 1.5k–2k). | The Redis buffer helps, but the FastAPI request path is the ceiling. Solved by horizontal scaling. |
 | **No HA in the live deploy** | One EC2, single-AZ RDS, one Redis node. | Fine for a demo; a node/AZ failure means downtime. |
-| **Authentication** | A single shared API key, which is baked into the frontend bundle (client-visible). | Acceptable for a demo; **not** production-grade. No per-user auth or multi-tenancy. |
+| **Authentication** | A single shared API key. It is compared in constant time and required at startup (no default), but the dashboard still ships it in the frontend bundle, so it is client-visible. | Acceptable for a demo; **not** production-grade. No per-user auth or multi-tenancy. Fixing this properly means moving the WebSocket handshake behind a short-lived signed token. |
 | **Time-series storage** | Telemetry lives in a plain PostgreSQL table (bounded by a daily retention pruner). | Works, but not ideal for high-volume time-series at scale. |
-| **Test coverage gaps** | Async worker & WebSocket manager are ~25–38% unit-covered. | Verified via the live system + load tests, but deserves dedicated async tests. |
+| **Test coverage gaps** | The async worker loop and WebSocket manager are thinly unit-covered; the batch-parsing and fan-out logic is tested, the long-running loops around them are not. | Verified via the live system + load tests, but deserves dedicated async tests. |
+| **Metrics under multiple workers** | Fixed, but worth knowing it was ever wrong: `prometheus_client` keeps counters per process, so with `--workers 4` the `/metrics` scrape reported whichever worker answered. Now uses multiprocess mode with a shared mmap directory. | Correct now; the failure mode is silent, so it needs `PROMETHEUS_MULTIPROC_DIR` set wherever the app runs with >1 worker. |
 | **CloudFront origin** | Pinned to the current EC2's DNS name. | If the instance is replaced, the origin needs a one-line update. |
 | **Simulator in prod** | The live deploy runs the simulator to generate demo data. | A convenience for the demo; a real system ingests from actual devices. |
 

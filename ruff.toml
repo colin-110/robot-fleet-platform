@@ -1,0 +1,24 @@
+# Lint config for the repo-root Python: scripts/ and simulator/.
+# The backend has its own config in backend/pyproject.toml; ruff uses whichever
+# is nearest, so keep the two rule sets in sync when changing either.
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "C4",   # comprehensions
+    "SIM",  # simplification
+]
+ignore = [
+    "E501",  # line length is handled by the formatter
+    # The load-test harness and simulator deliberately catch broad exceptions:
+    # a failed request is a data point to record, not a reason to abort a
+    # benchmark run or kill a simulated robot mid-mission.
+    "BLE001",
+]

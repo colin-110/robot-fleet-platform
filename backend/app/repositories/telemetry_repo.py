@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.models import Telemetry
 from app.schemas import TelemetryCreate
@@ -76,76 +75,34 @@ class TelemetryRepository:
         subq = (
             select(
                 Telemetry,
-                func.row_number().over(
-                    partition_by=Telemetry.robot_id,
-                    order_by=Telemetry.timestamp.desc()
-                ).label("rn")
+                func.row_number()
+                .over(partition_by=Telemetry.robot_id, order_by=Telemetry.timestamp.desc())
+                .label("rn"),
             )
             .where(
-                Telemetry.timestamp
-                > func.now() - text(f"INTERVAL '{int(window_minutes)} minutes'")
+                Telemetry.timestamp > func.now() - text(f"INTERVAL '{int(window_minutes)} minutes'")
             )
             .subquery()
         )
-        
+
         telemetry_alias = aliased(Telemetry, subq)
         stmt = (
             select(telemetry_alias)
             .where(subq.c.rn <= per_robot_limit)
             .order_by(telemetry_alias.robot_id, telemetry_alias.timestamp.desc())
         )
-        
+
         result = await self.db.execute(stmt)
         rows = result.scalars().all()
 
         grouped: dict[int, list[Telemetry]] = {}
         for row in rows:
             grouped.setdefault(row.robot_id, []).append(row)
-            
+
         for rid in grouped:
             grouped[rid] = list(reversed(grouped[rid]))  # oldest first
-            
+
         return grouped
-
-    async def _get_recent_per_robot_fallback(self, per_robot_limit: int) -> list[Telemetry]:
-        """
-        Fallback that loads recent rows efficiently without window functions.
-
-        Fetches at most ``per_robot_limit * robot_count`` rows from the
-        tail of the table, which is a bounded scan.
-        """
-        # First, find distinct robot IDs (cheap query on indexed column)
-        stmt = select(Telemetry.robot_id).distinct()
-        result = await self.db.execute(stmt)
-        robot_ids = [rid for (rid,) in result.all()]
-
-        all_rows: list[Telemetry] = []
-        for rid in robot_ids:
-            stmt_rows = (
-                select(Telemetry)
-                .filter(Telemetry.robot_id == rid)
-                .order_by(Telemetry.timestamp.desc())
-                .limit(per_robot_limit)
-            )
-            res = await self.db.execute(stmt_rows)
-            rows = list(res.scalars().all())
-            all_rows.extend(reversed(rows))  # oldest first
-        return all_rows
-
-    async def get_all_ordered(self, limit: int = 5000) -> list[Telemetry]:
-        """
-        Return up to *limit* rows ordered by timestamp ascending.
-
-        Used by analytics that need time-series data across all robots.
-        Capped to prevent runaway memory usage.
-        """
-        stmt = (
-            select(Telemetry)
-            .order_by(Telemetry.timestamp.asc(), Telemetry.id.asc())
-            .limit(limit)
-        )
-        result = await self.db.execute(stmt)
-        return list(result.scalars().all())
 
     # ── Analytics ───────────────────────────────────────────────────
 
@@ -153,7 +110,7 @@ class TelemetryRepository:
         """Calculates fleet health trend over the last limit_minutes by grouping by minute."""
         stmt = (
             select(
-                func.date_trunc('minute', Telemetry.timestamp).label("bucket"),
+                func.date_trunc("minute", Telemetry.timestamp).label("bucket"),
                 func.avg(Telemetry.battery).label("avg_battery"),
                 func.avg(Telemetry.temperature).label("avg_temperature"),
                 func.avg(Telemetry.battery_health).label("avg_batt_h"),
@@ -168,24 +125,32 @@ class TelemetryRepository:
         )
         result = await self.db.execute(stmt)
         rows = result.all()
-        
+
         trend = []
-        for row in reversed(rows): # oldest first
-            avg_component = (row.avg_batt_h + row.avg_motor_h + row.avg_sensor_h + row.avg_net_h) / 4.0
-            score = (avg_component * 0.55) + (row.avg_battery * 0.30) - max(0.0, row.avg_temperature - 55.0) * 1.1
+        for row in reversed(rows):  # oldest first
+            avg_component = (
+                row.avg_batt_h + row.avg_motor_h + row.avg_sensor_h + row.avg_net_h
+            ) / 4.0
+            score = (
+                (avg_component * 0.55)
+                + (row.avg_battery * 0.30)
+                - max(0.0, row.avg_temperature - 55.0) * 1.1
+            )
             score = max(0.0, min(100.0, score))
-            
+
             # format bucket properly
             bucket = row.bucket
             if bucket.tzinfo is None:
                 bucket = bucket.replace(tzinfo=timezone.utc)
             else:
                 bucket = bucket.astimezone(timezone.utc)
-                
-            trend.append({
-                "timestamp": bucket.isoformat().replace("+00:00", "Z"),
-                "health_score": round(score, 1)
-            })
+
+            trend.append(
+                {
+                    "timestamp": bucket.isoformat().replace("+00:00", "Z"),
+                    "health_score": round(score, 1),
+                }
+            )
         return trend
 
     async def get_mission_completions(self) -> list[dict]:
@@ -193,7 +158,7 @@ class TelemetryRepository:
         stmt = (
             select(
                 Telemetry.mission_type,
-                func.count(func.distinct(Telemetry.mission_id)).label("count")
+                func.count(func.distinct(Telemetry.mission_id)).label("count"),
             )
             .filter(Telemetry.timestamp > func.now() - text("INTERVAL '1 day'"))
             .filter(Telemetry.mission_progress >= 100.0)
@@ -201,11 +166,11 @@ class TelemetryRepository:
             .group_by(Telemetry.mission_type)
         )
         result = await self.db.execute(stmt)
-        
+
         mission_types = ["PATROL", "DELIVERY", "INSPECTION"]
-        counts = {m_type: 0 for m_type in mission_types}
+        counts = dict.fromkeys(mission_types, 0)
         for row in result.all():
             if row.mission_type in counts:
                 counts[row.mission_type] = row.count
-                
+
         return [{"mission_type": k, "count": v} for k, v in counts.items()]
