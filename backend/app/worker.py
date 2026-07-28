@@ -13,8 +13,14 @@ from sqlalchemy.future import select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.metrics import db_write_latency_seconds, worker_batch_size
+from app.metrics import (
+    db_write_latency_seconds,
+    telemetry_stream_length,
+    telemetry_stream_pending,
+    worker_batch_size,
+)
 from app.models import RobotCommand, Telemetry
+from app.repositories.robot_repo import RobotRepository
 from app.websocket_manager import manager
 
 # Configure logging for worker
@@ -65,6 +71,28 @@ def _payload_to_insert_dict(p: dict) -> dict:
     }
 
 
+async def _register_robots(session: AsyncSession, insert_dicts: list[dict]) -> None:
+    """Keep the robot roster in step with the telemetry just persisted.
+
+    Done here rather than on the request path deliberately: the Redis buffer
+    exists so an ingest request performs no database work, and a per-request
+    roster upsert would put it straight back. Batching it costs one extra
+    statement per batch instead of one per reading.
+
+    The roster is what lets the dashboard show a robot that has gone silent.
+    Without it the fleet list is just "whoever reported recently", and a dead
+    unit disappears instead of being flagged.
+    """
+    latest_by_robot: dict[int, datetime] = {}
+    for row in insert_dicts:
+        robot_id = row["robot_id"]
+        ts = row["timestamp"]
+        if robot_id not in latest_by_robot or ts > latest_by_robot[robot_id]:
+            latest_by_robot[robot_id] = ts
+
+    await RobotRepository(session).mark_seen(latest_by_robot)
+
+
 async def process_batch(session: AsyncSession, stream_messages: list) -> list:
     """Parse a batch of Redis-stream telemetry entries and persist them.
 
@@ -102,12 +130,15 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
 
         if settings.opt_batch_insert:
             await session.execute(insert(Telemetry).values(insert_dicts))
+            await _register_robots(session, insert_dicts)
             await session.commit()
             mode = "batch"
         else:
             for row in insert_dicts:
                 await session.execute(insert(Telemetry).values(row))
                 await session.commit()
+            await _register_robots(session, insert_dicts)
+            await session.commit()
             mode = "row_by_row"
 
         elapsed = time.perf_counter() - started
@@ -121,6 +152,44 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
         )
 
     return message_ids
+
+
+async def report_stream_depth():
+    """Publish stream length and unacknowledged count as metrics.
+
+    The telemetry stream is capped, and Redis trims the oldest entries past the
+    cap whether or not a consumer group has acknowledged them. A worker that
+    falls far enough behind therefore drops telemetry with no error anywhere.
+    Exporting both numbers turns that silent failure into an alertable one:
+    pending climbing toward the cap means the worker is losing the race.
+    """
+    while True:
+        try:
+            length = await manager.redis.xlen(STREAM_KEY)
+            telemetry_stream_length.set(length)
+
+            try:
+                pending = await manager.redis.xpending(STREAM_KEY, CONSUMER_GROUP)
+                count = pending.get("pending", 0) if isinstance(pending, dict) else 0
+                telemetry_stream_pending.set(count)
+            except Exception:
+                # Group may not exist yet on a cold start.
+                telemetry_stream_pending.set(0)
+
+            if length >= settings.telemetry_stream_maxlen * 0.9:
+                logger.warning(
+                    "Telemetry stream at %d/%d entries — Redis will trim "
+                    "unacknowledged telemetry if the worker falls further behind.",
+                    length,
+                    settings.telemetry_stream_maxlen,
+                )
+        except asyncio.CancelledError:
+            logger.info("Stream depth reporter cancelled. Exiting.")
+            break
+        except Exception:
+            logger.warning("Failed to sample stream depth", exc_info=True)
+
+        await asyncio.sleep(10)
 
 
 async def redis_to_db_sync_worker():
@@ -342,6 +411,7 @@ async def main():
         asyncio.create_task(db_pruner_task()),
         asyncio.create_task(timeout_worker_loop()),
         asyncio.create_task(health_heartbeat()),
+        asyncio.create_task(report_stream_depth()),
     ]
     try:
         await asyncio.gather(*tasks)

@@ -642,6 +642,11 @@ async def robot_loop(
 async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Random):
     payload = {
         "robot_id": robot.robot_id,
+        # The robot stamps its own reading. Readings sit in an outbound queue
+        # and are posted in batches, so a server-side timestamp would record
+        # when the batch was uploaded rather than when each was measured —
+        # collapsing readings taken seconds apart onto one instant.
+        "timestamp": iso_utc_now(),
         "battery": round(clamp(apply_sensor_noise(robot, robot.battery, kind="battery", rng=rng), 0.0, 100.0), 2),
         "temperature": round(clamp(apply_sensor_noise(robot, robot.temperature, kind="temperature", rng=rng), 0.0, 120.0), 2),
         "speed": round(clamp(apply_sensor_noise(robot, robot.speed, kind="speed", rng=rng), 0.0, 3.0), 2),

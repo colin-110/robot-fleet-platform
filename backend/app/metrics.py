@@ -163,3 +163,19 @@ worker_batch_size = Histogram(
     "Number of telemetry rows persisted per worker batch",
     buckets=(1, 5, 10, 25, 50, 100, 250, 500),
 )
+
+# The ingest stream is capped, and Redis trims the oldest entries past that cap
+# even if a consumer group has not acknowledged them. A worker that falls far
+# enough behind therefore loses telemetry silently. These two make it audible:
+# alert when pending approaches the cap, or when length sits at it.
+telemetry_stream_length = Gauge(
+    "telemetry_stream_length",
+    "Entries currently held in the telemetry Redis Stream",
+    multiprocess_mode="max",
+)
+
+telemetry_stream_pending = Gauge(
+    "telemetry_stream_pending",
+    "Telemetry entries delivered to the worker but not yet acknowledged",
+    multiprocess_mode="max",
+)

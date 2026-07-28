@@ -137,6 +137,10 @@ The two Redis read modes are deliberate. The worker path uses `XREADGROUP` so th
 
 **Real-time fan-out that survives slow clients.** Every connection has a bounded outbound queue drained by a single dedicated sender task. Broadcasting is a non-blocking put onto every client's queue, so it never awaits a slow socket and never spawns a task per message. When a client cannot keep up, the *oldest* buffered frame is dropped rather than the newest, because stale telemetry is worthless — a robot's position from three seconds ago is noise. This caps memory per connection and prevents one stalled client from back-pressuring the entire fleet. Measured effect: 140 percent higher throughput than a task-per-message implementation at 300 concurrent clients.
 
+**A roster, so absence is detectable.** Fleet status is the robot roster LEFT JOINed onto recent telemetry, not a `GROUP BY` over recent telemetry. The distinction is the difference between a working monitor and a broken one: deriving the fleet from telemetry alone means a robot that stops reporting eventually falls outside the query window and silently disappears from the dashboard, so a unit that died an hour ago is indistinguishable from one that never existed. Registered robots are always listed, and missing telemetry renders `OFFLINE` with the roster's last-seen time. The roster populates itself — the worker upserts it as it persists each batch, keeping the write off the request path.
+
+**Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. Future-dated readings beyond a configurable skew are clamped, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
+
 **Idempotent command dispatch with compare-and-set transitions.** Commands move through an explicit state machine (`PENDING` to `DISPATCHED` to `ACKNOWLEDGED` to `EXECUTING` to `COMPLETED`). Both claiming a command and advancing its status are performed as a single conditional `UPDATE ... WHERE status = :expected`, so when two pollers or two status updates race, exactly one matches a row and the loser receives a `409`. Doing the validation in application code and writing afterwards would allow both writers to observe the same state and both commit. Expired commands are swept to `TIMEOUT` under a distributed Redis lock.
 
 **Multiprocess-correct metrics.** The API runs under `uvicorn --workers 4`, which forks independent processes. `prometheus_client` keeps its registry in process memory, so a naive setup serves `/metrics` from whichever worker answers the scrape and reports roughly a quarter of reality. The application uses the library's multiprocess mode, with a shared mmap directory and a `livesum` gauge aggregation so connection counts sum across live workers.
@@ -208,7 +212,7 @@ Testing spans unit, integration, API-contract, state-machine, concurrency, and l
 | Metric | Result |
 | :--- | :--- |
 | Tests | 28 passing, 0 skipped |
-| Line coverage | 60% overall |
+| Line coverage | 62% overall |
 | Suite runtime | ~13 s |
 | Database | Real PostgreSQL, in CI and locally |
 
@@ -298,6 +302,11 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `CORS_ORIGINS` | localhost origins | Comma-separated allowed origins |
 | `TRUSTED_PROXY_COUNT` | `0` | Number of reverse proxies in front of the app; controls how the rate limiter resolves the client IP |
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
+| `REQUIRE_AUTH_FOR_READS` | `false` | Whether fleet status, analytics, and events require an API key |
+| `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
+| `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
+| `MAX_CLOCK_SKEW_SECONDS` | `300` | Future-dated device timestamps beyond this are clamped to server time |
+| `TELEMETRY_STREAM_MAXLEN` | `100000` | Entries retained in the ingest stream; the worker's catch-up headroom |
 | `PROMETHEUS_MULTIPROC_DIR` | unset | Required when running more than one Uvicorn worker |
 
 ### Optimization flags
@@ -342,6 +351,7 @@ The production compose file refuses to start without an explicit `CORS_ORIGINS` 
 | Client IP resolution | The rate limiter reads `X-Forwarded-For` using a configured trusted-proxy count, taking the Nth entry from the right. Trusting the leftmost entry would let a client spoof its own address; trusting the socket peer would collapse the entire fleet into one bucket behind a proxy. |
 | Rate limiting | Redis sorted-set sliding window on ingest endpoints. Fails open, so a Redis outage degrades rate limiting rather than halting ingestion. |
 | State transitions | Atomic compare-and-set `UPDATE` statements, so concurrent writers cannot both commit a transition. |
+| Read endpoints | Fleet status, analytics, and events are public by default so the hosted demo works without shipping a key to every browser. This is a setting (`REQUIRE_AUTH_FOR_READS`), not a hardcoded exemption; it is the wrong default for real fleet positions. |
 | Secret hygiene | `.env`, `*.pem`, `*.key`, and `*.tfvars` are gitignored; the load-test harness reads its key from the environment rather than a literal. |
 
 ---
@@ -356,6 +366,7 @@ Being direct about where this stands is more useful than overselling it.
 | Authentication | A single shared API key. It is compared in constant time and required at startup, but the dashboard still ships it in the frontend bundle, so it is visible to any client. | Acceptable for a demonstration, not production-grade. No per-user authentication or multi-tenancy. Fixing this properly means moving the WebSocket handshake behind a short-lived signed token. |
 | No high availability | One EC2 instance, single-AZ RDS, one Redis node. | Adequate for a demo; a node or AZ failure means downtime. |
 | Time-series storage | Telemetry lives in a plain PostgreSQL table, bounded by a daily retention pruner. | Works, but not ideal for high-volume time-series at scale. |
+| Ingest buffer is bounded | The Redis Stream is capped (default 100,000 entries) and Redis trims the oldest beyond that, including entries the worker has not yet acknowledged. It is catch-up headroom, not an unbounded durable log. | A worker offline long enough to exhaust the buffer loses telemetry. Made visible rather than silent: `telemetry_stream_length` and `telemetry_stream_pending` are exported, and the worker warns at 90 percent. A durable fix means a dead-letter path or a broker with disk-backed retention. |
 | Test coverage gaps | The worker's main loop and the WebSocket manager's listener are thinly covered (39 and 26 percent). Their pure logic is tested; the surrounding infinite loops are not. | Verified through the live system and load tests, but deserves dedicated async tests. |
 | Metrics under multiple workers | Now correct, but worth recording that it was silently wrong: `prometheus_client` keeps counters per process, so with four workers the `/metrics` scrape reported roughly a quarter of reality. | Fixed via multiprocess mode. The failure mode is silent, so `PROMETHEUS_MULTIPROC_DIR` must be set wherever the app runs with more than one worker. |
 | orjson benefit is narrow | Current FastAPI serializes directly through Pydantic whenever a route declares a `response_model`, bypassing the custom response class. | The measured 17.9 percent gain applies only to routes without a response model. Retained because measuring it is how that constraint was discovered. |

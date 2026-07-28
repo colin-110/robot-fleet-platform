@@ -24,7 +24,17 @@ from app.database import Base
 
 
 class Robot(Base):
-    """First-class robot entity with identity and metadata."""
+    """First-class robot entity: the roster of units that *should* exist.
+
+    This is what makes absence detectable. Deriving the fleet purely from
+    recent telemetry means a robot that stops reporting eventually falls out of
+    the query window and silently disappears from the dashboard — which, for a
+    monitoring system, is the one failure it must never have. Registered robots
+    are always listed; missing telemetry renders as OFFLINE.
+
+    Rows are created by the worker on first sight of a robot's telemetry, so
+    the roster populates itself without a provisioning step.
+    """
 
     __tablename__ = "robots"
 
@@ -38,6 +48,9 @@ class Robot(Base):
         default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
     )
+    # Last time any telemetry was persisted for this robot. Lets the dashboard
+    # say "silent for 3 days" for a unit long outside the telemetry window.
+    last_seen = Column(DateTime(timezone=True), nullable=True, index=True)
     decommissioned_at = Column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
