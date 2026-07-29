@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
+from app.logging_config import configure_logging
 from app.metrics import (
     db_write_latency_seconds,
     telemetry_stream_length,
@@ -24,8 +25,7 @@ from app.repositories.robot_repo import RobotRepository
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
 
-# Configure logging for worker
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+configure_logging(service="worker")
 logger = logging.getLogger(__name__)
 
 settings = get_settings()

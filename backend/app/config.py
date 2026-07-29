@@ -15,7 +15,7 @@ before/after delta for that single change in isolation.
 import logging
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"
+    # "text" for a terminal, "json" for a log aggregator. Unset means text in
+    # development and json in production — see resolved_log_format.
+    log_format_setting: str | None = Field(default=None, alias="LOG_FORMAT")
+    # Emit one structured line per HTTP request. Uvicorn's own access log is
+    # disabled in production, so without this a deployed request leaves no
+    # trace at all — which is how a command dispatch became unverifiable.
+    access_log: bool = True
 
     # ── CORS ────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
@@ -172,6 +179,13 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
+
+    @property
+    def log_format(self) -> str:
+        """``text`` or ``json``. Production defaults to json."""
+        if self.log_format_setting:
+            return self.log_format_setting.lower()
+        return "json" if self.is_production else "text"
 
     @property
     def resolved_auth_mode(self) -> str:
