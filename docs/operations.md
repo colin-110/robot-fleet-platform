@@ -16,7 +16,8 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | :--- | :--- | :--- |
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
-| `TELEMETRY_API_KEY` | *required* | Shared key for the `X-API-Key` header and the WebSocket handshake |
+| `TELEMETRY_API_KEY` | *required* | Master key for the `X-API-Key` header (ingest, robot-facing command polling) and the signing key that console tickets are derived from |
+| `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
 | `APP_ENV` | `development` | `production` additionally rejects wildcard CORS and API keys shorter than 16 characters |
 | `CORS_ORIGINS` | localhost origins | Comma-separated allowed origins |
 | `TRUSTED_PROXY_COUNT` | `0` | Number of reverse proxies in front of the app; controls how the rate limiter resolves the client IP |
@@ -72,6 +73,7 @@ On every push and pull request to `main`:
 
 | Control | Implementation |
 | :--- | :--- |
+| Browser credentials | The dashboard is never built with the master key. It requests a short-lived console ticket at runtime (`POST /api/v1/auth/ticket`) — HMAC-signed over its own scope and expiry, so a holder can neither widen its permissions nor extend its life. Ingest still requires the master key, which now stays server-side, so reading the bundle no longer yields a credential that can forge telemetry for the fleet. Rotating the API key revokes every outstanding ticket, since the signing key is derived from it. |
 | API key comparison | `secrets.compare_digest`. A plain `!=` short-circuits at the first differing byte, leaking key prefixes through response timing. |
 | Secret defaults | None. `TELEMETRY_API_KEY` has no fallback value; the application fails at startup if it is missing. |
 | Production guards | `APP_ENV=production` rejects wildcard CORS origins and API keys shorter than 16 characters at configuration load. |
