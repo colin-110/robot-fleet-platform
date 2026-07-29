@@ -1,0 +1,68 @@
+# Production topology for the single-node AWS deployment.
+#
+# Pulls pre-built images from GHCR rather than building on the host. The box is
+# a t3.micro with ~900 MB of RAM and a 7.6 GB disk, and building there was a
+# recurring failure: a Vite build filled the disk (ENOSPC in `npm ci`) and left
+# the stack half-upgraded. CI already builds these images on every push to main
+# and only publishes them after the tests pass, so pulling is both lighter and
+# strictly better-verified than building locally.
+#
+# Deploy:
+#   docker compose -f docker-compose.aws.yml -p fleetops pull
+#   docker compose -f docker-compose.aws.yml -p fleetops up -d
+#
+# IMAGE_TAG defaults to `latest`. Pin it to a commit SHA for a deploy you can
+# name and roll back to:
+#   IMAGE_TAG=173e499... docker compose -f docker-compose.aws.yml -p fleetops up -d
+#
+# Postgres and Redis are managed (RDS / ElastiCache); their URLs come from
+# backend/.env, which is not in this repo.
+
+services:
+  backend:
+    image: ghcr.io/colin-110/robot-fleet-backend:${IMAGE_TAG:-latest}
+    # prestart.py applies Alembic migrations before the server accepts traffic.
+    # One worker: two would double the memory floor on a 1 GB box, and the
+    # ingest path is I/O-bound rather than CPU-bound.
+    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log"]
+    env_file: [./backend/.env]
+    environment:
+      - PYTHONPATH=.
+    restart: unless-stopped
+    networks: [fleet_net]
+
+  worker:
+    # Same image as the backend, different entrypoint — the worker is the same
+    # application with a different job, so a separate image would only mean two
+    # things to keep in step.
+    image: ghcr.io/colin-110/robot-fleet-backend:${IMAGE_TAG:-latest}
+    command: python -m app.worker
+    env_file: [./backend/.env]
+    environment:
+      - PYTHONPATH=.
+    restart: unless-stopped
+    depends_on: [backend]
+    networks: [fleet_net]
+
+  frontend:
+    image: ghcr.io/colin-110/robot-fleet-frontend:${IMAGE_TAG:-latest}
+    # nginx serves the SPA and proxies /api and /ws to the backend container.
+    ports: ["80:80"]
+    restart: unless-stopped
+    depends_on: [backend]
+    networks: [fleet_net]
+
+  simulator:
+    image: ghcr.io/colin-110/robot-fleet-simulator:${IMAGE_TAG:-latest}
+    # No --api-key: a secret on the command line is visible in `ps aux` and
+    # `docker inspect`. It reads TELEMETRY_API_KEY from env_file.
+    # 24 robots rather than 40 — sized for the t3.micro.
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24"]
+    env_file: [./backend/.env]
+    restart: unless-stopped
+    depends_on: [backend]
+    networks: [fleet_net]
+
+networks:
+  fleet_net:
+    driver: bridge
