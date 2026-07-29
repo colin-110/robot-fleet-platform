@@ -11,6 +11,8 @@
  * on every page load.
  */
 
+import { authHeaders } from "./auth";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 // Refresh this many seconds before expiry rather than waiting to be rejected —
@@ -42,7 +44,13 @@ export async function getTicket() {
 
   inflight = (async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/v1/auth/ticket`, { method: "POST" });
+      // Carries the bearer token when there is a session. In required mode
+      // the backend refuses to mint a ticket without one, which is what stops
+      // the login wall from being bypassable in a single request.
+      const response = await fetch(`${API_BASE}/api/v1/auth/ticket`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
       if (!response.ok) {
         throw new Error(`Ticket request failed: ${response.status}`);
       }

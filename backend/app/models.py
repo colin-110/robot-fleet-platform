@@ -146,3 +146,27 @@ class Event(Base):
     )
 
     __table_args__ = (Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),)
+
+
+class User(Base):
+    """An operator account.
+
+    Exists only when ``AUTH_MODE=required``. The hosted demo runs in ``open``
+    mode with no accounts at all, because a login wall on a portfolio demo
+    means nobody clicks past it — see ``app/security.py`` for the full
+    reasoning about why this is a mode rather than a hard requirement.
+
+    Passwords are stored as bcrypt hashes. The column is sized for bcrypt's
+    60-byte output with room for a future algorithm prefix.
+    """
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(64), unique=True, nullable=False, index=True)
+    password_hash = Column(String(128), nullable=False)
+    # viewer | operator | admin — see app.security.ROLES.
+    role = Column(String(16), nullable=False, default="viewer")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_login_at = Column(DateTime(timezone=True), nullable=True)

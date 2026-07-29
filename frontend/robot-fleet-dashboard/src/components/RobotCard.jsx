@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import axios from "axios";
 import { getStatusMeta, healthTone, formatRuntime, formatLastSeen } from "../utils/constants";
 import { getTicket } from "../utils/ticket";
+import { authHeaders } from "../utils/auth";
 
 function formatMission(robot) {
   if (!robot.mission_id || !robot.mission_type) return "Idle";
@@ -40,7 +41,9 @@ function RobotCard({ robot }) {
       await axios.post(
         `${API_BASE}/api/v1/commands/${robot.robot_id}`,
         { command_type: action },
-        { headers: { "X-Console-Ticket": ticket } },
+        // Ticket proves the client may reach the console; the bearer token
+        // proves the person holds the operator role. The backend checks both.
+        { headers: { "X-Console-Ticket": ticket, ...authHeaders() } },
       );
     } catch (err) {
       console.error("Failed to send command", err);

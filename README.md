@@ -82,12 +82,12 @@ Arms are interleaved so host load biases both equally; the harness asserts via `
 
 | | Tests | Coverage | Environment |
 | :--- | ---: | ---: | :--- |
-| Backend (pytest) | 124 | 74% | Real PostgreSQL + Redis |
-| Frontend (vitest) | 51 | 88% hooks, 100% utils | jsdom |
+| Backend (pytest) | 171 | 76% | Real PostgreSQL + Redis |
+| Frontend (vitest) | 69 | 88% hooks, 100% utils | jsdom |
 
 The backend suite runs against real PostgreSQL rather than SQLite because the application depends on Postgres-specific SQL — `date_trunc`, `INTERVAL` arithmetic, and atomic conditional `UPDATE` dispatch — that SQLite cannot execute. A safety guard refuses to run against any database whose name does not contain `test`, since the fixtures drop and recreate the schema between tests.
 
-**Covered:** telemetry ingestion and retrieval; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch (two racing `PATCH` requests must not both commit); analytics aggregation; cache hit and bypass; worker batch parsing, drain/ack cycle, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and Redis listener recovery; and ticket auth — that a holder cannot forge, widen its scope, or extend its own expiry. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, and command dispatch.
+**Covered:** telemetry ingestion and retrieval; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch (two racing `PATCH` requests must not both commit); analytics aggregation; cache hit and bypass; worker batch parsing, drain/ack cycle, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and Redis listener recovery; ticket auth — that a holder cannot forge, widen its scope, or extend its own expiry; and JWT sign-in, covering role ranking, `alg: none` and wrong-key rejection, username enumeration via error message or timing, and that bootstrapping the first admin cannot overwrite an existing one. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, command dispatch, and the sign-in gate.
 
 **Not covered:** presentational React components, which is why the frontend's all-files number is lower than its hooks number. Coverage is honest rather than uniform.
 
@@ -141,7 +141,7 @@ Being direct about where this stands is more useful than overselling it.
 | Area | Limitation |
 | :--- | :--- |
 | HTTP throughput | Single-node ingest plateaus around 125–250 req/s. Beyond ~500 concurrent requests the node sheds load. The Redis buffer helps substantially; the FastAPI request path remains the ceiling. Addressed by horizontal scaling. |
-| Authentication | No per-user identity or multi-tenancy. The browser no longer holds the master key — it gets a short-lived scoped ticket, so a bundle reader can no longer forge telemetry — but the ticket endpoint is as public as the read endpoints it sits beside, so anyone who can load the demo can drive it. Real fixes are OIDC and per-fleet isolation. |
+| Authentication | JWT sign-in with ranked roles exists and is enforced, but the **hosted demo deliberately runs `AUTH_MODE=open`** so the link is clickable — meaning anyone who loads it can drive the fleet. Any deployment with real data sets `AUTH_MODE=required`, which production defaults to. Still missing: multi-tenancy, per-fleet isolation, and an external IdP (OIDC) rather than local accounts. |
 | No high availability | One EC2 instance, single-AZ RDS, one Redis node. A node or AZ failure means downtime. |
 | Bounded ingest buffer | The Redis Stream is capped and Redis trims the oldest beyond that, including entries the worker has not acknowledged. Made visible rather than silent: `telemetry_stream_length` and `telemetry_stream_pending` are exported and the worker warns at 90%. A durable fix means a dead-letter path or a disk-backed broker. |
 | Time-series storage | Telemetry lives in a plain PostgreSQL table bounded by a daily retention pruner. Works, but not ideal at volume. |
