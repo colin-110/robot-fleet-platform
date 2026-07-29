@@ -92,6 +92,38 @@ def lerp(a: float, b: float, t: float):
     return a + (b - a) * t
 
 
+# Multiplies the per-tick component wear rates. Wear is slow in absolute terms
+# — a real robot degrades over months — but a demo that has to be left running
+# for twenty hours before anything moves off 100% is not demonstrating anything.
+WEAR_ACCELERATION = 6.0
+
+
+def initial_component_health(rng: random.Random, service_age: float | None = None):
+    """Component health for a robot entering the fleet.
+
+    Every robot used to start at exactly 100.0. Combined with a wear rate of
+    roughly one percent per hour, that meant all four health readouts sat at a
+    flat 100 for the first several hours of uptime: the colour thresholds never
+    fired, the per-component bars were indistinguishable, and the maintenance
+    view had nothing to rank. Real fleets are mixed-age, so this seeds one.
+
+    A single service-age factor drives all four components, because a unit that
+    has done ten thousand hours is worn everywhere rather than in one subsystem.
+    Per-component jitter keeps them from moving in visible lockstep, and the
+    spreads differ because motors wear faster than network interfaces.
+
+    Returns ``(battery, motor, sensor, network)``.
+    """
+    # Beta(2, 3) skews toward mid-life: mostly serviceable units, a few nearly
+    # new, a few due for replacement.
+    age = rng.betavariate(2.0, 3.0) if service_age is None else service_age
+
+    def component(max_wear: float) -> float:
+        return clamp(100.0 - age * max_wear * rng.uniform(0.75, 1.25), 25.0, 100.0)
+
+    return component(55.0), component(70.0), component(45.0), component(40.0)
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("simulator")
 
@@ -388,10 +420,15 @@ async def robot_loop(
                 if now - robot.dead_since >= rng.uniform(45.0, 90.0):
                     robot.battery = 100.0
                     robot.temperature = ambient_c
-                    robot.battery_health = 100.0
-                    robot.motor_health = 100.0
-                    robot.sensor_health = 100.0
-                    robot.network_health = 100.0
+                    # A replacement unit, not a magically restored one. Reviving
+                    # everything to a flat 100 pulled the whole fleet toward
+                    # perfect health over a long run, undoing the age spread.
+                    (
+                        robot.battery_health,
+                        robot.motor_health,
+                        robot.sensor_health,
+                        robot.network_health,
+                    ) = initial_component_health(rng, service_age=rng.uniform(0.02, 0.15))
                     robot.status = "ACTIVE"
                     robot.online = True
                     robot.charging_suspended = False
@@ -592,15 +629,24 @@ async def robot_loop(
                 robot.battery -= standby_drain * dt * 20.0
                 robot.temperature -= 0.04 * (robot.temperature - ambient_c) * dt
 
-            # Wear down components
-            robot.battery_health = clamp(robot.battery_health - rng.uniform(0.0006, 0.0012), 10.0, 100.0)
+            # Wear down components. Scaled by WEAR_ACCELERATION so degradation
+            # is observable across a demo session rather than a working week.
+            wear = WEAR_ACCELERATION
+            robot.battery_health = clamp(
+                robot.battery_health - rng.uniform(0.0006, 0.0012) * wear, 10.0, 100.0
+            )
             robot.motor_health = clamp(
-                robot.motor_health - rng.uniform(0.0008, 0.0014) * (1.3 if robot.mission else 0.5),
+                robot.motor_health
+                - rng.uniform(0.0008, 0.0014) * (1.3 if robot.mission else 0.5) * wear,
                 10.0,
                 100.0,
             )
-            robot.sensor_health = clamp(robot.sensor_health - rng.uniform(0.0005, 0.0010), 10.0, 100.0)
-            robot.network_health = clamp(robot.network_health - rng.uniform(0.0006, 0.0011), 10.0, 100.0)
+            robot.sensor_health = clamp(
+                robot.sensor_health - rng.uniform(0.0005, 0.0010) * wear, 10.0, 100.0
+            )
+            robot.network_health = clamp(
+                robot.network_health - rng.uniform(0.0006, 0.0011) * wear, 10.0, 100.0
+            )
 
             if rng.random() < 0.0025:
                 robot.temperature += rng.uniform(4.0, 9.0)
@@ -811,11 +857,16 @@ async def main_async(args, worker_index=0, total_workers=1):
     robots = []
     for rid in range(start_id, end_id):
         start_x, start_y = random_point(rng, args.radius * 0.2)
+        battery_h, motor_h, sensor_h, network_h = initial_component_health(rng)
         robots.append(
             RobotState(
                 robot_id=rid,
                 battery=clamp(100.0 - rng.uniform(0, 12), 65.0, 100.0),
                 temperature=clamp(args.ambient + rng.uniform(1.0, 6.0), 24.0, 50.0),
+                battery_health=battery_h,
+                motor_health=motor_h,
+                sensor_health=sensor_h,
+                network_health=network_h,
                 x=start_x,
                 y=start_y,
                 home_x=0.0,
