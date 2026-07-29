@@ -50,7 +50,16 @@ Each flag defaults to enabled. Setting one to `false` restores the naive impleme
 
 ## Deployment
 
-A single `t3.micro` EC2 instance runs the whole stack via Docker Compose, backed by managed Amazon RDS (PostgreSQL) and ElastiCache (Redis), fronted by CloudFront for HTTPS. On boot the instance pulls the repository and self-deploys the backend, worker, nginx frontend, and simulator. Nginx serves the single-page application and proxies REST and WebSocket traffic to the backend. GitHub Actions publishes container images to GHCR on every push to `main`.
+A single `t3.micro` EC2 instance runs the whole stack via Docker Compose ([`docker-compose.aws.yml`](../docker-compose.aws.yml)), backed by managed Amazon RDS (PostgreSQL) and ElastiCache (Redis), fronted by CloudFront for HTTPS.
+
+The host **pulls pre-built images from GHCR rather than building**. Building on the box was a recurring failure: 900 MB of RAM and a 7.6 GB disk, where a Vite build exhausted the disk (`ENOSPC` inside `npm ci`) and left the stack half-upgraded. CI builds the same images on every push to main and only publishes them once the tests pass, so pulling is both lighter and better-verified than building locally. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to.
+
+```bash
+cd /opt/fleetops
+IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops pull
+IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
+```
+ Nginx serves the single-page application and proxies REST and WebSocket traffic to the backend. GitHub Actions publishes container images to GHCR on every push to `main`.
 
 ```
 Viewer --HTTPS--> CloudFront --HTTP--> EC2 (nginx :80 -> FastAPI :8000)
