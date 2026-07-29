@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # silently falling back to a value that is public in this repo.
     telemetry_api_key: str
 
+    # Lifetime of a browser ticket (app/tickets.py). Long enough to survive a
+    # reconnect storm, short enough that a scraped ticket is quickly worthless.
+    # The dashboard fetches a fresh one whenever its socket reconnects.
+    ticket_ttl_seconds: int = 300
+
     retention_days: int = 1
 
     # ── Application ─────────────────────────────────────────────────

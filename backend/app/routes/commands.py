@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import verify_api_key
+from app.auth import verify_api_key, verify_console_access
 from app.database import get_db
 from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
@@ -25,9 +25,14 @@ async def send_command(
     robot_id: int,
     command: CommandCreate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    _=Depends(verify_console_access),
 ):
-    """Queue a command for a specific robot and broadcast it."""
+    """Queue a command for a specific robot and broadcast it.
+
+    Console-scoped: the dashboard authenticates with a short-lived ticket, so
+    dispatching a command no longer requires shipping the ingest key to the
+    browser. ``verify_api_key`` still guards ingest.
+    """
     service = CommandService(db)
     payload = await service.create_command(robot_id, command)
     return {"message": "Command sent", "payload": payload}

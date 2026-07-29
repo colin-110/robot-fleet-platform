@@ -32,11 +32,13 @@ from app.middleware import (
     RequestIDMiddleware,
 )
 from app.routes.analytics import router as analytics_router
+from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
 from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
+from app.tickets import SCOPE_CONSOLE, verify_ticket
 from app.websocket_manager import manager
 
 # ── Logging Setup ───────────────────────────────────────────────────
@@ -132,6 +134,7 @@ app.include_router(commands_router)
 app.include_router(robots_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
+app.include_router(auth_router)
 
 
 @app.get("/", tags=["root"])
@@ -175,13 +178,21 @@ async def prometheus_metrics():
 async def websocket_endpoint(
     websocket: WebSocket,
     api_key: str = Query(None),
+    ticket: str = Query(None),
 ):
     """WebSocket endpoint for real-time telemetry broadcast.
 
-    Requires ``?api_key=<key>`` query parameter for authentication.
+    Authenticates with either ``?ticket=<ticket>`` (browsers — short-lived and
+    scoped, see ``app/tickets.py``) or ``?api_key=<key>`` (server-side clients
+    such as the load harnesses, which legitimately hold the master key).
+
+    Browsers use the ticket because a WebSocket handshake cannot carry a custom
+    header, so the credential has to travel in the URL — where it lands in proxy
+    and access logs. A five-minute scoped ticket is a very different thing to
+    leak there than the fleet's ingest key.
     """
-    if not is_valid_api_key(api_key):
-        await websocket.close(code=4001, reason="Invalid or missing API key")
+    if not (verify_ticket(ticket, SCOPE_CONSOLE) or is_valid_api_key(api_key)):
+        await websocket.close(code=4001, reason="Invalid or missing credentials")
         return
 
     await manager.connect(websocket)

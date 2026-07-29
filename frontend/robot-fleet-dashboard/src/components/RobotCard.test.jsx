@@ -5,6 +5,9 @@ import axios from "axios";
 import RobotCard from "./RobotCard";
 
 vi.mock("axios");
+vi.mock("../utils/ticket", () => ({
+  getTicket: vi.fn(() => Promise.resolve("v1.console.9999999999.abc.sig")),
+}));
 
 const robot = (overrides = {}) => ({
   robot_id: 7,
@@ -64,7 +67,7 @@ describe("RobotCard", () => {
     expect(screen.queryByRole("button", { name: "Emergency Stop" })).not.toBeInTheDocument();
   });
 
-  it("dispatches the command to the versioned endpoint with the API key", async () => {
+  it("dispatches the command authenticated by a console ticket", async () => {
     const user = userEvent.setup();
     render(<RobotCard robot={robot()} />);
 
@@ -74,8 +77,10 @@ describe("RobotCard", () => {
     expect(axios.post).toHaveBeenCalledWith(
       "/api/v1/commands/7",
       { command_type: "RETURN_TO_BASE" },
-      { headers: { "X-API-Key": "test-api-key" } },
+      { headers: { "X-Console-Ticket": "v1.console.9999999999.abc.sig" } },
     );
+    // The ingest key must never reach the browser.
+    expect(JSON.stringify(axios.post.mock.calls[0])).not.toContain("X-API-Key");
   });
 
   it("sends EMERGENCY_STOP and RESUME from their respective buttons", async () => {
