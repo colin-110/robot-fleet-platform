@@ -4,7 +4,7 @@
 
 All figures below were measured on a single developer machine running the entire stack (API, worker, PostgreSQL, Redis, and the simulator) simultaneously. They are a reproducible single-node lower bound, not an aspirational target.
 
-Machine-readable results live in [`benchmarks.json`](./benchmarks.json); the full per-experiment breakdown, including per-run spread, is regenerated into [`benchmarks.md`](./benchmarks.md) by the harness itself.
+Machine-readable results live in [`benchmarks.json`](./benchmarks.json); the full per-experiment breakdown, including per-run spread, is regenerated into [`benchmarks.md`](./benchmarks.md) by the harness itself. Both are the output of a specific run and predate the orjson removal below, so they still list that experiment — a re-run drops it.
 
 ---
 
