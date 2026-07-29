@@ -1,8 +1,7 @@
 import { memo, useState } from "react";
 import axios from "axios";
 import { getStatusMeta, healthTone, formatRuntime, formatLastSeen } from "../utils/constants";
-
-const API_KEY = import.meta.env.VITE_WS_API_KEY || "";
+import { getTicket } from "../utils/ticket";
 
 function formatMission(robot) {
   if (!robot.mission_id || !robot.mission_type) return "Idle";
@@ -33,10 +32,13 @@ function RobotCard({ robot }) {
     const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
     setLoadingAction(action);
     try {
+      // Console-scoped and short-lived. The master key stays server-side, so a
+      // bundle reader cannot forge telemetry for the fleet.
+      const ticket = await getTicket();
       await axios.post(
         `${API_BASE}/api/v1/commands/${robot.robot_id}`,
         { command_type: action },
-        { headers: { "X-API-Key": API_KEY } },
+        { headers: { "X-Console-Ticket": ticket } },
       );
     } catch (err) {
       console.error("Failed to send command", err);

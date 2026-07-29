@@ -168,6 +168,16 @@ class FleetAnalyticsResponse(BaseModel):
     robot_status_breakdown: list[StatusBreakdownItem] = Field(default_factory=list)
 
 
+class TicketResponse(BaseModel):
+    """A short-lived console ticket issued to a browser client."""
+
+    ticket: str
+    # Unix seconds. The client refreshes before this rather than waiting for the
+    # socket to be closed on it.
+    expires_at: int
+    scope: str
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
 

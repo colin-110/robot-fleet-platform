@@ -1,8 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-
-// No hardcoded fallback: a key baked in here ships to every browser that loads
-// the bundle. Configure VITE_WS_API_KEY at build time.
-const WS_API_KEY = import.meta.env.VITE_WS_API_KEY || '';
+import { getTicket } from '../utils/ticket';
 
 export function useWebSocket(url, onMessage) {
   const [isConnected, setIsConnected] = useState(false);
@@ -19,13 +16,33 @@ export function useWebSocket(url, onMessage) {
     let pingInterval = null;
     let shouldReconnect = true;
 
-    const connect = () => {
+    const scheduleReconnect = () => {
+      if (shouldReconnect) {
+        reconnectTimeout = setTimeout(connect, 3000);
+      }
+    };
+
+    const connect = async () => {
       if (ws?.readyState === WebSocket.OPEN) return;
 
-      // Append the API key as a query parameter for WebSocket auth.
+      // A handshake cannot carry a custom header, so the credential has to ride
+      // in the query string. That is why it is a short-lived scoped ticket and
+      // not the master API key — see src/utils/ticket.js.
+      let ticket;
+      try {
+        ticket = await getTicket();
+      } catch (err) {
+        console.error('Could not obtain a console ticket:', err);
+        scheduleReconnect();
+        return;
+      }
+
+      // The component can unmount while that request is in flight; opening a
+      // socket now would leak one no cleanup has a reference to.
+      if (!shouldReconnect) return;
+
       const separator = url.includes('?') ? '&' : '?';
-      const authenticatedUrl = `${url}${separator}api_key=${encodeURIComponent(WS_API_KEY)}`;
-      ws = new WebSocket(authenticatedUrl);
+      ws = new WebSocket(`${url}${separator}ticket=${encodeURIComponent(ticket)}`);
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -48,9 +65,7 @@ export function useWebSocket(url, onMessage) {
       ws.onclose = () => {
         setIsConnected(false);
         clearInterval(pingInterval);
-        if (shouldReconnect) {
-          reconnectTimeout = setTimeout(connect, 3000);
-        }
+        scheduleReconnect();
       };
 
       ws.onerror = (error) => {

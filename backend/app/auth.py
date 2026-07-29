@@ -5,6 +5,7 @@ import secrets
 from fastapi import Header, HTTPException
 
 from app.config import get_settings
+from app.tickets import SCOPE_CONSOLE, verify_ticket
 
 settings = get_settings()
 
@@ -26,6 +27,23 @@ async def verify_api_key(x_api_key: str = Header(None)):
     """FastAPI dependency: reject requests without a valid API key."""
     if not is_valid_api_key(x_api_key):
         raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
+async def verify_console_access(
+    x_api_key: str = Header(None),
+    x_console_ticket: str = Header(None),
+):
+    """Auth for operator-console actions such as command dispatch.
+
+    Accepts the master key (server-side callers: the simulator, load harnesses)
+    or a short-lived console ticket (the dashboard). The browser therefore never
+    needs the key that authorizes telemetry ingest — see ``app/tickets.py``.
+    """
+    if is_valid_api_key(x_api_key):
+        return
+    if verify_ticket(x_console_ticket, SCOPE_CONSOLE):
+        return
+    raise HTTPException(status_code=401, detail="Invalid API key or console ticket")
 
 
 async def verify_read_access(x_api_key: str = Header(None)):

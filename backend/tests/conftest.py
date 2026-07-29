@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.auth import verify_api_key
+from app.auth import verify_api_key, verify_console_access
 from app.cache import cache
 from app.config import get_settings
 from app.database import Base, get_db
@@ -79,6 +79,10 @@ async def override_get_db():
 # here; overriding it keeps every test from having to carry the header.
 app.dependency_overrides[get_db] = override_get_db
 app.dependency_overrides[verify_api_key] = lambda: None
+# Same reasoning as verify_api_key: the credential check is not the unit under
+# test for route behaviour. ``test_ticket_auth.py`` exercises it without the
+# override, so the real dependency is still covered.
+app.dependency_overrides[verify_console_access] = lambda: None
 
 
 @pytest.fixture(autouse=True)
