@@ -414,21 +414,12 @@ EXPERIMENTS: list[Experiment] = [
         total=2000,
         concurrency=50,
     ),
-    # Expect this one to come back near zero, and that is the useful result:
-    # current FastAPI serializes via Pydantic whenever a route declares a
-    # `response_model`, bypassing default_response_class. Measuring it is how
-    # you find that out instead of repeating a claim that no longer applies.
-    Experiment(
-        key="orjson",
-        flag="OPT_ORJSON",
-        title="orjson serialization",
-        claim="Serializing float-heavy telemetry responses with orjson",
-        workload="read_status",
-        baseline_label="stdlib json",
-        optimized_label="orjson",
-        total=600,
-        concurrency=25,
-    ),
+    # The orjson experiment was retired along with the code it measured. It
+    # reported a real 17.9% gain, but only on the few routes without a
+    # `response_model` — FastAPI serializes through Pydantic directly whenever
+    # one is declared, bypassing default_response_class entirely, and has since
+    # deprecated ORJSONResponse for that reason. The finding is kept in
+    # docs/performance.md; there is no longer a flag to toggle.
     Experiment(
         key="batch_insert",
         flag="OPT_BATCH_INSERT",

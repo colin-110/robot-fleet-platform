@@ -37,12 +37,37 @@ logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "x-request-id"
 
-# Only telemetry ingestion is rate limited; dashboard reads are cheap and cached.
-_RATE_LIMITED_SUFFIXES = ("/telemetry", "/telemetry/batch")
+# Two budgets, because the two classes of write have very different shapes.
+#
+# "ingest" is the fleet reporting telemetry: high volume by design, so the
+# budget is generous. "console" is what a browser can reach without holding the
+# master key — minting tickets and dispatching commands. Those are public on
+# the hosted demo, so an unlimited budget would let anyone mint tickets forever
+# and drive the fleet as fast as they can send requests.
+#
+# Dashboard reads stay unlimited: cheap, cached, and read-only.
+_INGEST_SUFFIXES = ("/telemetry", "/telemetry/batch")
+_CONSOLE_SUFFIXES = ("/auth/ticket",)
+_COMMANDS_SEGMENT = "/commands/"
+
+INGEST_BUCKET = "ingest"
+CONSOLE_BUCKET = "console"
 
 
-def _is_rate_limited(method: str, path: str) -> bool:
-    return method == "POST" and path.endswith(_RATE_LIMITED_SUFFIXES)
+def _rate_limit_bucket(method: str, path: str) -> str | None:
+    """Which budget applies, or None when the path is not limited."""
+    if method != "POST":
+        return None
+    if path.endswith(_INGEST_SUFFIXES):
+        return INGEST_BUCKET
+    if path.endswith(_CONSOLE_SUFFIXES):
+        return CONSOLE_BUCKET
+    # Operator dispatch: POST /api/v1/commands/{robot_id}. The robot-facing
+    # /claim sub-path is excluded deliberately — robots poll it continuously and
+    # a console-sized budget would throttle the fleet itself.
+    if _COMMANDS_SEGMENT in path and not path.endswith("/claim"):
+        return CONSOLE_BUCKET
+    return None
 
 
 def client_ip_from_scope(scope: Scope, trusted_proxy_count: int) -> str:
@@ -107,23 +132,33 @@ class RateLimitMiddleware:
         self,
         app: ASGIApp,
         max_requests: int = 100,
+        console_max_requests: int = 60,
         window_seconds: int = 60,
         trusted_proxy_count: int = 0,
     ) -> None:
         self.app = app
         self.max_requests = max_requests
+        self.console_max_requests = console_max_requests
         self.window_seconds = window_seconds
         self.trusted_proxy_count = trusted_proxy_count
 
+    def _budget(self, bucket: str) -> int:
+        return self.console_max_requests if bucket == CONSOLE_BUCKET else self.max_requests
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not _is_rate_limited(
-            scope.get("method", ""), scope.get("path", "")
-        ):
+        bucket = (
+            _rate_limit_bucket(scope.get("method", ""), scope.get("path", ""))
+            if scope["type"] == "http"
+            else None
+        )
+        if bucket is None:
             await self.app(scope, receive, send)
             return
 
         client_ip = client_ip_from_scope(scope, self.trusted_proxy_count)
-        allowed = await _check_rate_limit(client_ip, self.max_requests, self.window_seconds)
+        allowed = await _check_rate_limit(
+            client_ip, self._budget(bucket), self.window_seconds, bucket
+        )
         if not allowed:
             response = _rate_limited_response(self.window_seconds)
             await response(scope, receive, send)
@@ -135,7 +170,9 @@ class RateLimitMiddleware:
 # ── Shared limiter logic ────────────────────────────────────────────
 
 
-async def _check_rate_limit(client_ip: str, max_requests: int, window_seconds: int) -> bool:
+async def _check_rate_limit(
+    client_ip: str, max_requests: int, window_seconds: int, bucket: str = INGEST_BUCKET
+) -> bool:
     """Return ``True`` if this request is within the limit.
 
     Sliding window over a Redis sorted set: drop entries older than the window,
@@ -150,7 +187,9 @@ async def _check_rate_limit(client_ip: str, max_requests: int, window_seconds: i
     if redis is None:
         return True
 
-    key = f"rate_limit:{client_ip}"
+    # Bucketed so a burst of console requests cannot exhaust the fleet's
+    # ingest budget, or vice versa.
+    key = f"rate_limit:{bucket}:{client_ip}"
     now = time.time()
     member = f"{now}:{uuid.uuid4().hex[:8]}"  # unique: identical timestamps collide
 
@@ -198,20 +237,24 @@ class LegacyRateLimitMiddleware(BaseHTTPMiddleware):
         self,
         app,
         max_requests: int = 100,
+        console_max_requests: int = 60,
         window_seconds: int = 60,
         trusted_proxy_count: int = 0,
     ) -> None:
         super().__init__(app)
         self.max_requests = max_requests
+        self.console_max_requests = console_max_requests
         self.window_seconds = window_seconds
         self.trusted_proxy_count = trusted_proxy_count
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if not _is_rate_limited(request.method, request.url.path):
+        bucket = _rate_limit_bucket(request.method, request.url.path)
+        if bucket is None:
             return await call_next(request)
 
+        budget = self.console_max_requests if bucket == CONSOLE_BUCKET else self.max_requests
         client_ip = client_ip_from_scope(request.scope, self.trusted_proxy_count)
-        allowed = await _check_rate_limit(client_ip, self.max_requests, self.window_seconds)
+        allowed = await _check_rate_limit(client_ip, budget, self.window_seconds, bucket)
         if not allowed:
             return _rate_limited_response(self.window_seconds)
 

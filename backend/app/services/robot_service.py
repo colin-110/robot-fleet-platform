@@ -57,6 +57,21 @@ def _derive_status(latest, age_seconds: float) -> str:
     return latest.status.upper() if latest.status else "ACTIVE"
 
 
+def _health(value: float | None) -> float:
+    """Component health, defaulting only when the device reported nothing.
+
+    The distinction is null versus zero, and a truthiness check collapses them:
+    ``value if value else 100.0`` renders a completely failed component — 0.0,
+    the single most urgent reading the system can receive — as perfect health.
+    That inverts the signal rather than losing it, which is the one failure mode
+    a monitoring system must not have.
+
+    Absent readings still default to 100.0: older devices predate per-component
+    reporting, and showing them at zero would flag healthy units as dead.
+    """
+    return round(value, 2) if value is not None else 100.0
+
+
 def _estimate_runtime_minutes(rows, latest_ts: datetime) -> float | None:
     """Extrapolate remaining runtime from the observed battery drain rate.
 
@@ -107,10 +122,10 @@ def summarize_robot_history(rows) -> dict | None:
         "runtime_remaining_minutes": _estimate_runtime_minutes(rows, ts),
         "x": round(latest.x, 2) if latest.x is not None else 0.0,
         "y": round(latest.y, 2) if latest.y is not None else 0.0,
-        "battery_health": round(latest.battery_health, 2) if latest.battery_health else 100.0,
-        "motor_health": round(latest.motor_health, 2) if latest.motor_health else 100.0,
-        "sensor_health": round(latest.sensor_health, 2) if latest.sensor_health else 100.0,
-        "network_health": round(latest.network_health, 2) if latest.network_health else 100.0,
+        "battery_health": _health(latest.battery_health),
+        "motor_health": _health(latest.motor_health),
+        "sensor_health": _health(latest.sensor_health),
+        "network_health": _health(latest.network_health),
     }
 
 

@@ -21,6 +21,7 @@ from app.metrics import (
 )
 from app.models import RobotCommand, Telemetry
 from app.repositories.robot_repo import RobotRepository
+from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
 
 # Configure logging for worker
@@ -319,25 +320,39 @@ async def db_pruner_task():
 
 
 async def scan_for_timeouts(session: AsyncSession):
-    """Scan for commands that have expired and mark them as TIMEOUT."""
+    """Expire commands that ran past their deadline.
+
+    The selection and the write are separated by real time — the loop awaits a
+    Redis round trip per command — so a robot can acknowledge completion after
+    a command is picked up here but before it is written. An unguarded
+    ``UPDATE ... WHERE id = :id`` would then overwrite a genuinely COMPLETED
+    command with TIMEOUT and broadcast that lie to every dashboard.
+
+    So the terminal-state check is repeated in the ``UPDATE`` itself, making the
+    transition a compare-and-set: the database decides, and a row that reached a
+    terminal state under us simply matches nothing. This is the same rule
+    ``CommandService`` already applies to every other transition; the scanner
+    was the one writer not following it.
+    """
     now = datetime.now(timezone.utc)
 
-    # Find commands where expires_at < now and status not in terminal states
     stmt = select(RobotCommand).where(
         RobotCommand.expires_at < now,
-        RobotCommand.status.not_in(["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"]),
+        RobotCommand.status.not_in(TERMINAL_STATES),
     )
 
     result = await session.execute(stmt)
     expired_commands = result.scalars().all()
 
+    timed_out = []
     for cmd in expired_commands:
-        logger.info(f"Command {cmd.id} timed out. Updating status to TIMEOUT.")
-
-        # Update to TIMEOUT
         update_stmt = (
             update(RobotCommand)
-            .where(RobotCommand.id == cmd.id)
+            .where(
+                RobotCommand.id == cmd.id,
+                # Re-checked at write time, not just at selection time.
+                RobotCommand.status.not_in(TERMINAL_STATES),
+            )
             .values(
                 status="TIMEOUT",
                 completed_at=func.now(),
@@ -345,9 +360,23 @@ async def scan_for_timeouts(session: AsyncSession):
                 error_message=f"Command did not complete within {cmd.timeout_seconds} seconds",
             )
         )
-        await session.execute(update_stmt)
+        update_result = await session.execute(update_stmt)
 
-        # Broadcast the timeout so the frontend and simulator know
+        if update_result.rowcount == 0:
+            # Finished while the scan was in flight. Not an error — the robot
+            # won the race, which is the outcome we want.
+            logger.debug("Command %s reached a terminal state during the scan.", cmd.id)
+            continue
+
+        logger.info("Command %s timed out. Status updated to TIMEOUT.", cmd.id)
+        timed_out.append(cmd)
+
+    # Commit before announcing: a broadcast is not retractable, so nothing is
+    # published until the transition it describes is durable.
+    if timed_out:
+        await session.commit()
+
+    for cmd in timed_out:
         payload = {
             "type": "COMMAND_UPDATE",
             "robot_id": cmd.robot_id,
@@ -357,9 +386,6 @@ async def scan_for_timeouts(session: AsyncSession):
             "timestamp": now.isoformat().replace("+00:00", "Z"),
         }
         await manager.broadcast(payload, stream="event_stream")
-
-    if expired_commands:
-        await session.commit()
 
 
 async def timeout_worker_loop():
@@ -374,8 +400,15 @@ async def timeout_worker_loop():
             try:
                 lock_acquired = await manager.redis.set("lock:timeout_scanner", "1", nx=True, ex=10)
                 if lock_acquired:
-                    async with AsyncSessionLocal() as session:
-                        await scan_for_timeouts(session)
+                    try:
+                        async with AsyncSessionLocal() as session:
+                            await scan_for_timeouts(session)
+                    finally:
+                        # Released on completion rather than left to expire.
+                        # A 10s TTL against a 5s loop meant every other tick
+                        # found the lock still held, so the scan ran at half
+                        # the intended rate. The TTL stays as the crash guard.
+                        await manager.redis.delete("lock:timeout_scanner")
             except Exception as e:
                 logger.error(f"Error in timeout scanner: {e}", exc_info=True)
 

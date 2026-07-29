@@ -18,7 +18,6 @@ Every optimization sits behind an `OPT_*` flag whose "off" state restores the im
 | Redis cache (analytics aggregation) | Recompute all aggregations per request | p99 | 2,169 ms | 165 ms | **-92.4%** |
 | Redis Stream ingest buffer | Synchronous `INSERT` on the request path | p99 | 1,271 ms | 158 ms | **-87.6%** |
 | Pure ASGI middleware | Starlette `BaseHTTPMiddleware` | p99 | 176 ms | 89 ms | **-49.5%** |
-| orjson serialization | stdlib `json` | p99 | 224 ms | 184 ms | **-17.9%** |
 | Worker bulk `INSERT` | One `INSERT` + `COMMIT` per row | throughput | 242 rows/s | 985 rows/s | **+308%** |
 | Bounded-queue WebSocket fan-out | `create_task` per client per message | throughput | 5,977 msg/s | 14,352 msg/s | **+140%** |
 
@@ -33,6 +32,17 @@ python scripts/benchmark_matrix.py --repeats 3
 Measuring "everything on" against "everything off" shows that a stack got faster but not which change did it, so the harness isolates one variable per experiment. Arms are interleaved (off, on, off, on) so background load on the host biases both equally. Each configuration is warmed up before measurement, and the reported figure is the median of N runs with the full per-run spread printed alongside.
 
 Before each run the harness reads `/health` and asserts the flags actually came up as requested, because a restart that silently kept the previous configuration would produce a meaningless zero-percent delta that looks like a real result. Read-path experiments re-seed a fixed dataset first, so results do not depend on what a previous experiment left in the table. Any arm where more than five percent of requests failed is rejected rather than reported, because the p99 of zero successful requests is `0.0`, which otherwise reads as infinitely fast.
+
+### On a retired optimization
+
+The orjson response class was measured at 17.9% faster on p99 and has since been
+removed. The number was real but narrow: FastAPI serializes through Pydantic
+directly whenever a route declares a `response_model`, bypassing the custom
+response class entirely, so the gain only ever applied to the handful of routes
+without one. FastAPI has since deprecated `ORJSONResponse` for that same reason.
+
+The measurement is kept because finding that constraint was the point — the
+harness is what turned a plausible library-level claim into a scoped fact.
 
 ### On measurement error
 

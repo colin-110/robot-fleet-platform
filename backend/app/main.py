@@ -16,7 +16,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, ORJSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
@@ -87,13 +86,12 @@ app = FastAPI(
     description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
-    # orjson is faster than stdlib json on float-heavy payloads like telemetry.
-    # Caveat worth knowing: current FastAPI serializes directly via Pydantic
-    # whenever a route declares a `response_model`, bypassing this class
-    # entirely — so it only affects routes without one (command acks, the
-    # telemetry ack, root). The benchmark measures the real effect rather than
-    # assuming the library-level claim applies here.
-    default_response_class=ORJSONResponse if settings.opt_orjson else JSONResponse,
+    # No custom response class. orjson was benchmarked here and did help — but
+    # only on the handful of routes without a `response_model`, because FastAPI
+    # serializes through Pydantic directly whenever one is declared, bypassing
+    # the class entirely. FastAPI has since deprecated ORJSONResponse for that
+    # exact reason, so the code is gone; the measurement and what it taught us
+    # are kept in docs/performance.md.
 )
 
 # ── Middleware (order matters: outermost first) ─────────────────────
@@ -103,6 +101,7 @@ if settings.opt_asgi_middleware:
     app.add_middleware(
         RateLimitMiddleware,
         max_requests=settings.rate_limit_per_minute,
+        console_max_requests=settings.console_rate_limit_per_minute,
         window_seconds=60,
         trusted_proxy_count=settings.trusted_proxy_count,
     )
@@ -111,6 +110,7 @@ else:
     app.add_middleware(
         LegacyRateLimitMiddleware,
         max_requests=settings.rate_limit_per_minute,
+        console_max_requests=settings.console_rate_limit_per_minute,
         window_seconds=60,
         trusted_proxy_count=settings.trusted_proxy_count,
     )

@@ -99,6 +99,27 @@ async def test_duplicate_idempotency_key(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_same_idempotency_key_on_two_robots(client: AsyncClient):
+    """An idempotency key is scoped to a robot, not to the whole fleet.
+
+    The key used to be the command's primary key, which is global, so the same
+    key sent to two robots collided on the PK. Recovery then searched for
+    ``(robot_id, idempotency_key)``, found nothing — the winner belonged to the
+    *other* robot — and surfaced a 500 on a completely legitimate request. Two
+    operators issuing "return-to-base-now" against different units is normal.
+    """
+    payload = {"command_type": "RETURN_TO_BASE", "idempotency_key": "shared-key"}
+
+    first = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json=payload)
+    second = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID + 1}", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200, second.json()
+    # Distinct commands, because they target distinct robots.
+    assert first.json()["payload"]["command_id"] != second.json()["payload"]["command_id"]
+
+
+@pytest.mark.asyncio
 async def test_repeated_same_state_update(client: AsyncClient):
     payload = {"command_type": "TEST", "idempotency_key": "test-key-rep"}
     resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json=payload)
@@ -172,8 +193,18 @@ async def test_concurrent_status_updates_apply_once(client: AsyncClient, db: Asy
     the row, validated the transition in Python, then wrote — so two requests
     could both observe DISPATCHED, both judge their transition legal, and both
     commit. The transition is now a conditional UPDATE guarded by
-    ``WHERE status = :expected``, so exactly one writer matches a row and the
-    loser gets a 409.
+    ``WHERE status = :expected``, so exactly one writer matches a row.
+
+    The invariant is *exactly one 200*, not a particular rejection code. The
+    loser can lose at either of two points, and which one depends on scheduling:
+
+    * it reads before the winner commits, then its guarded UPDATE matches no
+      row — 409;
+    * it reads after the winner commits, sees a state its transition is not
+      legal from, and is rejected at validation — 400.
+
+    Both uphold the invariant. Asserting ``[200, 409]`` pinned one interleaving
+    and failed roughly a third of runs on unchanged code.
     """
     payload = {"command_type": "TEST", "idempotency_key": "test-key-race"}
     resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json=payload)
@@ -189,8 +220,12 @@ async def test_concurrent_status_updates_apply_once(client: AsyncClient, db: Asy
     )
 
     statuses = sorted([ack.status_code, cancel.status_code])
-    assert statuses == [200, 409], (
+    assert statuses.count(200) == 1, (
         f"expected exactly one winner, got {statuses}: {ack.json()} / {cancel.json()}"
+    )
+    loser_status = statuses[1] if statuses[0] == 200 else statuses[0]
+    assert loser_status in (400, 409), (
+        f"loser must be rejected as a conflict, got {loser_status}: {ack.json()} / {cancel.json()}"
     )
 
     # The database agrees with whichever request won.
