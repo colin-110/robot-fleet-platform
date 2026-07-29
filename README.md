@@ -23,11 +23,11 @@
 
 ## Overview
 
-Forty simulated robots stream high-frequency telemetry — battery, temperature, speed, position, per-component health, mission progress — into a backend that ingests it, derives live fleet state, and pushes updates to an operator dashboard over WebSockets. Operators dispatch commands back to individual robots (Return to Base, Emergency Stop, Resume) through an idempotent state machine.
+A simulated robot fleet streams high-frequency telemetry — battery, temperature, speed, position, per-component health, mission progress — into a backend that ingests it, derives live fleet state, and pushes updates to an operator dashboard over WebSockets. Operators dispatch commands back to individual robots (Return to Base, Emergency Stop, Resume) through an idempotent state machine.
 
-The write path and the read path are deliberately separated. An ingest request returns as soon as it has appended to a Redis Stream; a decoupled worker batches those entries into PostgreSQL. Request latency is therefore independent of database I/O, and the same stream feeds WebSocket fan-out to every connected dashboard.
+**The central design decision is that the write path and the read path are separate.** An ingest request returns as soon as it has appended to a Redis Stream; a decoupled worker batches those entries into PostgreSQL. Request latency is therefore independent of database I/O, and the same stream feeds WebSocket fan-out to every connected dashboard.
 
-**Measured on a single node:** 2,000 concurrent WebSocket clients at ~15,000–18,000 msg/s with >99% delivery. Ingest p99 fell from 1,271 ms to 158 ms once the Redis buffer replaced synchronous inserts.
+Measured on a single node: **2,000 concurrent WebSocket clients at ~15,000–18,000 msg/s** with >99% delivery, and ingest p99 down from **1,271 ms to 158 ms** once the Redis buffer replaced synchronous inserts. Every one of those numbers comes from a harness that measures one variable at a time — see [Performance](#performance).
 
 | Layer | Technologies |
 | :--- | :--- |
@@ -35,8 +35,21 @@ The write path and the read path are deliberately separated. An ingest request r
 | Backend | FastAPI (async), Uvicorn, SQLAlchemy 2.0 (async), Pydantic v2 |
 | Data and messaging | PostgreSQL 15, Redis 7 (Streams with consumer groups) |
 | Async processing | Dedicated worker (batch inserts, retention pruning, command timeouts) |
+| Auth | HMAC console tickets, JWT (HS256) with ranked roles, bcrypt |
 | Observability | Prometheus (multiprocess-aware), Grafana |
 | Infrastructure | Docker Compose, GitHub Actions, GHCR, AWS (EC2, RDS, ElastiCache, CloudFront) |
+
+---
+
+## Key Features
+
+- **Decoupled ingestion.** HTTP writes return after a single Redis `XADD`; a worker batches them into PostgreSQL, so request latency never waits on disk.
+- **Real-time fan-out that survives slow clients.** Bounded per-client queues drained by one sender task each. On overflow the *oldest* frame is dropped — stale telemetry is worthless, and one stalled client must not back-pressure the fleet.
+- **Absence is detectable.** Fleet state is the robot roster `LEFT JOIN`ed onto recent telemetry, not a `GROUP BY` over telemetry. A unit that stops reporting renders `OFFLINE` instead of silently vanishing.
+- **Idempotent command dispatch.** An explicit state machine where every transition is an atomic compare-and-set `UPDATE`, so racing writers cannot both commit.
+- **Layered auth.** The browser never holds the master key — it gets a short-lived scoped ticket. Operator identity is a separate JWT layer, enabled by configuration.
+- **Measured optimizations.** Each one sits behind a feature flag whose off-state is the implementation it replaced, so its contribution is measured in isolation rather than assumed.
+- **Blocking CI/CD.** Lint, 240 tests, and a production build all gate the pipeline; passing builds publish versioned images to GHCR that the host pulls.
 
 ---
 
@@ -60,6 +73,22 @@ The two Redis read modes are the design's hinge. The worker uses `XREADGROUP`, s
 
 ---
 
+## Security
+
+Two layers that answer different questions.
+
+**Console tickets — *may this browser talk to the API?*** A WebSocket handshake cannot carry an `Authorization` header, so the credential has to travel in the URL, where it lands in proxy and access logs. The dashboard therefore requests a ticket at runtime rather than being built with a key: it expires in minutes, carries a scope signed alongside its expiry (so a holder can neither widen its permissions nor extend its life), and **cannot ingest telemetry**. The master key stays server-side, so reading the JavaScript bundle no longer yields a credential that can forge readings for the whole fleet.
+
+**JWT — *who is this operator?*** `AUTH_MODE=required` puts every console action behind a bcrypt-verified sign-in and an HS256 token carrying a signed role: `viewer` reads, `operator` dispatches commands, `admin` covers both. Production defaults to required.
+
+The hosted demo runs `AUTH_MODE=open` deliberately — a login wall on a portfolio deployment means nobody clicks past it, and the data is synthetic. Open mode does not *skip* the check; it resolves every caller to an anonymous operator through the same dependency. One code path, so the authenticated branch is exercised by ordinary traffic instead of only in an environment nobody tests.
+
+Also: constant-time key comparison, `X-Forwarded-For` resolved by trusted-proxy count (trusting the leftmost entry lets a client spoof its own address), separate rate-limit budgets for fleet ingest and browser-reachable endpoints, and a login that returns one message *and one timing profile* for both "no such user" and "wrong password" so it cannot enumerate accounts.
+
+**→ [Full security posture](./docs/operations.md#security-posture)**
+
+---
+
 ## Performance
 
 Every optimization sits behind an `OPT_*` flag whose "off" state restores the implementation it replaced. The benchmark harness uses that to measure each one **in isolation** rather than reporting an everything-on/everything-off number that cannot attribute the gain.
@@ -72,7 +101,9 @@ Every optimization sits behind an `OPT_*` flag whose "off" state restores the im
 | Worker bulk `INSERT` | One `INSERT` + `COMMIT` per row | throughput | 242 rows/s | 985 rows/s | **+308%** |
 | Bounded-queue WebSocket fan-out | `create_task` per client per message | throughput | 5,977 msg/s | 14,352 msg/s | **+140%** |
 
-Arms are interleaved so host load biases both equally; the harness asserts via `/health` that the flags actually came up, and rejects any arm where more than 5% of requests failed — because the p99 of zero successful requests is `0.0`, which otherwise reads as infinitely fast. Two experiments initially reported wrong numbers and are [documented along with how the harness caught them](./docs/performance.md#on-measurement-error).
+Arms are interleaved so host load biases both equally; the harness asserts via `/health` that the flags actually came up, and rejects any arm where more than 5% of requests failed — because the p99 of zero successful requests is `0.0`, which otherwise reads as infinitely fast.
+
+Two experiments initially reported wrong numbers. Both are [written up along with how the harness caught them](./docs/performance.md#on-measurement-error), because that is the failure mode the harness exists to prevent.
 
 **→ [Full benchmarks, methodology, and load tests](./docs/performance.md)**
 
@@ -87,9 +118,9 @@ Arms are interleaved so host load biases both equally; the harness asserts via `
 
 The backend suite runs against real PostgreSQL rather than SQLite because the application depends on Postgres-specific SQL — `date_trunc`, `INTERVAL` arithmetic, and atomic conditional `UPDATE` dispatch — that SQLite cannot execute. A safety guard refuses to run against any database whose name does not contain `test`, since the fixtures drop and recreate the schema between tests.
 
-**Covered:** telemetry ingestion and retrieval; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch (two racing `PATCH` requests must not both commit); analytics aggregation; cache hit and bypass; worker batch parsing, drain/ack cycle, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and Redis listener recovery; ticket auth — that a holder cannot forge, widen its scope, or extend its own expiry; and JWT sign-in, covering role ranking, `alg: none` and wrong-key rejection, username enumeration via error message or timing, and that bootstrapping the first admin cannot overwrite an existing one. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, command dispatch, and the sign-in gate.
+**Covered.** Telemetry ingestion on *both* the buffered and direct paths; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch; the timeout scanner's compare-and-set, driven by a second connection committing mid-scan so the race is real rather than simulated; worker drain/ack, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and listener recovery; ticket forgery, scope-widening, and expiry extension; JWT role ranking, `alg: none` and wrong-key rejection, and account enumeration by message or timing. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, command dispatch, and the sign-in gate.
 
-**Not covered:** presentational React components, which is why the frontend's all-files number is lower than its hooks number. Coverage is honest rather than uniform.
+**Not covered.** Presentational React components, which is why the frontend's all-files number is lower than its hooks number. Coverage is honest rather than uniform.
 
 ---
 
@@ -113,6 +144,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 docker compose up --build -d
 ```
 
+That brings up the API, worker, dashboard, a 40-robot simulator, PostgreSQL, Redis, Prometheus, and Grafana.
+
 | Service | URL |
 | :--- | :--- |
 | Dashboard | http://localhost |
@@ -120,17 +153,51 @@ docker compose up --build -d
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 (admin/admin) |
 
-Run the test suites:
+### Tests
+
+The backend suite needs its own database. The dev compose publishes PostgreSQL on `5432`, so create one and point `DATABASE_URL` at it — the name must contain `test` or the fixtures refuse to run:
 
 ```bash
-cd backend && pytest tests/ -v --cov=app
+docker compose exec db createdb -U postgres fleet_test_db
 ```
 
 ```bash
-cd frontend/robot-fleet-dashboard && npm run test:coverage
+cd backend && DATABASE_URL=postgresql://postgres:<your-password>@localhost:5432/fleet_test_db pytest tests/ -v --cov=app
+```
+
+The frontend suite needs Node 22.22+ or 24.15+ (jsdom 30's engine floor) and no services at all:
+
+```bash
+cd frontend/robot-fleet-dashboard && npm ci && npm run test:coverage
+```
+
+---
+
+## Deployment
+
+A single `t3.micro` EC2 instance runs the stack via Docker Compose, backed by managed RDS and ElastiCache, behind CloudFront for HTTPS.
+
+The host **pulls pre-built images from GHCR rather than building.** CI builds them on every push to `main` and publishes only after the tests pass, so what ships is what was verified. `IMAGE_TAG` defaults to `latest` but takes a commit SHA, giving each deploy a name and a rollback target.
+
+```bash
+IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops pull
+IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
 ```
 
 **→ [Configuration, deployment, security posture, and scaling roadmap](./docs/operations.md)**
+
+---
+
+## Repository Structure
+
+| Path | Contents |
+| :--- | :--- |
+| [`backend/app/`](./backend/app) | FastAPI routes → services → repositories, async SQLAlchemy models, the Redis-to-PostgreSQL worker, auth, and metrics |
+| [`backend/tests/`](./backend/tests) | Pytest suite against real PostgreSQL |
+| [`frontend/robot-fleet-dashboard/`](./frontend/robot-fleet-dashboard) | React 19 + Vite dashboard (Leaflet map, Recharts, WebSocket hooks), served by nginx |
+| [`simulator/`](./simulator) | Async physics-based robot agents |
+| [`scripts/`](./scripts) | A/B benchmark harness and load-test tooling |
+| [`docs/`](./docs) | Architecture, performance, and operations detail |
 
 ---
 
@@ -145,7 +212,7 @@ Being direct about where this stands is more useful than overselling it.
 | No high availability | One EC2 instance, single-AZ RDS, one Redis node. A node or AZ failure means downtime. |
 | Bounded ingest buffer | The Redis Stream is capped and Redis trims the oldest beyond that, including entries the worker has not acknowledged. Made visible rather than silent: `telemetry_stream_length` and `telemetry_stream_pending` are exported and the worker warns at 90%. A durable fix means a dead-letter path or a disk-backed broker. |
 | Time-series storage | Telemetry lives in a plain PostgreSQL table bounded by a daily retention pruner. Works, but not ideal at volume. |
-| Simulator in production | The live deployment runs the simulator to generate demonstration data. A real system ingests from actual devices. |
+| Simulator in production | The live deployment runs the simulator to generate demonstration data, at 24 robots rather than the 40 used locally. A real system ingests from actual devices. |
 
 ---
 
