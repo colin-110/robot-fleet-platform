@@ -18,7 +18,9 @@ function HealthCell({ label, value }) {
   return (
     <div className="healthCell">
       <div className="k">{label}</div>
-      <div className="v" style={{ color }}>{typeof value === "number" ? `${value.toFixed(0)}` : "—"}</div>
+      {/* One decimal: component wear moves in fractions of a percent, and
+          rounding to an integer made every reading look frozen. */}
+      <div className="v" style={{ color }}>{typeof value === "number" ? `${value.toFixed(1)}` : "—"}</div>
       <div className="miniBar"><span style={{ width: `${pct}%`, background: color }} /></div>
     </div>
   );
