@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.logging_config import reset_request_id, set_request_id
 from app.redis_pool import get_redis
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,16 @@ def client_ip_from_scope(scope: Scope, trusted_proxy_count: int) -> str:
 
 
 class RequestIDMiddleware:
-    """Attach a unique ``X-Request-ID`` to every request and response."""
+    """Attach an ``X-Request-ID`` to every request, response, and log line.
+
+    An inbound id is honoured rather than replaced, so a trace started by nginx
+    or a caller survives into this service instead of being renamed at the door.
+
+    Also emits one structured access line per request. Production runs uvicorn
+    with ``--no-access-log``, so without this a deployed request leaves no trace
+    at all — which is exactly how a dispatched command became unverifiable after
+    the fact.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -116,13 +126,24 @@ class RequestIDMiddleware:
 
         request_id = Headers(scope=scope).get(REQUEST_ID_HEADER) or str(uuid.uuid4())
         scope.setdefault("state", {})["request_id"] = request_id
+        token = set_request_id(request_id)
+        started = time.perf_counter()
+        status_code = 500  # if the app raises, the request did fail
 
         async def send_with_request_id(message: Message) -> None:
+            nonlocal status_code
             if message["type"] == "http.response.start":
+                status_code = message["status"]
                 MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
             await send(message)
 
-        await self.app(scope, receive, send_with_request_id)
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            _log_access(scope, status_code, time.perf_counter() - started)
+            # Reset even on failure: under uvicorn the same task can serve the
+            # next request, and a stale id is worse than none.
+            reset_request_id(token)
 
 
 class RateLimitMiddleware:
@@ -165,6 +186,41 @@ class RateLimitMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+def _log_access(scope: Scope, status_code: int, elapsed_seconds: float) -> None:
+    """One structured line per request.
+
+    Fields go through ``extra=`` rather than into the message, so the JSON
+    formatter emits them as queryable keys instead of something a dashboard has
+    to regex back out.
+    """
+    from app.config import get_settings
+
+    if not get_settings().access_log:
+        return
+
+    path = scope.get("path", "")
+    # Health and metrics are scraped every few seconds; logging them buries
+    # real traffic without adding anything a monitor does not already know.
+    if path in ("/health", "/metrics"):
+        return
+
+    method = scope.get("method", "-")
+    duration_ms = round(elapsed_seconds * 1000, 2)
+    logger.info(
+        "%s %s %s %sms",
+        method,
+        path,
+        status_code,
+        duration_ms,
+        extra={
+            "http_method": method,
+            "http_path": path,
+            "http_status": status_code,
+            "duration_ms": duration_ms,
+        },
+    )
 
 
 # ── Shared limiter logic ────────────────────────────────────────────
@@ -220,14 +276,27 @@ def _rate_limited_response(window_seconds: int) -> JSONResponse:
 
 
 class LegacyRequestIDMiddleware(BaseHTTPMiddleware):
-    """Original BaseHTTPMiddleware request-ID implementation."""
+    """Original BaseHTTPMiddleware request-ID implementation.
+
+    Kept at parity with the ASGI version — including log correlation and the
+    access line — because the benchmark compares the two implementations and a
+    difference in what they *do* would make that comparison meaningless.
+    """
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+        token = set_request_id(request_id)
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            _log_access(request.scope, status_code, time.perf_counter() - started)
+            reset_request_id(token)
 
 
 class LegacyRateLimitMiddleware(BaseHTTPMiddleware):

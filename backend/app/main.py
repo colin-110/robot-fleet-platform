@@ -24,6 +24,7 @@ from app import metrics
 from app.auth import is_valid_api_key
 from app.config import get_settings
 from app.database import engine
+from app.logging_config import configure_logging
 from app.middleware import (
     LegacyRateLimitMiddleware,
     LegacyRequestIDMiddleware,
@@ -45,11 +46,7 @@ from app.websocket_manager import manager
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+configure_logging(service="api")
 logger = logging.getLogger(__name__)
 
 

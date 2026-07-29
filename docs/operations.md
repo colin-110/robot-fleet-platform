@@ -32,6 +32,8 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
 | `MAX_CLOCK_SKEW_SECONDS` | `300` | Future-dated device timestamps beyond this are clamped to server time |
 | `TELEMETRY_STREAM_MAXLEN` | `100000` | Entries retained in the ingest stream; the worker's catch-up headroom |
+| `LOG_FORMAT` | `text` (`json` in production) | `json` emits one object per line with the request id and structured fields, for a log aggregator |
+| `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/metrics` are excluded so scrapes do not bury real traffic |
 | `PROMETHEUS_MULTIPROC_DIR` | unset | Required when running more than one Uvicorn worker |
 
 ### Optimization flags
@@ -80,6 +82,18 @@ On every push and pull request to `main`:
 2. **`frontend-test`** — ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
 3. **`publish-images`** — builds and pushes `backend`, `frontend`, and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance.
 4. **`deploy-aws`** — gated SSM-based rollout, opt-in via a repository variable.
+
+---
+
+## Logging
+
+One configuration for the API and the worker (`app/logging_config.py`), replacing two `basicConfig` calls that used different formats despite shipping in the same image.
+
+Every line carries the `request_id` that `RequestIDMiddleware` returns as `X-Request-ID`, propagated through a `ContextVar` rather than threaded through call signatures — under asyncio that is per-task, so concurrent requests cannot see each other's value and a service function five frames deep gets correlation for free. An inbound `X-Request-ID` is honoured rather than replaced, so a trace started by nginx survives into the service.
+
+`LOG_FORMAT=json` emits one JSON object per line; fields passed via `extra=` become queryable keys instead of text a dashboard has to regex. Production defaults to it.
+
+Each request also produces a structured access line (`http_method`, `http_path`, `http_status`, `duration_ms`). Uvicorn runs with `--no-access-log` in production, so without this a deployed request left no trace at all.
 
 ---
 

@@ -36,7 +36,7 @@ Measured on a single node: **2,000 concurrent WebSocket clients at ~15,000–18,
 | Data and messaging | PostgreSQL 15, Redis 7 (Streams with consumer groups) |
 | Async processing | Dedicated worker (batch inserts, retention pruning, command timeouts) |
 | Auth | HMAC console tickets, JWT (HS256) with ranked roles, bcrypt |
-| Observability | Prometheus (multiprocess-aware), Grafana |
+| Observability | Structured JSON logging with request correlation, Prometheus (multiprocess-aware), Grafana |
 | Infrastructure | Docker Compose, GitHub Actions, GHCR, AWS (EC2, RDS, ElastiCache, CloudFront) |
 
 ---
@@ -49,7 +49,8 @@ Measured on a single node: **2,000 concurrent WebSocket clients at ~15,000–18,
 - **Idempotent command dispatch.** An explicit state machine where every transition is an atomic compare-and-set `UPDATE`, so racing writers cannot both commit.
 - **Layered auth.** The browser never holds the master key — it gets a short-lived scoped ticket. Operator identity is a separate JWT layer, enabled by configuration.
 - **Measured optimizations.** Each one sits behind a feature flag whose off-state is the implementation it replaced, so its contribution is measured in isolation rather than assumed.
-- **Blocking CI/CD.** Lint, 240 tests, and a production build all gate the pipeline; passing builds publish versioned images to GHCR that the host pulls.
+- **Correlated structured logging.** Every line carries the request id the caller was handed back, so a reported `X-Request-ID` is findable. JSON in production; one access line per request, because uvicorn's own is disabled there.
+- **Blocking CI/CD.** Lint, 257 tests, and a production build all gate the pipeline; passing builds publish versioned images to GHCR that the host pulls.
 
 ---
 
@@ -113,12 +114,12 @@ Two experiments initially reported wrong numbers. Both are [written up along wit
 
 | | Tests | Coverage | Environment |
 | :--- | ---: | ---: | :--- |
-| Backend (pytest) | 171 | 76% | Real PostgreSQL + Redis |
+| Backend (pytest) | 188 | 76% | Real PostgreSQL + Redis |
 | Frontend (vitest) | 69 | 88% hooks, 100% utils | jsdom |
 
 The backend suite runs against real PostgreSQL rather than SQLite because the application depends on Postgres-specific SQL — `date_trunc`, `INTERVAL` arithmetic, and atomic conditional `UPDATE` dispatch — that SQLite cannot execute. A safety guard refuses to run against any database whose name does not contain `test`, since the fixtures drop and recreate the schema between tests.
 
-**Covered.** Telemetry ingestion on *both* the buffered and direct paths; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch; the timeout scanner's compare-and-set, driven by a second connection committing mid-scan so the race is real rather than simulated; worker drain/ack, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and listener recovery; ticket forgery, scope-widening, and expiry extension; JWT role ranking, `alg: none` and wrong-key rejection, and account enumeration by message or timing. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, command dispatch, and the sign-in gate.
+**Covered.** Telemetry ingestion on *both* the buffered and direct paths; fleet-status derivation; the full command lifecycle including terminal-state immutability, idempotency keys, timeouts, and concurrent dispatch; the timeout scanner's compare-and-set, driven by a second connection committing mid-scan so the race is real rather than simulated; worker drain/ack, backoff, and clean cancellation; WebSocket sender teardown, bounded-queue overflow, and listener recovery; ticket forgery, scope-widening, and expiry extension; JWT role ranking, `alg: none` and wrong-key rejection, and account enumeration by message or timing. On the frontend: WebSocket reconnect and unmount safety, poll-and-prune roster reconciliation, 10 Hz update coalescing, ticket caching, command dispatch, and the sign-in gate. Logging is covered too: request-id isolation across concurrent tasks, JSON field emission, and that an inbound `X-Request-ID` survives into the access line.
 
 **Not covered.** Presentational React components, which is why the frontend's all-files number is lower than its hooks number. Coverage is honest rather than uniform.
 
