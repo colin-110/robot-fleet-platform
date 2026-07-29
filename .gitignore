@@ -93,6 +93,9 @@ build/
 .next/
 out/
 
+# Frontend Test Output
+coverage/
+
 # ==============================================================================
 # Terraform (state files can contain plaintext secrets — never commit)
 # ==============================================================================
