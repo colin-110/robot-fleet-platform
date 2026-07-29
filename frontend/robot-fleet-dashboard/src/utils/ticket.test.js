@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getTicket, resetTicketCache } from "./ticket";
+import { authHeaders } from "./auth";
+
+vi.mock("./auth", () => ({ authHeaders: vi.fn(() => ({})) }));
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
@@ -12,6 +15,7 @@ const ticketResponse = (ticket, ttl = 300) => ({
 beforeEach(() => {
   resetTicketCache();
   vi.restoreAllMocks();
+  vi.mocked(authHeaders).mockReturnValue({});
 });
 
 afterEach(() => {
@@ -24,7 +28,10 @@ describe("getTicket", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getTicket()).resolves.toBe("t-1");
-    expect(fetchMock).toHaveBeenCalledWith("/api/v1/auth/ticket", { method: "POST" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/auth/ticket", {
+      method: "POST",
+      headers: {},
+    });
   });
 
   it("reuses a cached ticket that is still fresh", async () => {

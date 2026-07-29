@@ -31,6 +31,7 @@ from app.middleware import (
     RequestIDMiddleware,
 )
 from app.routes.analytics import router as analytics_router
+from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
@@ -60,11 +61,14 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
     # Database schema is created by prestart.py before workers start.
     logger.info(
-        "Robot Fleet Platform started  env=%s  cors=%s  optimizations=%s",
+        "Robot Fleet Platform started  env=%s  auth=%s  cors=%s  optimizations=%s",
         settings.app_env,
+        settings.resolved_auth_mode,
         settings.cors_origin_list,
         settings.optimization_flags(),
     )
+
+    await bootstrap_admin_user()
 
     manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 

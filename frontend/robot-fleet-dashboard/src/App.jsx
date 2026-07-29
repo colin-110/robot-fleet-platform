@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
 import useFleetData from "./hooks/useFleetData";
@@ -14,6 +14,8 @@ import Navbar from "./components/Navbar";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
 import LoadingSkeleton from "./components/LoadingSkeleton";
+import LoginScreen from "./components/LoginScreen";
+import { fetchAuthConfig, getSession, restoreSession } from "./utils/auth";
 
 function DashboardView({ filteredRobots, events }) {
   return (
@@ -43,7 +45,42 @@ function RobotGrid({ robots }) {
   );
 }
 
-function App() {
+/**
+ * Decides whether a sign-in gate stands in front of the dashboard.
+ *
+ * The backend is asked rather than assumed, so one build works against both a
+ * public demo and a locked-down deployment. Until the answer arrives nothing
+ * is rendered: guessing "open" would flash the dashboard before redirecting,
+ * and guessing "required" would flash a login screen the demo never needs.
+ */
+function useAuthGate() {
+  const [state, setState] = useState({ status: "checking", loginRequired: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    restoreSession();
+
+    fetchAuthConfig()
+      .then((config) => {
+        if (cancelled) return;
+        setState({ status: "ready", loginRequired: Boolean(config.login_required) });
+      })
+      .catch(() => {
+        // The backend is unreachable. Fall through to the dashboard, which has
+        // its own "Backend is unreachable" banner — a login screen here would
+        // blame the operator for an outage.
+        if (!cancelled) setState({ status: "ready", loginRequired: false });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return state;
+}
+
+function FleetConsole() {
   const {
     robots,
     analytics,
@@ -155,6 +192,18 @@ function App() {
       </div>
     </div>
   );
+}
+
+function App() {
+  const { status, loginRequired } = useAuthGate();
+  const [session, setSession] = useState(() => getSession());
+
+  if (status === "checking") return null;
+  if (loginRequired && !session) {
+    return <LoginScreen onSignedIn={setSession} />;
+  }
+
+  return <FleetConsole />;
 }
 
 export default App;

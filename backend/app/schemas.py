@@ -168,6 +168,44 @@ class FleetAnalyticsResponse(BaseModel):
     robot_status_breakdown: list[StatusBreakdownItem] = Field(default_factory=list)
 
 
+class LoginRequest(BaseModel):
+    """Credentials for POST /api/v1/auth/login."""
+
+    username: str = Field(min_length=1, max_length=64)
+    # Upper bound matches bcrypt's 72-byte input limit, rejected explicitly
+    # rather than silently truncated (see app/security.hash_password).
+    password: str = Field(min_length=1, max_length=72)
+
+
+class TokenResponse(BaseModel):
+    """A signed access token."""
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: int
+    username: str
+    role: str
+
+
+class PrincipalResponse(BaseModel):
+    """Who the caller currently is, for GET /api/v1/auth/me."""
+
+    username: str
+    role: str
+    authenticated: bool
+
+
+class AuthConfigResponse(BaseModel):
+    """What the dashboard needs to know before rendering anything.
+
+    Lets the frontend decide whether to show a login screen without hardcoding
+    a build-time assumption about how the backend it is talking to is configured.
+    """
+
+    auth_mode: str
+    login_required: bool
+
+
 class TicketResponse(BaseModel):
     """A short-lived console ticket issued to a browser client."""
 

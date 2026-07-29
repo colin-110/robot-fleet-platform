@@ -45,6 +45,23 @@ class Settings(BaseSettings):
     # The dashboard fetches a fresh one whenever its socket reconnects.
     ticket_ttl_seconds: int = 300
 
+    # ── Authentication ──────────────────────────────────────────────
+    # "open"     — no accounts; the console is public (the hosted demo).
+    # "required" — every console action needs a JWT from /api/v1/auth/login.
+    # Left unset, production defaults to "required"; see the validator below.
+    auth_mode: str | None = None
+
+    # Signing key for access tokens. Derived from telemetry_api_key when unset,
+    # so there is no second secret to manage and rotating the master key
+    # invalidates outstanding tokens.
+    jwt_secret: str | None = None
+    jwt_ttl_seconds: int = 3600
+
+    # Optional bootstrap account, created at startup if the users table is
+    # empty. Without it, a fresh deployment in required mode has no way in.
+    bootstrap_admin_username: str | None = None
+    bootstrap_admin_password: str | None = None
+
     retention_days: int = 1
 
     # ── Application ─────────────────────────────────────────────────
@@ -157,6 +174,23 @@ class Settings(BaseSettings):
         return self.app_env.lower() == "production"
 
     @property
+    def resolved_auth_mode(self) -> str:
+        """``open`` or ``required``, with production defaulting to required.
+
+        Unset means "use the safe default for this environment" rather than
+        "open": a production deployment carries real fleet positions, and
+        defaulting those to a public console is exactly the mistake this
+        setting exists to prevent. The demo sets it explicitly.
+        """
+        if self.auth_mode:
+            return self.auth_mode.lower()
+        return "required" if self.is_production else "open"
+
+    @property
+    def auth_required(self) -> bool:
+        return self.resolved_auth_mode == "required"
+
+    @property
     def async_database_url(self) -> str:
         """Return the database URL with the asyncpg driver."""
         if self.database_url.startswith("postgresql://"):
@@ -174,6 +208,19 @@ class Settings(BaseSettings):
                 )
             if len(self.telemetry_api_key) < 16:
                 raise ValueError("TELEMETRY_API_KEY must be at least 16 characters in production.")
+            if not self.auth_required:
+                # Explicitly opting a production deployment into a public
+                # console is allowed — it is how the hosted demo runs — but it
+                # must be a decision someone typed, not a default they inherited.
+                logger.warning(
+                    "APP_ENV=production with AUTH_MODE=open: the operator console "
+                    "is public. Anyone who can reach it can dispatch commands."
+                )
+            if self.jwt_secret is not None and len(self.jwt_secret) < 32:
+                raise ValueError("JWT_SECRET must be at least 32 characters in production.")
+
+        if self.resolved_auth_mode not in ("open", "required"):
+            raise ValueError(f"AUTH_MODE must be 'open' or 'required', got {self.auth_mode!r}.")
         return self
 
     def optimization_flags(self) -> dict[str, bool]:

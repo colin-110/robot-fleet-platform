@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import verify_api_key, verify_console_access
+from app.auth import require_role, verify_api_key, verify_console_access
 from app.database import get_db
 from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
+from app.security import OPERATOR
 from app.services.command_service import CommandService
 from app.websocket_manager import manager
 
@@ -26,8 +27,17 @@ async def send_command(
     command: CommandCreate,
     db: AsyncSession = Depends(get_db),
     _=Depends(verify_console_access),
+    __=Depends(require_role(OPERATOR)),
 ):
     """Queue a command for a specific robot and broadcast it.
+
+    Two independent checks, because they answer different questions.
+    ``verify_console_access`` asks whether this *client* holds a usable
+    credential (master key or console ticket). ``require_role`` asks whether
+    the *person* is allowed to drive robots — in open mode everyone is, in
+    required mode a viewer is not. Dropping either one would let a valid
+    ticket act on behalf of a read-only account, or a signed-in operator act
+    without a ticket.
 
     Console-scoped: the dashboard authenticates with a short-lived ticket, so
     dispatching a command no longer requires shipping the ingest key to the

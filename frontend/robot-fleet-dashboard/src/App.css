@@ -194,3 +194,72 @@
 .text-danger { color: var(--c-bad); }
 .text-warning { color: var(--c-warn); }
 .text-success { color: var(--c-good); }
+
+/* ── Sign-in gate ──────────────────────────────────────────────────
+   Only rendered when the backend reports AUTH_MODE=required. */
+.loginScreen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.loginCard {
+  width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px;
+  border-radius: 14px;
+}
+
+.loginCard__title {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.2px;
+}
+
+.loginCard__subtitle {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.loginField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.loginField input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(139, 148, 163, 0.35);
+  background: rgba(13, 17, 23, 0.6);
+  color: inherit;
+  font-size: 14px;
+}
+
+.loginField input:focus {
+  outline: 2px solid rgba(88, 166, 255, 0.55);
+  outline-offset: 1px;
+}
+
+.loginError {
+  color: #ff7b72;
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.btn--primary {
+  background: rgba(88, 166, 255, 0.18);
+  border-color: rgba(88, 166, 255, 0.5);
+  color: #79b8ff;
+  padding: 10px;
+  font-weight: 600;
+}
