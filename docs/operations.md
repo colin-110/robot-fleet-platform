@@ -59,7 +59,8 @@ cd /opt/fleetops
 IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops pull
 IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
 ```
- Nginx serves the single-page application and proxies REST and WebSocket traffic to the backend. GitHub Actions publishes container images to GHCR on every push to `main`.
+
+Nginx serves the single-page application and proxies REST and WebSocket traffic to the backend container.
 
 ```
 Viewer --HTTPS--> CloudFront --HTTP--> EC2 (nginx :80 -> FastAPI :8000)
@@ -77,7 +78,7 @@ On every push and pull request to `main`:
 
 1. **`backend-test`** — `ruff check` across `backend/`, `scripts/`, and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against real PostgreSQL and Redis service containers.
 2. **`frontend-test`** — ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
-3. **`publish-images`** — builds and pushes versioned `backend` and `frontend` images to GHCR on `main`.
+3. **`publish-images`** — builds and pushes `backend`, `frontend`, and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance.
 4. **`deploy-aws`** — gated SSM-based rollout, opt-in via a repository variable.
 
 ---
