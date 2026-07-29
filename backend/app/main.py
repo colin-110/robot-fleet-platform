@@ -8,7 +8,6 @@ Features:
   - Structured logging
   - Rate limiting and request tracing middleware
   - CORS configuration from environment
-  - Backward-compatible unversioned routes
 """
 
 import asyncio
@@ -133,10 +132,6 @@ app.include_router(commands_router)
 app.include_router(robots_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
-
-# Backward-compatible unversioned routes (so existing simulator works)
-app.include_router(telemetry_router, prefix="", include_in_schema=False)
-app.include_router(commands_router, prefix="", include_in_schema=False)
 
 
 @app.get("/", tags=["root"])

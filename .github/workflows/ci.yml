@@ -68,8 +68,8 @@ jobs:
         run: cd backend && pytest tests/ -v --cov=app --cov-report=term-missing
 
   # ── CI: Frontend Lint & Build ──────────────────────────────────────
-  frontend-build:
-    name: Frontend Lint & Build
+  frontend-test:
+    name: Frontend Test, Lint & Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +80,10 @@ jobs:
           cache-dependency-path: frontend/robot-fleet-dashboard/package-lock.json
       - run: cd frontend/robot-fleet-dashboard && npm ci
       - run: cd frontend/robot-fleet-dashboard && npm run lint
+      # Blocking, like the backend suite. Vitest reads its env from
+      # vite.config.js, so the run does not depend on a local .env.
+      - name: Run Vitest
+        run: cd frontend/robot-fleet-dashboard && npm run test:coverage
       - run: cd frontend/robot-fleet-dashboard && npm run build
 
   # ── CD: Build & publish images to GitHub Container Registry ─────────
@@ -89,7 +93,7 @@ jobs:
   publish-images:
     name: Build & Publish Images
     runs-on: ubuntu-latest
-    needs: [ backend-test, frontend-build ]
+    needs: [ backend-test, frontend-test ]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
