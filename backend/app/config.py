@@ -56,6 +56,11 @@ class Settings(BaseSettings):
 
     # ── Rate Limiting ───────────────────────────────────────────────
     rate_limit_per_minute: int = 600
+    # Separate, tighter budget for what a browser can reach without the master
+    # key: minting console tickets and dispatching commands. Both are public on
+    # the hosted demo, so they need a ceiling the fleet's ingest budget would
+    # not give them.
+    console_rate_limit_per_minute: int = 60
     # Number of reverse proxies in front of the app (nginx, CloudFront, ALB).
     # The rate limiter takes the Nth-from-last X-Forwarded-For entry so a client
     # cannot spoof its own IP by injecting the header. 0 = no proxy, trust the
@@ -116,9 +121,6 @@ class Settings(BaseSettings):
     # analytics aggregation, versus recomputing on every request.
     opt_read_cache: bool = True
 
-    # Serialization: orjson response class versus stdlib json.
-    opt_orjson: bool = True
-
     # Middleware: pure ASGI middleware versus Starlette BaseHTTPMiddleware
     # (which wraps every request in an extra task + anyio memory streams).
     opt_asgi_middleware: bool = True
@@ -176,9 +178,11 @@ class Settings(BaseSettings):
 
     def optimization_flags(self) -> dict[str, bool]:
         """Current state of every ``opt_*`` flag, for /health and benchmarks."""
+        # type(self).model_fields, not self.model_fields: Pydantic 2.11
+        # deprecated instance access, and this runs on every /health scrape.
         return {
             name: getattr(self, name)
-            for name in sorted(self.model_fields)
+            for name in sorted(type(self).model_fields)
             if name.startswith("opt_")
         }
 

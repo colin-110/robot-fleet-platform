@@ -36,8 +36,13 @@ class CommandService:
 
     async def create_command(self, robot_id: int, command: CommandCreate) -> dict:
         """Create a command with idempotency and state machine initialization."""
-        cmd_id = str(command.idempotency_key) if command.idempotency_key else None
-        cmd_id = cmd_id or str(uuid.uuid4())
+        # A fresh id every time. Using the idempotency key as the primary key
+        # conflated two scopes: the key is unique per (robot_id, key) via its
+        # own constraint, but the PK is global — so the same key sent to two
+        # different robots collided on the PK. Recovery then looked up
+        # (robot_id, idempotency_key), found nothing (the winner belonged to
+        # the other robot), and raised a 500 on a legitimate request.
+        cmd_id = str(uuid.uuid4())
 
         now = datetime.now(timezone.utc)
         expires_at = None
@@ -79,7 +84,10 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_CREATED"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        await manager.broadcast(broadcast_payload)
+        # event_stream, not the default telemetry_stream: that one is the
+        # bounded ingest buffer the worker drains, and command traffic sharing
+        # it eats the worker's catch-up headroom.
+        await manager.broadcast(broadcast_payload, stream=manager.event_stream)
 
         return payload
 
@@ -156,7 +164,7 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_UPDATE"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        await manager.broadcast(broadcast_payload)
+        await manager.broadcast(broadcast_payload, stream=manager.event_stream)
 
         return payload
 

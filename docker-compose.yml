@@ -71,7 +71,10 @@ services:
 
   simulator:
     build: ./simulator
-    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--api-key", "${TELEMETRY_API_KEY}", "--workers", "4", "--robots", "40" ]
+    # No --api-key: a command-line secret is visible in `ps aux` and
+    # `docker inspect`. The simulator reads TELEMETRY_API_KEY from the
+    # environment, which env_file already provides.
+    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "4", "--robots", "40" ]
     env_file:
       - ./backend/.env
     restart: unless-stopped

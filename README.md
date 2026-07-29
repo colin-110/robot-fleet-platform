@@ -82,7 +82,7 @@ Arms are interleaved so host load biases both equally; the harness asserts via `
 
 | | Tests | Coverage | Environment |
 | :--- | ---: | ---: | :--- |
-| Backend (pytest) | 95 | 73% | Real PostgreSQL + Redis |
+| Backend (pytest) | 124 | 74% | Real PostgreSQL + Redis |
 | Frontend (vitest) | 51 | 88% hooks, 100% utils | jsdom |
 
 The backend suite runs against real PostgreSQL rather than SQLite because the application depends on Postgres-specific SQL — `date_trunc`, `INTERVAL` arithmetic, and atomic conditional `UPDATE` dispatch — that SQLite cannot execute. A safety guard refuses to run against any database whose name does not contain `test`, since the fixtures drop and recreate the schema between tests.
@@ -145,7 +145,6 @@ Being direct about where this stands is more useful than overselling it.
 | No high availability | One EC2 instance, single-AZ RDS, one Redis node. A node or AZ failure means downtime. |
 | Bounded ingest buffer | The Redis Stream is capped and Redis trims the oldest beyond that, including entries the worker has not acknowledged. Made visible rather than silent: `telemetry_stream_length` and `telemetry_stream_pending` are exported and the worker warns at 90%. A durable fix means a dead-letter path or a disk-backed broker. |
 | Time-series storage | Telemetry lives in a plain PostgreSQL table bounded by a daily retention pruner. Works, but not ideal at volume. |
-| orjson benefit is narrow | FastAPI serializes through Pydantic whenever a route declares a `response_model`, bypassing the custom response class. The measured 17.9% applies only to routes without one. Retained because measuring it is how that constraint was discovered. |
 | Simulator in production | The live deployment runs the simulator to generate demonstration data. A real system ingests from actual devices. |
 
 ---

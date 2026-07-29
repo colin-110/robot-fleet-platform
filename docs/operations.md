@@ -22,6 +22,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `CORS_ORIGINS` | localhost origins | Comma-separated allowed origins |
 | `TRUSTED_PROXY_COUNT` | `0` | Number of reverse proxies in front of the app; controls how the rate limiter resolves the client IP |
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
+| `CONSOLE_RATE_LIMIT_PER_MINUTE` | `60` | Separate, tighter budget for what a browser can reach without the master key: minting console tickets and dispatching commands |
 | `REQUIRE_AUTH_FOR_READS` | `false` | Whether fleet status, analytics, and events require an API key |
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
@@ -38,7 +39,6 @@ Each flag defaults to enabled. Setting one to `false` restores the naive impleme
 | `OPT_REDIS_BUFFER` | `XADD` to a Redis Stream, worker persists | Synchronous `INSERT` on the request path |
 | `OPT_READ_CACHE` | Redis read-through cache, 10 s TTL | Recompute the aggregation per request |
 | `OPT_ASGI_MIDDLEWARE` | Pure ASGI middleware | Starlette `BaseHTTPMiddleware` |
-| `OPT_ORJSON` | orjson response serialization | stdlib `json` |
 | `OPT_BOUNDED_FANOUT` | Bounded per-client queue and sender task | `create_task` per client per message |
 | `OPT_BATCH_INSERT` | One multi-row `INSERT` per batch | One `INSERT` and `COMMIT` per row |
 

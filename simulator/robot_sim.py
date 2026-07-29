@@ -4,6 +4,7 @@ import contextlib
 import logging
 import math
 import multiprocessing
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -961,7 +962,14 @@ def main():
     parser.add_argument("--local", action="store_true", help="Use local API URL")
     parser.add_argument("--robots", type=int, default=0)
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--api-key", default="fleet-secret-key-2026", help="API authentication key")
+    # Read from the environment, never a flag. A default here was a working key
+    # published in a public repo, and passing one on the command line puts it in
+    # `ps aux` and `docker inspect` for anyone with host access.
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("TELEMETRY_API_KEY"),
+        help="API key. Prefer the TELEMETRY_API_KEY environment variable.",
+    )
     parser.add_argument("--ambient", type=float, default=30.0)
     parser.add_argument("--radius", type=float, default=20.0)
     parser.add_argument("--tick-min", type=float, default=2.0)
@@ -969,6 +977,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
+
+    if not args.api_key:
+        parser.error(
+            "No API key. Set TELEMETRY_API_KEY in the environment "
+            "(the compose file already passes backend/.env through)."
+        )
 
     if args.local:
         args.api_url = "http://localhost:8000/api/v1/telemetry"
