@@ -35,9 +35,13 @@ request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 # Attributes LogRecord always carries. Anything outside this set was passed by
 # the caller via `extra=` and is worth emitting as a structured field.
-_STANDARD_ATTRS = frozenset(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
-) | {"asctime", "message", "taskName", "request_id", "service"}
+_STANDARD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "asctime",
+    "message",
+    "taskName",
+    "request_id",
+    "service",
+}
 
 
 class RequestIdFilter(logging.Filter):
