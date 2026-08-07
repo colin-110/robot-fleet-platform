@@ -1,6 +1,39 @@
 import { useEffect, useEffectEvent, useState, useCallback, useRef } from "react";
 import axios from "axios";
 import { useWebSocket } from "./useWebSocket";
+import { EVENT_BUFFER_LIMIT } from "../utils/constants";
+
+/**
+ * Merge event lists into one newest-first buffer of bounded length.
+ *
+ * The socket and the REST backfill overlap around the moment the page loads,
+ * so the same event can arrive twice; identity is the robot, the instant, and
+ * the text, because the socket payload carries no row id. The slice is what
+ * keeps a long-running tab from accumulating events until the browser is the
+ * thing that runs out.
+ */
+function dedupeEvents(events) {
+  const seen = new Set();
+  const merged = [];
+
+  for (const event of events) {
+    const key = `${event.robot_id}|${event.timestamp}|${event.message || event.action || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+
+  // A missing or unparseable timestamp sorts last rather than poisoning the
+  // comparator with NaN, which would leave the whole list in an arbitrary
+  // order instead of just that one row.
+  const at = (event) => {
+    const value = new Date(event.timestamp).getTime();
+    return Number.isNaN(value) ? 0 : value;
+  };
+
+  merged.sort((a, b) => at(b) - at(a));
+  return merged.slice(0, EVENT_BUFFER_LIMIT);
+}
 
 /**
  * Custom hook that encapsulates ALL fleet data fetching logic:
@@ -67,8 +100,33 @@ export default function useFleetData() {
     fetchAnalytics().catch(console.error);
   }, [API_PREFIX]);
 
+  /**
+   * Seed the event log with what happened before this tab existed.
+   *
+   * The feed is otherwise WebSocket-only, so the log started empty on every
+   * load and filled from zero — a reload looked like the fleet had gone quiet.
+   * The backend already persists events; this reads the same history the
+   * socket will continue.
+   */
+  const backfillEvents = useCallback(async () => {
+    const response = await axios.get(`${API_PREFIX}/events`, {
+      params: { limit: EVENT_BUFFER_LIMIT },
+    });
+    const history = Array.isArray(response.data) ? response.data : [];
+
+    // Newest first, matching the socket path, and tagged with the type the
+    // renderer expects — the REST payload has no `type` field of its own.
+    const normalized = history.map((event) => ({ ...event, type: "EVENT" }));
+
+    setEvents((live) => dedupeEvents([...live, ...normalized]));
+  }, [API_PREFIX]);
+
   const refreshAllEvent = useEffectEvent(async () => {
     await refreshAll();
+  });
+
+  const backfillEventsEvent = useEffectEvent(async () => {
+    await backfillEvents();
   });
 
   // ── WebSocket + Polling ──────────────────────────────────────────
@@ -122,7 +180,7 @@ export default function useFleetData() {
           }
           
           if (updates.events.length > 0) {
-            setEvents(prev => [...updates.events, ...prev].slice(0, 50));
+            setEvents(prev => dedupeEvents([...updates.events, ...prev]));
           }
         }, 100); // Throttle state updates to 10Hz
       }
@@ -135,6 +193,11 @@ export default function useFleetData() {
 
   useEffect(() => {
     setTimeout(() => refreshAllEvent(), 0);
+    // One shot, on mount only: from here the socket keeps the log current, and
+    // re-reading history every poll would fight the live feed for the buffer.
+    // Deferred a tick for the same reason the snapshot above is — resolving it
+    // inside the effect body would set state during the mount render.
+    setTimeout(() => backfillEventsEvent().catch(console.error), 0);
     // Always re-sync the authoritative snapshot, even while the WebSocket is
     // connected. The WS only ever *adds/updates* robots, so without this poll
     // retired/dead robots would linger forever and inflate the fleet counts.

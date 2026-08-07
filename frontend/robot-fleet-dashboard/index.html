@@ -3,8 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>robot-fleet-dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="FleetOps — real-time robot fleet monitoring and mission dispatch." />
+    <title>FleetOps — Fleet Console</title>
+    <script>
+      // Paint the right palette on the first frame. Without this the document
+      // renders dark, then React swaps to light one tick later, which reads as
+      // a flash on every reload. Mirrors resolveInitialTheme() in
+      // src/hooks/useTheme.js — keep the two in step.
+      (function () {
+        try {
+          var stored = localStorage.getItem("fleetops.theme");
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.dataset.theme = theme;
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

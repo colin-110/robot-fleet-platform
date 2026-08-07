@@ -1,5 +1,5 @@
 """
-Robot Fleet Platform — FastAPI application entry point.
+FleetOps — FastAPI application entry point.
 
 Features:
   - Versioned API routes under /api/v1/
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
     # Database schema is created by prestart.py before workers start.
     logger.info(
-        "Robot Fleet Platform started  env=%s  auth=%s  cors=%s  optimizations=%s",
+        "FleetOps started  env=%s  auth=%s  cors=%s  optimizations=%s",
         settings.app_env,
         settings.resolved_auth_mode,
         settings.cors_origin_list,
@@ -77,13 +77,13 @@ async def lifespan(app: FastAPI):
     # Drop this worker's gauge samples so a restart doesn't leave phantom
     # connections summed into the multiprocess registry.
     metrics.mark_worker_exit()
-    logger.info("Robot Fleet Platform shutting down")
+    logger.info("FleetOps shutting down")
 
 
 # ── Application ─────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Robot Fleet Platform API",
+    title="FleetOps API",
     description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
@@ -141,7 +141,7 @@ app.include_router(auth_router)
 @app.get("/", tags=["root"])
 def root():
     """Root endpoint — confirms the API is running."""
-    return {"message": "Robot Fleet Platform Running", "version": "1.0.0"}
+    return {"message": "FleetOps API running", "version": "1.0.0"}
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])

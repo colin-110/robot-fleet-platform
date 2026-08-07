@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import axios from "axios";
 import useFleetData from "./useFleetData";
+import { EVENT_BUFFER_LIMIT } from "../utils/constants";
 
 vi.mock("axios");
 
@@ -31,7 +32,7 @@ const ANALYTICS = {
 };
 
 /** Route axios.get by URL so tests control each endpoint independently. */
-function mockEndpoints({ robots = [], analytics = ANALYTICS } = {}) {
+function mockEndpoints({ robots = [], analytics = ANALYTICS, events = [] } = {}) {
   axios.get.mockImplementation((url) => {
     if (url.endsWith("/robots/status")) {
       return typeof robots === "function"
@@ -42,6 +43,11 @@ function mockEndpoints({ robots = [], analytics = ANALYTICS } = {}) {
       return typeof analytics === "function"
         ? analytics()
         : Promise.resolve({ data: analytics });
+    }
+    if (url.endsWith("/events")) {
+      return typeof events === "function"
+        ? events()
+        : Promise.resolve({ data: events });
     }
     return Promise.reject(new Error(`unexpected GET ${url}`));
   });
@@ -154,20 +160,64 @@ describe("useFleetData", () => {
     expect(result.current.events[0].message).toBe("R3 entered restricted zone");
   });
 
-  it("caps the event log at 50 entries", async () => {
+  it("caps the event log at the buffer limit", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockEndpoints({ robots: [] });
     const { result } = renderHook(() => useFleetData());
     await waitFor(() => expect(axios.get).toHaveBeenCalled());
 
     act(() => {
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < EVENT_BUFFER_LIMIT + 20; i++) {
         pushMessage({ type: "EVENT", message: `event ${i}` });
       }
     });
     act(() => vi.advanceTimersByTime(100));
 
-    await waitFor(() => expect(result.current.events).toHaveLength(50));
+    await waitFor(() =>
+      expect(result.current.events).toHaveLength(EVENT_BUFFER_LIMIT),
+    );
+  });
+
+  // The feed is otherwise socket-only, so every reload started the log empty
+  // and it filled from nothing — a fleet that had been running for hours
+  // looked idle until the next event happened to fire.
+  it("seeds the log with persisted history on mount", async () => {
+    mockEndpoints({
+      robots: [],
+      events: [
+        { id: 2, robot_id: 4, message: "Entered restricted zone", timestamp: "2026-08-08T10:00:02Z" },
+        { id: 1, robot_id: 7, message: "Completed PATROL mission", timestamp: "2026-08-08T10:00:01Z" },
+      ],
+    });
+    const { result } = renderHook(() => useFleetData());
+
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    expect(axios.get).toHaveBeenCalledWith("/api/v1/events", {
+      params: { limit: EVENT_BUFFER_LIMIT },
+    });
+    // Newest first, and tagged as an EVENT so the renderer treats a REST row
+    // and a socket frame identically.
+    expect(result.current.events[0].message).toBe("Entered restricted zone");
+    expect(result.current.events[0].type).toBe("EVENT");
+  });
+
+  // The backfill and the socket overlap around page load, so the same event
+  // can arrive down both paths.
+  it("does not show an event twice when history and the socket overlap", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const duplicate = {
+      robot_id: 4,
+      message: "Entered restricted zone",
+      timestamp: "2026-08-08T10:00:02Z",
+    };
+    mockEndpoints({ robots: [], events: [{ id: 2, ...duplicate }] });
+    const { result } = renderHook(() => useFleetData());
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+
+    act(() => pushMessage({ type: "EVENT", ...duplicate }));
+    act(() => vi.advanceTimersByTime(100));
+
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
   });
 
   // Without this the WS could only ever add robots, so a retired unit would

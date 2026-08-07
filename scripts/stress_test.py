@@ -1,5 +1,5 @@
 """
-Robot Fleet Platform — Performance & Stress Test Suite
+FleetOps — Performance & Stress Test Suite
 
 Tests:
   1. Single telemetry POST throughput
@@ -476,7 +476,7 @@ async def run_all_tests(base_url):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Robot Fleet Platform Stress Test")
+    parser = argparse.ArgumentParser(description="FleetOps Stress Test")
     parser.add_argument("--base-url", default="http://localhost:8000", help="Backend URL")
     args = parser.parse_args()
 

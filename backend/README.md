@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Robot Fleet Platform: Backend Service</h1>
+  <h1>FleetOps: Backend Service</h1>
   <p><strong>A high-performance, asynchronous REST API and WebSocket engine built with FastAPI, Redis Streams, and PostgreSQL.</strong></p>
 </div>
 
@@ -7,7 +7,7 @@
 
 ## Overview
 
-The backend service functions as the central nervous system of the Robot Fleet Platform. It is responsible for handling thousands of incoming telemetry events per second from distributed agents, broadcasting real-time updates to connected dashboard clients via WebSockets, and reliably persisting structured data to PostgreSQL utilizing a decoupled background worker paradigm.
+The backend service functions as the central nervous system of FleetOps. It is responsible for handling thousands of incoming telemetry events per second from distributed agents, broadcasting real-time updates to connected dashboard clients via WebSockets, and reliably persisting structured data to PostgreSQL utilizing a decoupled background worker paradigm.
 
 ## Architectural Concepts
 

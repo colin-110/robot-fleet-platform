@@ -1,12 +1,6 @@
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 
-const COLORS = {
-  ACTIVE: "hsl(142, 72%, 45%)", // good
-  CHARGING: "hsl(198, 93%, 60%)", // info
-  "LOW POWER": "hsl(38, 92%, 50%)", // warn
-  OFFLINE: "#94a3b8", // gray
-  ERROR: "hsl(0, 84%, 60%)" // bad
-};
+import { statusColor } from "../utils/constants";
 
 const CustomTooltip = ({ active, payload }) => {
   if (active && payload && payload.length) {
@@ -56,8 +50,8 @@ export default function FleetStatusChart({ robots }) {
                 dataKey="value"
                 stroke="none"
               >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[entry.name] || "#94a3b8"} />
+                {data.map((entry) => (
+                  <Cell key={entry.name} fill={statusColor(entry.name)} />
                 ))}
               </Pie>
               <Tooltip content={<CustomTooltip />} />

@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Robot Fleet Platform: Frontend Dashboard</h1>
+  <h1>FleetOps: Frontend Dashboard</h1>
   <p><strong>A high-performance, real-time Single Page Application built with React 18, Vite, and Redux Toolkit.</strong></p>
 </div>
 
@@ -7,7 +7,7 @@
 
 ## Overview
 
-The **FleetOps Dashboard** serves as the interactive control center for the Robot Fleet Platform. Engineered to ingest thousands of WebSocket telemetry events per second, it renders live geographical data and complex statistical charts synchronously without degrading browser frame rates.
+The **FleetOps dashboard** is the operator-facing half of the platform. Engineered to ingest thousands of WebSocket telemetry events per second, it renders live geographical data and complex statistical charts synchronously without degrading browser frame rates.
 
 Designed utilizing modern UI/UX principles, the dashboard prioritizes situational awareness, immediately surfacing predictive maintenance warnings and hardware anomalies to fleet operators.
 

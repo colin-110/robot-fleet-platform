@@ -1,59 +1,64 @@
 /**
  * Shared constants — single source of truth for status colors
  * and configuration values.
+ *
+ * Colors are CSS custom properties rather than literals so the light and dark
+ * palettes stay in one place (src/styles/global.css). Anything that ends up in
+ * an inline `style` or an SVG presentation attribute can hold a `var(...)`
+ * string, which is why these read as tokens and not hexes.
  */
 
 // ── Status metadata ────────────────────────────────────────────────
 
 export const STATUS_META = {
   DEAD: {
-    border: "rgba(110, 118, 129, 0.35)",
-    pillBg: "rgba(110, 118, 129, 0.14)",
-    pillText: "#8b94a3",
+    border: "var(--st-dead-line)",
+    pillBg: "var(--st-dead-bg)",
+    pillText: "var(--st-dead-fg)",
     dot: "dotGray",
-    alertAccent: "#6e7681",
+    alertAccent: "var(--c-dead)",
   },
   OFFLINE: {
-    border: "rgba(139, 148, 163, 0.35)",
-    pillBg: "rgba(139, 148, 163, 0.14)",
-    pillText: "#aab2c0",
+    border: "var(--st-idle-line)",
+    pillBg: "var(--st-idle-bg)",
+    pillText: "var(--st-idle-fg)",
     dot: "dotGray",
-    alertAccent: "#8b94a3",
+    alertAccent: "var(--c-idle)",
   },
   STOPPED: {
-    border: "rgba(139, 148, 163, 0.35)",
-    pillBg: "rgba(139, 148, 163, 0.14)",
-    pillText: "#aab2c0",
+    border: "var(--st-idle-line)",
+    pillBg: "var(--st-idle-bg)",
+    pillText: "var(--st-idle-fg)",
     dot: "dotGray",
-    alertAccent: "#8b94a3",
+    alertAccent: "var(--c-idle)",
   },
   OVERHEATING: {
-    border: "rgba(248, 81, 73, 0.4)",
-    pillBg: "rgba(248, 81, 73, 0.13)",
-    pillText: "#ff7b72",
+    border: "var(--st-hot-line)",
+    pillBg: "var(--st-hot-bg)",
+    pillText: "var(--st-hot-fg)",
     dot: "dotBad",
-    alertAccent: "#f85149",
+    alertAccent: "var(--c-bad)",
   },
   "LOW POWER": {
-    border: "rgba(210, 153, 34, 0.4)",
-    pillBg: "rgba(210, 153, 34, 0.13)",
-    pillText: "#e3b341",
+    border: "var(--st-low-line)",
+    pillBg: "var(--st-low-bg)",
+    pillText: "var(--st-low-fg)",
     dot: "dotWarn",
-    alertAccent: "#d29922",
+    alertAccent: "var(--c-warn)",
   },
   CHARGING: {
-    border: "rgba(88, 166, 255, 0.4)",
-    pillBg: "rgba(88, 166, 255, 0.13)",
-    pillText: "#79b8ff",
+    border: "var(--st-charging-line)",
+    pillBg: "var(--st-charging-bg)",
+    pillText: "var(--st-charging-fg)",
     dot: "dotInfo",
-    alertAccent: "#58a6ff",
+    alertAccent: "var(--c-info)",
   },
   ACTIVE: {
-    border: "rgba(63, 185, 80, 0.4)",
-    pillBg: "rgba(63, 185, 80, 0.13)",
-    pillText: "#56d364",
+    border: "var(--st-active-line)",
+    pillBg: "var(--st-active-bg)",
+    pillText: "var(--st-active-fg)",
     dot: "dotGood",
-    alertAccent: "#3fb950",
+    alertAccent: "var(--c-good)",
   },
 };
 
@@ -61,17 +66,52 @@ export function getStatusMeta(status) {
   return STATUS_META[status] || STATUS_META.ACTIVE;
 }
 
+// ── Fleet status breakdown ─────────────────────────────────────────
 
-// ── Pie chart colors ───────────────────────────────────────────────
+/**
+ * Every status the fleet can report, with the label and colour used wherever
+ * it is counted.
+ *
+ * This list has to stay exhaustive. The KPI row used to hardcode six of these
+ * and omit STOPPED, so an emergency-stopped robot counted toward the total and
+ * toward nothing else — the breakdown quietly failed to add up to the fleet
+ * size. `FLEET_STATUSES` is now the one list, and anything not in it is rolled
+ * into an explicit "Other" bucket rather than disappearing.
+ */
+export const FLEET_STATUSES = [
+  { key: "ACTIVE", label: "Active", hint: "on mission", color: "var(--c-good)" },
+  { key: "CHARGING", label: "Charging", hint: "at base", color: "var(--c-info)" },
+  { key: "LOW POWER", label: "Low Power", hint: "below 30%", color: "var(--c-warn)" },
+  { key: "OVERHEATING", label: "Overheating", hint: "thermal", color: "var(--c-bad)" },
+  { key: "STOPPED", label: "Stopped", hint: "halted by operator", color: "var(--c-idle)" },
+  { key: "OFFLINE", label: "Offline", hint: "no signal", color: "var(--c-idle)" },
+  { key: "DEAD", label: "Dead", hint: "needs service", color: "var(--c-dead)" },
+];
 
-export const PIE_COLORS = {
-  ACTIVE: "#22c55e",
-  "LOW POWER": "#f59e0b",
-  OVERHEATING: "#ef4444",
-  OFFLINE: "#94a3b8",
-  CHARGING: "#38bdf8",
-  DEAD: "#020617",
-};
+/** Colour for a status in charts and legends, with a neutral fallback. */
+export function statusColor(status) {
+  const entry = FLEET_STATUSES.find((s) => s.key === status);
+  return entry ? entry.color : "var(--c-idle)";
+}
+
+/**
+ * Count robots by status.
+ *
+ * Returns the per-status counts plus `other`, which absorbs any status the
+ * backend or simulator introduces that this build does not know about. Callers
+ * can therefore always show a breakdown that sums to `robots.length`.
+ */
+export function statusBreakdown(robots) {
+  const counts = Object.fromEntries(FLEET_STATUSES.map((s) => [s.key, 0]));
+  let other = 0;
+
+  for (const robot of robots) {
+    if (robot.status in counts) counts[robot.status] += 1;
+    else other += 1;
+  }
+
+  return { counts, other, total: robots.length };
+}
 
 // ── Utility functions ──────────────────────────────────────────────
 
@@ -102,11 +142,26 @@ export function formatLastSeen(lastSeen) {
 
 export const ALERT_STATUSES = ["LOW POWER", "OVERHEATING", "OFFLINE", "CHARGING", "DEAD"];
 
+// ── Event log sizing ───────────────────────────────────────────────
+
+/**
+ * How many events the client keeps, and how many the dashboard's side panel
+ * shows before deferring to the Event Log tab.
+ *
+ * The panel used to render the entire buffer inside a track that grew with its
+ * content, so a busy fleet stretched the dashboard column past the map beside
+ * it. The panel is now capped and scrolls internally; the full history lives on
+ * its own page.
+ */
+export const EVENT_BUFFER_LIMIT = 200;
+export const EVENT_PANEL_LIMIT = 12;
+
 // ── Navigation items ───────────────────────────────────────────────
 
 export const NAV_ITEMS = [
   "Dashboard",
   "Fleet Analytics",
   "Telemetry",
+  "Event Log",
   "System Health",
 ];
