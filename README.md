@@ -1,6 +1,6 @@
 <div align="center">
 
-# Real-Time Robot Fleet Monitoring and Control Platform
+# FleetOps
 
 **A distributed, event-driven system for real-time telemetry ingestion, live monitoring, and bidirectional control of a robot fleet.**
 

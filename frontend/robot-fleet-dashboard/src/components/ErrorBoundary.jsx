@@ -23,11 +23,11 @@ export default class ErrorBoundary extends Component {
       return (
         <div
           style={{
-            minHeight: "100vh",
+            minHeight: "100dvh",
             display: "grid",
             placeItems: "center",
             padding: 32,
-            color: "var(--text, #e2e8f0)",
+            color: "var(--text)",
           }}
         >
           <div
@@ -40,7 +40,7 @@ export default class ErrorBoundary extends Component {
           >
             <div style={{ fontSize: 48 }}>⚠️</div>
             <h1 style={{ margin: 0, fontSize: 22 }}>Something went wrong</h1>
-            <p style={{ color: "var(--muted, #94a3b8)", margin: 0 }}>
+            <p style={{ color: "var(--muted)", margin: 0 }}>
               The dashboard encountered an unexpected error. Try refreshing the
               page.
             </p>
@@ -55,13 +55,14 @@ export default class ErrorBoundary extends Component {
               <pre
                 style={{
                   fontSize: 12,
-                  color: "var(--muted, #94a3b8)",
+                  color: "var(--muted)",
                   textAlign: "left",
                   overflow: "auto",
                   maxHeight: 120,
                   padding: 12,
                   borderRadius: 8,
-                  background: "rgba(0,0,0,0.3)",
+                  background: "var(--bg-2)",
+                  border: "1px solid var(--line)",
                 }}
               >
                 {this.state.error.toString()}

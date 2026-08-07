@@ -14,7 +14,7 @@ import {
   YAxis
 } from "recharts";
 
-import { PIE_COLORS } from "../utils/constants";
+import { statusColor } from "../utils/constants";
 
 const chartCardStyle = {
   padding: 16,
@@ -75,10 +75,7 @@ function AnalyticsPanel({ analytics }) {
                 paddingAngle={3}
               >
                 {statusBreakdown.map((entry) => (
-                  <Cell
-                    key={entry.status}
-                    fill={PIE_COLORS[entry.status] || "#64748b"}
-                  />
+                  <Cell key={entry.status} fill={statusColor(entry.status)} />
                 ))}
               </Pie>
             </PieChart>

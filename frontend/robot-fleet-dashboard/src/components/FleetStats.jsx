@@ -1,20 +1,32 @@
+import { FLEET_STATUSES, statusBreakdown } from "../utils/constants";
+
+/**
+ * The KPI row: fleet size, then a breakdown that always adds up to it.
+ *
+ * Empty buckets are still rendered — an operator reading "Overheating 0" is
+ * being told something, and cards that appear and vanish as the fleet changes
+ * make the row jump. The one conditional card is "Other", which only appears
+ * when a robot reports a status this build has no bucket for; that is the case
+ * that used to make the numbers silently disagree with the total.
+ */
 function FleetStats({ robots }) {
-  const count = (s) => robots.filter((r) => r.status === s).length;
+  const { counts, other, total } = statusBreakdown(robots);
 
   const averageBattery =
-    robots.length > 0
-      ? (robots.reduce((sum, r) => sum + r.battery, 0) / robots.length).toFixed(1)
-      : "0.0";
+    total > 0 ? (robots.reduce((sum, r) => sum + r.battery, 0) / total).toFixed(1) : "0.0";
 
   const stats = [
-    { title: "Total Robots", value: robots.length, color: "#4f8cff", hint: "in fleet" },
-    { title: "Active", value: count("ACTIVE"), color: "#3fb950", hint: "on mission" },
-    { title: "Charging", value: count("CHARGING"), color: "#58a6ff", hint: "at base" },
-    { title: "Low Power", value: count("LOW POWER"), color: "#d29922", hint: "below 30%" },
-    { title: "Overheating", value: count("OVERHEATING"), color: "#f85149", hint: "thermal" },
-    { title: "Offline", value: count("OFFLINE"), color: "#8b94a7", hint: "no signal" },
-    { title: "Dead", value: count("DEAD"), color: "#6e7681", hint: "needs service" },
-    { title: "Avg Battery", value: `${averageBattery}%`, color: "#3fb950", hint: "fleet mean" },
+    { title: "Total Robots", value: total, color: "var(--accent)", hint: "in fleet" },
+    ...FLEET_STATUSES.map((s) => ({
+      title: s.label,
+      value: counts[s.key],
+      color: s.color,
+      hint: s.hint,
+    })),
+    ...(other > 0
+      ? [{ title: "Other", value: other, color: "var(--c-idle)", hint: "unrecognised status" }]
+      : []),
+    { title: "Avg Battery", value: `${averageBattery}%`, color: "var(--c-good)", hint: "fleet mean" },
   ];
 
   return (

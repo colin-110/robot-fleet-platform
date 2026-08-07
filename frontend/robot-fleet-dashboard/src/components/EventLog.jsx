@@ -1,58 +1,114 @@
-export default function EventLog({ events }) {
+import { useMemo, useState } from "react";
+
+import { EVENT_PANEL_LIMIT } from "../utils/constants";
+
+/** Colour-code a row by what the event says, not by which socket delivered it. */
+function accentFor(event, message) {
+  if (/restricted|zone/i.test(message)) return "var(--c-warn)";
+  if (/completed/i.test(message)) return "var(--c-good)";
+  if (event.type && event.type.startsWith("COMMAND")) return "var(--c-info)";
+  return "var(--accent)";
+}
+
+function describe(event) {
+  if (event.type === "COMMAND") return `Command: ${event.action}`;
+  return event.message || "";
+}
+
+function formatTime(timestamp) {
+  const at = new Date(timestamp);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function EventRow({ event }) {
+  const message = describe(event);
   return (
-    <div className="glassStrong" style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <li className="eventRow">
+      <span className="eventRow__accent" style={{ background: accentFor(event, message) }} />
+      <div className="eventRow__body">
+        <div className="eventRow__msg">{message}</div>
+        <div className="eventRow__meta">
+          <span>Robot {event.robot_id}</span>
+          <span aria-hidden="true">·</span>
+          <span>{formatTime(event.timestamp)}</span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Live event feed.
+ *
+ * Two shapes, one component:
+ *
+ * - `variant="panel"` — the dashboard sidebar. Shows only the newest handful
+ *   inside a fixed-height scroller. It previously rendered the whole buffer in
+ *   a track that grew with its content, so a busy fleet stretched the right
+ *   column far past the map next to it and dragged the page down with it.
+ * - `variant="page"` — the Event Log tab. Same feed, full buffer, with a
+ *   filter box, still scrolling inside its own box rather than the document.
+ *
+ * Either way the surrounding layout owns the height and the list scrolls
+ * within it, so incoming events can never change the page's dimensions.
+ */
+export default function EventLog({ events, variant = "panel", onViewAll }) {
+  const [filter, setFilter] = useState("");
+  const isPage = variant === "page";
+  const all = useMemo(() => events || [], [events]);
+
+  const visible = useMemo(() => {
+    if (!isPage) return all.slice(0, EVENT_PANEL_LIMIT);
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return all;
+    return all.filter((event) => {
+      const haystack = `${describe(event)} robot ${event.robot_id}`.toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [all, filter, isPage]);
+
+  const hidden = all.length - visible.length;
+
+  return (
+    <section className={`glassStrong eventLog ${isPage ? "eventLog--page" : ""}`}>
       <div className="panelHead">
-        <h2>Live Event Log</h2>
-        {events && events.length > 0 && (
-          <span className="badge" style={{ background: "var(--accent-weak)", color: "#9dbdff", borderColor: "rgba(79,140,255,0.25)" }}>
-            {events.length}
-          </span>
-        )}
+        <h2>{isPage ? "Event Log" : "Live Events"}</h2>
+        <div className="eventLog__headTools">
+          {all.length > 0 && <span className="pill eventLog__count">{all.length}</span>}
+          {!isPage && hidden > 0 && onViewAll && (
+            <button type="button" className="linkBtn" onClick={onViewAll}>
+              View all
+            </button>
+          )}
+        </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: 12, minHeight: 0 }}>
-        {events && events.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {events.map((evt, idx) => {
-              const time = new Date(evt.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-              const msg = evt.type === "COMMAND" ? `Command: ${evt.action}` : (evt.message || "");
-              const accent = /restricted|zone/i.test(msg) ? "#d29922"
-                : /completed/i.test(msg) ? "#3fb950"
-                : evt.type && evt.type.startsWith("COMMAND") ? "#58a6ff"
-                : "var(--accent)";
-              return (
-                <div
-                  key={`${evt.robot_id}-${evt.timestamp}-${idx}`}
-                  style={{
-                    display: "flex",
-                    gap: 11,
-                    padding: "10px 12px",
-                    borderRadius: "var(--radius-sm)",
-                    background: "var(--bg-2)",
-                    border: "1px solid var(--line)",
-                  }}
-                >
-                  <span style={{ width: 3, borderRadius: 3, background: accent, flexShrink: 0 }} />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, lineHeight: 1.35 }}>
-                      {msg}
-                    </div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 11, color: "var(--muted)" }}>
-                      <span>Robot {evt.robot_id}</span>
-                      <span>·</span>
-                      <span>{time}</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+      {isPage && (
+        <div className="eventLog__filter">
+          <input
+            className="input"
+            placeholder="Filter events by text or robot id"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            aria-label="Filter events"
+          />
+        </div>
+      )}
+
+      <div className="eventLog__scroll">
+        {visible.length > 0 ? (
+          <ul className="eventList">
+            {visible.map((event, index) => (
+              <EventRow key={`${event.robot_id}-${event.timestamp}-${index}`} event={event} />
+            ))}
+          </ul>
         ) : (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--muted)", fontSize: 13 }}>
-            No recent events
+          <div className="eventLog__empty">
+            {all.length === 0 ? "No recent events" : "No events match that filter"}
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

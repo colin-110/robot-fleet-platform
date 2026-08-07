@@ -30,8 +30,8 @@ export default function LoginScreen({ onSignedIn }) {
   return (
     <div className="loginScreen">
       <form className="glass loginCard" onSubmit={handleSubmit} aria-label="Sign in">
-        <h1 className="loginCard__title">Fleet Operations</h1>
-        <p className="loginCard__subtitle">Sign in to access the console.</p>
+        <h1 className="loginCard__title">FleetOps</h1>
+        <p className="loginCard__subtitle">Sign in to access the fleet console.</p>
 
         <label className="loginField">
           <span>Username</span>
