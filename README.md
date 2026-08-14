@@ -52,6 +52,11 @@ Measured on a single node: **2,000 concurrent WebSocket clients at ~15,000–18,
 - **Correlated structured logging.** Every line carries the request id the caller was handed back, so a reported `X-Request-ID` is findable. JSON in production; one access line per request, because uvicorn's own is disabled there.
 - **Blocking CI/CD.** Lint, 257 tests, and a production build all gate the pipeline; passing builds publish versioned images to GHCR that the host pulls.
 
+<div align="center">
+<img src="docs/images/fleet-roster.png" alt="Fleet roster of robot cards showing status, battery, mission, per-component health, and command actions" width="100%">
+<sub>The roster. <code>R40</code> renders <code>OFFLINE</code> — last seen a minute ago — rather than vanishing, because fleet state is the roster joined onto telemetry. Per-component health and both command actions sit on every card.</sub>
+</div>
+
 ---
 
 ## Architecture
@@ -69,6 +74,11 @@ graph LR
 ```
 
 The two Redis read modes are the design's hinge. The worker uses `XREADGROUP`, so consumer-group members split the stream and each row is persisted exactly once. Fan-out uses `XREAD`, so every API instance sees every message and forwards it to its own clients. The API holds no per-request state, so adding instances scales both ingest and fan-out.
+
+<div align="center">
+<img src="docs/images/telemetry-map.png" alt="Live fleet map with robot position markers and a red restricted-area geofence" width="100%">
+<sub>The read end of that fan-out: marker positions move as telemetry arrives over the WebSocket, with a restricted-area geofence drawn in red.</sub>
+</div>
 
 **→ [Full architecture and engineering highlights](./docs/architecture.md)** — the roster design that makes robot *absence* detectable, device-reported timestamps for store-and-forward, compare-and-set command transitions, and multiprocess-correct metrics.
 
@@ -105,6 +115,11 @@ Every optimization sits behind an `OPT_*` flag whose "off" state restores the im
 Arms are interleaved so host load biases both equally; the harness asserts via `/health` that the flags actually came up, and rejects any arm where more than 5% of requests failed — because the p99 of zero successful requests is `0.0`, which otherwise reads as infinitely fast.
 
 Two experiments initially reported wrong numbers. Both are [written up along with how the harness caught them](./docs/performance.md#on-measurement-error), because that is the failure mode the harness exists to prevent.
+
+<div align="center">
+<img src="docs/images/analytics.png" alt="Fleet analytics view: health trend, status breakdown donut, battery and temperature distributions, mission completion counts" width="100%">
+<sub>What the cached read path serves: every panel here is an aggregate query behind the read-through cache, which is why the analytics endpoint is one of the arms the harness measures.</sub>
+</div>
 
 **→ [Full benchmarks, methodology, and load tests](./docs/performance.md)**
 
