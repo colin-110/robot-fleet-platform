@@ -1,7 +1,10 @@
 fastapi>=0.100,<1
 uvicorn>=0.22,<1
 SQLAlchemy>=2,<3
-psycopg2-binary>=2,<3
+# asyncpg only. Both the app engine (app/database.py) and the migration engine
+# (alembic/env.py) call create_async_engine against settings.async_database_url,
+# which rewrites the DSN to postgresql+asyncpg://. psycopg2 was never imported
+# by anything and cost ~5 MB of wheel plus a libpq build dependency.
 asyncpg>=0.28,<1
 pydantic-settings>=2,<3
 alembic>=1.13,<2

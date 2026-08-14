@@ -7,6 +7,12 @@ RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.t
 # Runtime stage
 FROM python:3.10-slim
 WORKDIR /app
+
+# No .pyc files: the image is read-only in practice and every module imported
+# would otherwise write a cache file that ships in the layer for nothing.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 RUN useradd -m appuser
 
 # Install curl for healthcheck

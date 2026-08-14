@@ -1,0 +1,23 @@
+# The image build runs `npm ci` from package-lock.json and then `COPY . .`.
+# Without this file that copy drags the host's node_modules, the local npm
+# cache, and any previous dist/ into the build context and over the freshly
+# installed tree — slower, larger, and non-reproducible, since what ships would
+# depend on whatever the host happened to have installed.
+node_modules
+.npm-cache
+dist
+
+# Test and lint output; nothing the build consumes.
+coverage
+.eslintcache
+
+# Never bake secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md
