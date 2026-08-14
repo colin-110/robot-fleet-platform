@@ -359,7 +359,7 @@ async def test_db_write_verification(session, base_url):
 
 async def run_all_tests(base_url):
     print("=" * 70)
-    print("ROBOT FLEET PLATFORM -- PERFORMANCE & STRESS TEST")
+    print("FLEETOPS -- PERFORMANCE & STRESS TEST")
     print("=" * 70)
     print(f"Target: {base_url}")
     print()
