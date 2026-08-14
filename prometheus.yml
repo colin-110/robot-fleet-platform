@@ -2,6 +2,6 @@ global:
   scrape_interval: 5s # Scrape metrics every 5 seconds for fast local testing
 
 scrape_configs:
-  - job_name: 'robot_fleet_backend'
+  - job_name: 'fleetops_backend'
     static_configs:
       - targets: ['backend:8000']

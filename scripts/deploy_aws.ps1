@@ -1,7 +1,7 @@
 # Refresh PATH to load AWS CLI
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
-Write-Host "=== Robot Fleet Platform: AWS Automated EC2 Deployer ===" -ForegroundColor Cyan
+Write-Host "=== FleetOps: AWS Automated EC2 Deployer ===" -ForegroundColor Cyan
 
 # 1. Get Latest Ubuntu 22.04 LTS AMI
 Write-Host "Searching for latest Ubuntu 22.04 LTS AMI in us-east-1..."
@@ -45,7 +45,7 @@ Write-Host "Checking for existing Security Group 'fleet-security-group'..."
 $sg_id = aws ec2 describe-security-groups --group-names fleet-security-group --query "SecurityGroups[0].GroupId" --output text 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
     Write-Host "Creating new Security Group 'fleet-security-group'..."
-    $sg_id = aws ec2 create-security-group --group-name fleet-security-group --description "Security group for Robot Fleet Platform" --query "GroupId" --output text
+    $sg_id = aws ec2 create-security-group --group-name fleet-security-group --description "Security group for FleetOps" --query "GroupId" --output text
     if ($sg_id) {
         Write-Host "Security Group created: $sg_id" -ForegroundColor Green
         Write-Host "Configuring firewall rules (ports 22, 80, 8000)..."

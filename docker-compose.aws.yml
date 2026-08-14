@@ -18,6 +18,16 @@
 # Postgres and Redis are managed (RDS / ElastiCache); their URLs come from
 # backend/.env, which is not in this repo.
 
+# Docker's json-file driver is unbounded by default. On a 7.6 GB disk, with
+# ACCESS_LOG=true writing a line per request and a simulator posting around the
+# clock, that is a disk-full outage on a long enough timeline — the same failure
+# the Vite build caused once already. Capped here at 30 MB per service.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   backend:
     image: ghcr.io/colin-110/robot-fleet-backend:${IMAGE_TAG:-latest}
@@ -29,6 +39,17 @@ services:
     environment:
       - PYTHONPATH=.
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Migrations run before the port opens, and RDS can be slow to accept the
+      # first connection after an idle period. Without this grace window the
+      # container is marked unhealthy mid-migration and restarted into the same
+      # migration again.
+      start_period: 90s
+    logging: *default-logging
     networks: [fleet_net]
 
   worker:
@@ -41,7 +62,22 @@ services:
     environment:
       - PYTHONPATH=.
     restart: unless-stopped
-    depends_on: [backend]
+    depends_on:
+      # Gated on health, not just start: the backend's prestart step owns the
+      # migrations, and the worker queries those tables immediately.
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # The worker has no port to probe. Its heartbeat task rewrites this file
+      # every 10s (app/worker.py), so a stale mtime means the task died while
+      # the process stayed up — which is the failure that would otherwise be
+      # silent.
+      test: ["CMD", "python", "-c", "import os, time; assert time.time() - os.path.getmtime('/tmp/worker_healthy') < 30"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging: *default-logging
     networks: [fleet_net]
 
   frontend:
@@ -49,7 +85,21 @@ services:
     # nginx serves the SPA and proxies /api and /ws to the backend container.
     ports: ["80:80"]
     restart: unless-stopped
+    # Deliberately a plain dependency rather than `condition: service_healthy`,
+    # unlike the local compose file. depends_on only orders startup, so gating
+    # here would buy nothing at runtime while turning a backend that fails to
+    # come up into a site that does not load at all. Serving the SPA and letting
+    # it surface a connection error is the better failure mode.
     depends_on: [backend]
+    healthcheck:
+      # busybox wget, present in nginx:alpine. Hits the SPA root, not /api, so
+      # this reports on nginx itself rather than on the backend.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
     networks: [fleet_net]
 
   simulator:
@@ -60,8 +110,50 @@ services:
     command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24"]
     env_file: [./backend/.env]
     restart: unless-stopped
-    depends_on: [backend]
+    depends_on:
+      # Held until the API answers, so 24 robots are not posting telemetry at a
+      # backend that is still applying migrations.
+      backend:
+        condition: service_healthy
+    logging: *default-logging
     networks: [fleet_net]
+
+  prometheus:
+    # The backend exports metrics in every environment, but until now nothing
+    # scraped them in production — including telemetry_stream_length and
+    # telemetry_stream_pending, the two the bounded ingest buffer depends on
+    # being watched. Grafana is deliberately not deployed here: it roughly
+    # doubles the observability memory cost on a 1 GB box, and Prometheus'
+    # own expression browser answers the questions this stack raises. Point a
+    # local Grafana at this instance through the tunnel if you want dashboards.
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Bounded twice over. The size cap is the one that matters on a 7.6 GB
+      # disk shared with the container logs above.
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=512MB
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      # Bound to loopback, NOT published. Metrics name internal hosts and expose
+      # request volumes, and this box has no auth in front of port 9090. Reach
+      # it over an SSH tunnel:
+      #   ssh -L 9090:localhost:9090 ubuntu@<host>
+      - "127.0.0.1:9090:9090"
+    # A hard ceiling so a retention or cardinality surprise cannot push the
+    # application containers into the OOM killer on a 1 GB box.
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on: [backend]
+    logging: *default-logging
+    networks: [fleet_net]
+
+volumes:
+  prometheus_data:
 
 networks:
   fleet_net:

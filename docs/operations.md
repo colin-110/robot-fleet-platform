@@ -72,7 +72,11 @@ Viewer --HTTPS--> CloudFront --HTTP--> EC2 (nginx :80 -> FastAPI :8000)
 
 This is the cost-optimized single-node topology. The multi-node high-availability version (ALB, Auto Scaling Group, Multi-AZ RDS) is described under [Scaling roadmap](#scaling-roadmap); the application tier is already stateless and ready for it.
 
-The production compose file refuses to start without an explicit `CORS_ORIGINS` value, and sets `TRUSTED_PROXY_COUNT=2` to account for nginx and CloudFront.
+`CORS_ORIGINS` and `TRUSTED_PROXY_COUNT` both come from `backend/.env` on the host — Compose interpolation cannot read `env_file`, so the deploy has no way to enforce them and will start without either. Set them there. `APP_ENV=production` rejects `CORS_ORIGINS=*` at startup, and `TRUSTED_PROXY_COUNT=2` accounts for nginx and CloudFront; leaving it at `0` makes the rate limiter trust a client-supplied `X-Forwarded-For`.
+
+Every container caps its logs at 30 MB (`10m` × 3 files). The json-file driver is unbounded by default, which on a 7.6 GB disk shared with a simulator that posts around the clock is a disk-full outage waiting for a long enough uptime.
+
+Backend, worker, and frontend each declare a healthcheck. The worker's probe reads the mtime of the heartbeat file its own task rewrites every 10 seconds, so a heartbeat that dies inside a live process is caught rather than passing forever. Worker and simulator wait on `condition: service_healthy` — the backend owns the migrations, and 24 robots posting at a backend still running Alembic is the startup race that gating removes. The frontend deliberately does not wait: `depends_on` only orders startup, so gating it would trade nothing at runtime for a site that fails to load at all when the backend is down.
 
 ### CI/CD
 
@@ -94,6 +98,22 @@ Every line carries the `request_id` that `RequestIDMiddleware` returns as `X-Req
 `LOG_FORMAT=json` emits one JSON object per line; fields passed via `extra=` become queryable keys instead of text a dashboard has to regex. Production defaults to it.
 
 Each request also produces a structured access line (`http_method`, `http_path`, `http_status`, `duration_ms`). Uvicorn runs with `--no-access-log` in production, so without this a deployed request left no trace at all.
+
+---
+
+## Monitoring
+
+The backend exports Prometheus metrics at `/metrics` in every environment, and until recently nothing scraped them in production — including `telemetry_stream_length` and `telemetry_stream_pending`, the two the bounded ingest buffer depends on being watched. A Prometheus container now runs alongside the stack and scrapes the backend over the internal network.
+
+It is bound to loopback rather than published. Metrics name internal hosts and expose request volumes, and nothing authenticates port 9090 on that box. Reach it through a tunnel:
+
+```bash
+ssh -L 9090:localhost:9090 ubuntu@<host>
+```
+
+Then open `http://localhost:9090`. Retention is capped at 15 days *and* 512 MB, whichever binds first, with a 256 MB memory ceiling on the container so a cardinality surprise cannot push the application into the OOM killer.
+
+Grafana runs in the local compose stack only. On a 1 GB box it roughly doubles the memory cost of observability, and Prometheus' own expression browser answers the questions this deployment raises; point a local Grafana at the tunnel if you want dashboards. Alerting is still absent — see [Scaling roadmap](#scaling-roadmap).
 
 ---
 
