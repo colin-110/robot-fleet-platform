@@ -15,6 +15,7 @@ export ``DATABASE_URL`` to a throwaway Postgres database whose name contains
 """
 
 import os
+from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
@@ -46,6 +47,25 @@ if "test" not in _DB_NAME.lower():
     )
 
 TEST_DATABASE_URL = _RAW_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# ── Resolve the Redis test instance ─────────────────────────────────
+
+# The same guard, for the same reason. ``setup_database`` calls ``cache.clear()``,
+# which is ``FLUSHDB`` — it does not remove only cache keys. Pointed at a real
+# instance it would drop the telemetry stream, unacknowledged entries included,
+# along with every rate-limit bucket. Without this, the Postgres guard above
+# would refuse to touch a production schema while the Redis flush went ahead
+# anyway, which is the worse half of the pair to leave unguarded.
+_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+_REDIS_HOST = urlparse(_REDIS_URL).hostname or ""
+# "redis" covers running the suite inside the compose network, where the
+# service name is the hostname. A managed endpoint matches none of these.
+if _REDIS_HOST not in {"localhost", "127.0.0.1", "::1", "redis"}:
+    raise RuntimeError(
+        f"Refusing to run the test suite against Redis host {_REDIS_HOST!r}: the "
+        "suite calls FLUSHDB between tests. Point REDIS_URL at a local or "
+        "throwaway Redis."
+    )
 
 # NullPool: each test recreates the schema, so we don't want connections held
 # open across the create/drop cycle.
