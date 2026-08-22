@@ -64,10 +64,11 @@ IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
 
 ### Provisioning the host
 
-[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) brings it to the state the rollout assumes. Three of those details are load-bearing rather than incidental:
+[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) brings it to the state the rollout assumes. Four of those details are load-bearing rather than incidental:
 
 - **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. An untagged instance is not a slow deploy, it is a silent one — `send-command` treats a target that matches nothing as a success.
 - **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the preinstalled SSM agent never registers and the host is invisible to Systems Manager, tag or no tag.
+- **Security group `fleet-ec2-sg`.** Not just any group that opens 80 and 22 — specifically the one the RDS and ElastiCache groups name as a source. A host in the wrong group provisions cleanly, starts cleanly, and then hangs on its first database connection, with nothing in the provisioning output to suggest why. The script checks this now and warns; `-SecurityGroupName` overrides it.
 - **User-data bootstrap.** Installs Docker with the Compose plugin, adds 1 GB of swap on the 1 GB box, and clones the repository to `/opt/fleetops` — the directory the rollout `cd`s into.
 
 The script is re-runnable, and repairs as well as creates. It reuses an instance already tagged `role=fleet-app`; failing that, it adopts an untagged one launched with the `fleet-key` pair — the shape a host provisioned before this script applied tags — by tagging it and attaching the instance profile, which EC2 permits on a running instance. So a host that predates any of this becomes SSM-manageable without being rebuilt. Only when neither exists does it launch. Pass `-ForceNewInstance` to add a second host deliberately, remembering that both will then match the CD job's tag target.
