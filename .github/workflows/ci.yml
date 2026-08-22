@@ -133,9 +133,14 @@ jobs:
 
   # ── CD: Deploy to AWS (opt-in) ─────────────────────────────────────
   # Gated so the pipeline stays green until AWS is wired up. To enable:
-  #   1. Set repo variable ENABLE_AWS_DEPLOY = true
-  #   2. Add an OIDC deploy role and set secret AWS_DEPLOY_ROLE_ARN
-  #   3. Ensure the EC2 host is SSM-managed (tag: role=fleet-app)
+  #   1. Provision the host with scripts/deploy_aws.ps1. It tags the instance
+  #      role=fleet-app, attaches the SSM instance profile without which the
+  #      agent never registers, and bootstraps the Docker install and the
+  #      /opt/fleetops checkout that the rollout below acts on.
+  #   2. On the host: write backend/.env (see backend/.env.example), and
+  #      `docker login ghcr.io` if the GHCR packages are private.
+  #   3. Add an OIDC deploy role and set secret AWS_DEPLOY_ROLE_ARN
+  #   4. Set repo variable ENABLE_AWS_DEPLOY = true
   # The instance then pulls the freshly published GHCR images and restarts.
   deploy-aws:
     name: Deploy to AWS (EC2 via SSM)
@@ -152,9 +157,72 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
       - name: Roll out new images to the app host
+        env:
+          SHA: ${{ github.sha }}
         run: |
-          aws ssm send-command \
-            --targets "Key=tag:role,Values=fleet-app" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${{ github.sha }}" \
-            --parameters 'commands=["cd /opt/fleetops && git fetch origin main && git reset --hard origin/main && IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.aws.yml -p fleetops pull && IMAGE_TAG=${{ github.sha }} docker compose -f docker-compose.aws.yml -p fleetops up -d --remove-orphans"]'
+          set -euo pipefail
+
+          # Resolve the targets first. `send-command` accepts a tag target that
+          # matches nothing and still returns success, so an untagged host - or
+          # one whose SSM agent never registered - produced a green deploy that
+          # ran nowhere. scripts/deploy_aws.ps1 applies the tag and the instance
+          # profile; this is the check that the two still agree.
+          ids=$(aws ssm describe-instance-information --filters "Key=tag:role,Values=fleet-app" "Key=PingStatus,Values=Online" --query "InstanceInformationList[].InstanceId" --output text)
+          if [ -z "$ids" ]; then
+            echo "::error::No online SSM-managed instance is tagged role=fleet-app."
+            exit 1
+          fi
+          echo "Deploying $SHA to: $ids"
+
+          # Reset to the deployed SHA rather than origin/main: main may already
+          # have moved, and the compose file and prometheus.yml on the host have
+          # to come from the same commit as the images IMAGE_TAG pins.
+          read -r -d "" remote <<SCRIPT || true
+          set -eu
+          cd /opt/fleetops
+          git fetch origin main
+          git reset --hard $SHA
+          export IMAGE_TAG=$SHA
+          docker compose -f docker-compose.aws.yml -p fleetops pull
+          docker compose -f docker-compose.aws.yml -p fleetops up -d --remove-orphans
+          # The superseded images are dead weight on a 7.6 GB disk.
+          docker image prune -f
+          SCRIPT
+
+          params=$(jq -n --arg s "$remote" '{commands:[$s],executionTimeout:["1800"]}')
+          cid=$(aws ssm send-command --instance-ids $ids --document-name AWS-RunShellScript --comment "Deploy ${SHA:0:7}" --parameters "$params" --query "Command.CommandId" --output text)
+          echo "SSM command: $cid"
+
+          # send-command only queues the work. Without waiting on the result the
+          # job goes green while the rollout fails on the box, which is how a
+          # broken deploy stays invisible until someone loads the site.
+          inv() { aws ssm get-command-invocation --command-id "$cid" --instance-id "$1" --query "$2" --output text; }
+
+          failed=0
+          for id in $ids; do
+            deadline=$((SECONDS + 900))
+            while :; do
+              status=$(inv "$id" Status 2>/dev/null || echo Pending)
+              case "$status" in
+                Success) break ;;
+                Failed|Cancelled|TimedOut|Undeliverable|Terminated) failed=1; break ;;
+              esac
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "::error::Timed out waiting for $id (last status: $status)"
+                failed=1
+                break
+              fi
+              sleep 10
+            done
+
+            echo "::group::$id -> $status"
+            inv "$id" StandardOutputContent || true
+            stderr=$(inv "$id" StandardErrorContent || true)
+            if [ -n "$stderr" ] && [ "$stderr" != "None" ]; then
+              echo "--- stderr ---"
+              echo "$stderr"
+            fi
+            echo "::endgroup::"
+          done
+
+          exit $failed
