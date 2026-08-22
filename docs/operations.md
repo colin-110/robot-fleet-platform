@@ -70,6 +70,10 @@ IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
 - **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the preinstalled SSM agent never registers and the host is invisible to Systems Manager, tag or no tag.
 - **User-data bootstrap.** Installs Docker with the Compose plugin, adds 1 GB of swap on the 1 GB box, and clones the repository to `/opt/fleetops` — the directory the rollout `cd`s into.
 
+The script is re-runnable, and repairs as well as creates. It reuses an instance already tagged `role=fleet-app`; failing that, it adopts an untagged one launched with the `fleet-key` pair — the shape a host provisioned before this script applied tags — by tagging it and attaching the instance profile, which EC2 permits on a running instance. So a host that predates any of this becomes SSM-manageable without being rebuilt. Only when neither exists does it launch. Pass `-ForceNewInstance` to add a second host deliberately, remembering that both will then match the CD job's tag target.
+
+User-data runs once, at first boot, so an adopted host never sees it. [`ec2_user_data.sh`](../scripts/ec2_user_data.sh) is written to be idempotent for exactly that case — copy it over and run it with `sudo` to install Docker and create the checkout. The script prints the two commands.
+
 Two steps stay manual, because both involve secrets that are deliberately not in the repository: writing `backend/.env` on the host, and `docker login ghcr.io` if the GHCR packages are private. Without the first the stack starts unconfigured; without the second `docker compose pull` fails with `denied`.
 
 The security group opens 22 (for the Prometheus tunnel below) and 80. Not 8000 — the backend port is never published, since nginx reaches it over the internal Compose network.
