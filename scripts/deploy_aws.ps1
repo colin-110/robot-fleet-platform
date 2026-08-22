@@ -4,7 +4,12 @@
 #
 #   -ForceNewInstance   launch a second host even if a tagged one exists.
 param(
-    [switch]$ForceNewInstance
+    [switch]$ForceNewInstance,
+    # Defaults to the group the RDS and ElastiCache security groups actually
+    # admit. This script previously created and used 'fleet-security-group',
+    # which the data tier does not reference -- so the host it built could not
+    # open a connection to Postgres or Redis, whatever its .env said.
+    [string]$SecurityGroupName = "fleet-ec2-sg"
 )
 
 # Refresh PATH to load AWS CLI
@@ -28,7 +33,21 @@ $key_exists = ($LASTEXITCODE -eq 0)
 $pem_exists = Test-Path "fleet-key.pem"
 
 if ($key_exists -and -not $pem_exists) {
-    Write-Host "AWS has 'fleet-key' but local 'fleet-key.pem' is missing. Re-creating key pair..." -ForegroundColor Yellow
+    # Rotating the key pair is only safe while no host is using it. A running
+    # instance keeps the public key it was launched with, so replacing the pair
+    # underneath one produces a .pem that cannot open the very host this script
+    # goes on to reuse -- and the original is unrecoverable, because AWS never
+    # stored the private half.
+    $key_in_use = aws ec2 describe-instances --filters "Name=key-name,Values=fleet-key" "Name=instance-state-name,Values=pending,running,stopping,stopped" --query "Reservations[].Instances[].InstanceId" --output text 2>$null
+    if ($key_in_use -and ($key_in_use -split "\s+" | Where-Object { $_ })) {
+        Write-Host "AWS has 'fleet-key' and it is in use by: $key_in_use" -ForegroundColor Red
+        Write-Host "  Local 'fleet-key.pem' is missing, but the pair will NOT be rotated --" -ForegroundColor Red
+        Write-Host "  that would permanently cut SSH access to that host. Recover the .pem," -ForegroundColor Red
+        Write-Host "  or reach the host over SSM, which does not use this key:" -ForegroundColor Red
+        Write-Host "  aws ssm start-session --target $($key_in_use -split '\s+' | Select-Object -First 1)" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "AWS has 'fleet-key' but local 'fleet-key.pem' is missing, and no host uses it. Re-creating..." -ForegroundColor Yellow
     $null = aws ec2 delete-key-pair --key-name fleet-key
     $key_exists = $false
 }
@@ -50,11 +69,11 @@ if (-not $key_exists -or -not $pem_exists) {
 }
 
 # 3. Security Group Setup
-Write-Host "Checking for existing Security Group 'fleet-security-group'..."
-$sg_id = aws ec2 describe-security-groups --group-names fleet-security-group --query "SecurityGroups[0].GroupId" --output text 2>$null
+Write-Host "Checking for existing Security Group '$SecurityGroupName'..."
+$sg_id = aws ec2 describe-security-groups --group-names $SecurityGroupName --query "SecurityGroups[0].GroupId" --output text 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
-    Write-Host "Creating new Security Group 'fleet-security-group'..."
-    $sg_id = aws ec2 create-security-group --group-name fleet-security-group --description "Security group for FleetOps" --query "GroupId" --output text
+    Write-Host "Creating new Security Group '$SecurityGroupName'..."
+    $sg_id = aws ec2 create-security-group --group-name $SecurityGroupName --description "Security group for FleetOps" --query "GroupId" --output text
     if ($sg_id) {
         Write-Host "Security Group created: $sg_id" -ForegroundColor Green
         # 22 for the SSH tunnel the Prometheus UI is reached through, 80 for
@@ -83,6 +102,37 @@ if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
         Write-Host "  backend over the internal network -- so it is very likely unused. Close it:" -ForegroundColor Red
         Write-Host "  aws ec2 revoke-security-group-ingress --group-id $sg_id --protocol tcp --port 8000 --cidr 0.0.0.0/0" -ForegroundColor Yellow
     }
+}
+
+# 3b. Does the data tier actually admit this group?
+# Nothing else reports this. A host in the wrong security group provisions
+# cleanly, starts cleanly, and then hangs on its first database connection --
+# long after this script has printed a success banner.
+Write-Host "Checking that RDS and ElastiCache admit $SecurityGroupName..."
+$data_sgs = @()
+$rds_sgs = aws rds describe-db-instances --query "DBInstances[].VpcSecurityGroups[].VpcSecurityGroupId" --output text 2>$null
+$cache_sgs = aws elasticache describe-cache-clusters --query "CacheClusters[].SecurityGroups[].SecurityGroupId" --output text 2>$null
+foreach ($group in @($rds_sgs, $cache_sgs)) {
+    if ($group) { $data_sgs += ($group -split "\s+" | Where-Object { $_ }) }
+}
+$data_sgs = @($data_sgs | Select-Object -Unique)
+
+$admits = $false
+foreach ($dsg in $data_sgs) {
+    $sources = aws ec2 describe-security-groups --group-ids $dsg --query "SecurityGroups[].IpPermissions[].UserIdGroupPairs[].GroupId" --output text 2>$null
+    if ($sources -and (($sources -split "\s+") -contains $sg_id)) { $admits = $true; break }
+}
+
+if ($data_sgs.Count -eq 0) {
+    Write-Host "No RDS or ElastiCache in this account; nothing to check." -ForegroundColor Yellow
+} elseif (-not $admits) {
+    Write-Host "WARNING: no RDS or ElastiCache security group admits $SecurityGroupName ($sg_id)." -ForegroundColor Red
+    Write-Host "  The stack will come up and then fail to reach Postgres and Redis." -ForegroundColor Red
+    Write-Host "  Either provision into the group the data tier already trusts" -ForegroundColor Red
+    Write-Host "  (-SecurityGroupName <name>), or grant this one access on 5432 and 6379." -ForegroundColor Red
+    Write-Host "  Data-tier groups found: $($data_sgs -join ', ')" -ForegroundColor Yellow
+} else {
+    Write-Host "Data tier admits this group." -ForegroundColor Green
 }
 
 # 4. SSM Instance Profile

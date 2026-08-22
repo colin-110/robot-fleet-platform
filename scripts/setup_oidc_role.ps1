@@ -13,7 +13,11 @@ param(
     [string]$Region = "us-east-1"
 )
 
-$ErrorActionPreference = "Stop"
+# Deliberately NOT $ErrorActionPreference = "Stop". In Windows PowerShell 5.1
+# a native command's stderr becomes an ErrorRecord, so under Stop the expected
+# "no such provider / no such role" probes below terminate the script instead
+# of reporting not-found. Every aws call is followed by a $LASTEXITCODE check
+# instead, which is what the exit status actually means.
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
 Write-Host "=== FleetOps: GitHub Actions OIDC deploy role ===" -ForegroundColor Cyan
