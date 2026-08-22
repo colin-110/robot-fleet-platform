@@ -62,6 +62,18 @@ IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops pull
 IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops up -d
 ```
 
+### Provisioning the host
+
+[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) brings it to the state the rollout assumes. Three of those details are load-bearing rather than incidental:
+
+- **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. An untagged instance is not a slow deploy, it is a silent one — `send-command` treats a target that matches nothing as a success.
+- **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the preinstalled SSM agent never registers and the host is invisible to Systems Manager, tag or no tag.
+- **User-data bootstrap.** Installs Docker with the Compose plugin, adds 1 GB of swap on the 1 GB box, and clones the repository to `/opt/fleetops` — the directory the rollout `cd`s into.
+
+Two steps stay manual, because both involve secrets that are deliberately not in the repository: writing `backend/.env` on the host, and `docker login ghcr.io` if the GHCR packages are private. Without the first the stack starts unconfigured; without the second `docker compose pull` fails with `denied`.
+
+The security group opens 22 (for the Prometheus tunnel below) and 80. Not 8000 — the backend port is never published, since nginx reaches it over the internal Compose network.
+
 Nginx serves the single-page application and proxies REST and WebSocket traffic to the backend container.
 
 ```
@@ -85,7 +97,7 @@ On every push and pull request to `main`:
 1. **`backend-test`** — `ruff check` across `backend/`, `scripts/`, and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against real PostgreSQL and Redis service containers.
 2. **`frontend-test`** — ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
 3. **`publish-images`** — builds and pushes `backend`, `frontend`, and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance.
-4. **`deploy-aws`** — gated SSM-based rollout, opt-in via a repository variable.
+4. **`deploy-aws`** — gated SSM-based rollout, opt-in via a repository variable. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget against a target that need not exist, which is how a deploy that ran nowhere could report success. The host is reset to the deployed SHA rather than to `origin/main`, so the compose file and `prometheus.yml` on the box come from the same commit as the images `IMAGE_TAG` pins.
 
 ---
 
