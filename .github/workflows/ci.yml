@@ -139,8 +139,9 @@ jobs:
   #      /opt/fleetops checkout that the rollout below acts on.
   #   2. On the host: write backend/.env (see backend/.env.example), and
   #      `docker login ghcr.io` if the GHCR packages are private.
-  #   3. Add an OIDC deploy role and set secret AWS_DEPLOY_ROLE_ARN
-  #   4. Set repo variable ENABLE_AWS_DEPLOY = true
+  #   3. Create the OIDC deploy role with scripts/setup_oidc_role.ps1. It
+  #      prints the ARN and the two gh commands that finish the wiring:
+  #      secret AWS_DEPLOY_ROLE_ARN and variable ENABLE_AWS_DEPLOY = true.
   # The instance then pulls the freshly published GHCR images and restarts.
   deploy-aws:
     name: Deploy to AWS (EC2 via SSM)
