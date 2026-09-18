@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy simulator code
-COPY robot_sim.py .
+COPY robot_sim.py render_server.py ./
 
 # We use the python unbuffered flag so logs show up immediately in docker-compose logs
 ENV PYTHONUNBUFFERED=1
