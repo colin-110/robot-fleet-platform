@@ -729,26 +729,42 @@ async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Ra
 
 
 async def telemetry_batcher(client: aiohttp.ClientSession, api_url: str, post_timeout_s: float, queue: asyncio.Queue):
+    # Flush on whichever comes first: 50 queued readings, or 1s since the
+    # oldest unflushed reading arrived. The old version reset its 1s wait on
+    # every new item, so with ~40 robots emitting every ~3.5s the queue almost
+    # never sat idle for a full second — the size trigger became the only one
+    # that ever fired, which at that arrival rate took 4-5s on its own. A
+    # STOPPED/RTB status could sit queued that whole time after the command
+    # already landed on the robot, which read as the dashboard being stuck.
+    MAX_BATCH = 50
+    MAX_WAIT_S = 1.0
+
     batch = []
     base_api = get_base_api(api_url)
     batch_url = f"{base_api}/telemetry/batch"
-    while True:
+    deadline = None
+
+    async def flush():
+        nonlocal deadline
         try:
-            payload = await asyncio.wait_for(queue.get(), timeout=1.0)
+            await post_telemetry(client, batch_url, batch, post_timeout_s)
+        except Exception as exc:
+            safe_print(f"[BATCHER] POST failed: {exc}")
+        batch.clear()
+        deadline = None
+
+    while True:
+        timeout = MAX_WAIT_S if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            payload = await asyncio.wait_for(queue.get(), timeout=timeout)
             batch.append(payload)
-            if len(batch) >= 50:
-                try:
-                    await post_telemetry(client, batch_url, batch, post_timeout_s)
-                except Exception as exc:
-                    safe_print(f"[BATCHER] POST failed: {exc}")
-                batch.clear()
+            if deadline is None:
+                deadline = time.monotonic() + MAX_WAIT_S
+            if len(batch) >= MAX_BATCH:
+                await flush()
         except asyncio.TimeoutError:
             if batch:
-                try:
-                    await post_telemetry(client, batch_url, batch, post_timeout_s)
-                except Exception as exc:
-                    safe_print(f"[BATCHER] POST failed: {exc}")
-                batch.clear()
+                await flush()
         except asyncio.CancelledError:
             break
 
