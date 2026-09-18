@@ -27,6 +27,14 @@ services:
     environment:
       - LOG_LEVEL=DEBUG
 
+  # robot_sim.py has no file-watcher of its own (unlike uvicorn --reload
+  # above), so a code edit here still needs `docker compose restart
+  # simulator` to pick it up — but that's a process restart against this
+  # live-mounted source, not a full image rebuild.
+  simulator:
+    volumes:
+      - ./simulator:/app
+
   db:
     ports:
       - "5432:5432"  # Expose DB for local tools (pgAdmin, DBeaver, etc.)
