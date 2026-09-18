@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import "./App.css";
 
 import useFleetData from "./hooks/useFleetData";
@@ -6,17 +6,22 @@ import useRelativeTime from "./hooks/useRelativeTime";
 import useTheme from "./hooks/useTheme";
 import { matchesQuery } from "./utils/search";
 
-import AnalyticsPanel from "./components/AnalyticsPanel";
 import EventLog from "./components/EventLog";
-import FleetStatusChart from "./components/FleetStatusChart";
 import FleetStats from "./components/FleetStats";
-import FleetMap from "./components/FleetMap";
 import Navbar from "./components/Navbar";
 import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
 import LoadingSkeleton from "./components/LoadingSkeleton";
 import LoginScreen from "./components/LoginScreen";
 import { fetchAuthConfig, getSession, restoreSession } from "./utils/auth";
+
+// Leaflet (map) and Recharts (both chart components) are the two heaviest
+// dependencies in the bundle. Splitting them into their own chunks keeps the
+// initial script small — the shell (navbar, sidebar, robot grid) is
+// interactive before these chunks even finish fetching.
+const FleetMap = lazy(() => import("./components/FleetMap"));
+const FleetStatusChart = lazy(() => import("./components/FleetStatusChart"));
+const AnalyticsPanel = lazy(() => import("./components/AnalyticsPanel"));
 
 function DashboardView({ filteredRobots, events, onViewAllEvents }) {
   return (
@@ -25,10 +30,14 @@ function DashboardView({ filteredRobots, events, onViewAllEvents }) {
 
       <div className="dash__main">
         <div className="dash__map">
-          <FleetMap robots={filteredRobots} />
+          <Suspense fallback={<LoadingSkeleton type="panel" />}>
+            <FleetMap robots={filteredRobots} />
+          </Suspense>
         </div>
         <div className="dash__aside">
-          <FleetStatusChart robots={filteredRobots} />
+          <Suspense fallback={<LoadingSkeleton type="panel" />}>
+            <FleetStatusChart robots={filteredRobots} />
+          </Suspense>
           <EventLog events={events} onViewAll={onViewAllEvents} />
         </div>
       </div>
@@ -185,14 +194,20 @@ function FleetConsole() {
           {!isLoading && showTelemetry && (
             <>
               <div className="dash__map dash__map--tall">
-                <FleetMap robots={filteredRobots} />
+                <Suspense fallback={<LoadingSkeleton type="panel" />}>
+                  <FleetMap robots={filteredRobots} />
+                </Suspense>
               </div>
               <SectionLabel title="Fleet Roster" count={filteredRobots.length} />
               <RobotGrid robots={filteredRobots} />
             </>
           )}
 
-          {!isLoading && showAnalytics && <AnalyticsPanel analytics={analytics} />}
+          {!isLoading && showAnalytics && (
+            <Suspense fallback={<LoadingSkeleton type="panel" />}>
+              <AnalyticsPanel analytics={analytics} />
+            </Suspense>
+          )}
 
           {!isLoading && showEvents && (
             <div className="logPage">
@@ -202,7 +217,9 @@ function FleetConsole() {
 
           {!isLoading && showHealth && (
             <div className="healthGrid">
-              <FleetStatusChart robots={filteredRobots} />
+              <Suspense fallback={<LoadingSkeleton type="panel" />}>
+                <FleetStatusChart robots={filteredRobots} />
+              </Suspense>
               <EventLog events={events} onViewAll={() => setActiveNav("Event Log")} />
             </div>
           )}
