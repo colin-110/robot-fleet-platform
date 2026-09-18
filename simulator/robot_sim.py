@@ -749,93 +749,6 @@ async def telemetry_batcher(client: aiohttp.ClientSession, api_url: str, post_ti
             break
 
 
-async def fleet_scaling_loop(
-    robots: list[RobotState],
-    active_robot_tasks: dict[int, asyncio.Task],
-    client: aiohttp.ClientSession,
-    api_url: str,
-    queue: asyncio.Queue,
-    rng: random.Random,
-    ambient: float,
-    tick_min: float,
-    tick_max: float,
-    timeout: float,
-    radius: float,
-    initial_robots_count: int,
-    total_workers: int,
-    worker_index: int,
-):
-    max_robot_id = initial_robots_count * total_workers + worker_index * 1000000
-    
-    while True:
-        # Check size constraints
-        # Keep fleet size between 40 and 60.
-        # Random choice to scale up or down
-        await asyncio.sleep(rng.uniform(60.0, 120.0))
-        
-        current_count = len(robots)
-        action = None
-        if current_count < 40:
-            action = "deploy"
-        elif current_count > 60:
-            action = "retire"
-        else:
-            action = rng.choice(["deploy", "retire", "none"])
-            
-        if action == "deploy":
-            max_robot_id += 1
-            new_id = max_robot_id
-            start_x, start_y = random_point(rng, radius * 0.2)
-            new_robot = RobotState(
-                robot_id=new_id,
-                battery=100.0,
-                temperature=ambient,
-                x=start_x,
-                y=start_y,
-                home_x=0.0,
-                home_y=0.0,
-            )
-            robots.append(new_robot)
-            
-            # Start loop
-            task = asyncio.create_task(
-                robot_loop(
-                    new_robot,
-                    client=client,
-                    api_url=api_url,
-                    queue=queue,
-                    rng=random.Random(rng.randint(0, 1000000)),
-                    ambient_c=ambient,
-                    tick_min_s=tick_min,
-                    tick_max_s=tick_max,
-                    post_timeout_s=timeout,
-                )
-            )
-            active_robot_tasks[new_id] = task
-            safe_print(f"[FLEET] Deploying new robot R{new_id:02d} to the field.")
-            
-        elif action == "retire" and current_count > 10:
-            candidates = [r for r in robots if r.status != "DEAD"]
-            if not candidates:
-                candidates = robots
-                
-            selected = rng.choice(candidates)
-            rid = selected.robot_id
-            
-            # Remove mission
-            clear_mission(selected)
-            
-            # Stop task
-            if rid in active_robot_tasks:
-                task = active_robot_tasks[rid]
-                task.cancel()
-                del active_robot_tasks[rid]
-                
-            # Remove from list
-            robots.remove(selected)
-            safe_print(f"[FLEET] Retired robot R{rid:02d}. Recalled to workshop.")
-
-
 async def main_async(args, worker_index=0, total_workers=1):
 
 
@@ -915,26 +828,6 @@ async def main_async(args, worker_index=0, total_workers=1):
             )
             active_robot_tasks[robot.robot_id] = task
 
-        # Start fleet scaling daemon task
-        # scaling_task = asyncio.create_task(
-        #     fleet_scaling_loop(
-        #         robots=robots,
-        #         active_robot_tasks=active_robot_tasks,
-        #         client=client,
-        #         api_url=args.api_url,
-        #         queue=telemetry_queue,
-        #         rng=random.Random(args.seed + 777),
-        #         ambient=args.ambient,
-        #         tick_min=args.tick_min,
-        #         tick_max=args.tick_max,
-        #         timeout=args.timeout,
-        #         radius=args.radius,
-        #         initial_robots_count=args.robots if args.robots > 0 else 55,
-        #         total_workers=total_workers,
-        #         worker_index=worker_index,
-        #     )
-        # )
-
         try:
             while True:
                 await asyncio.sleep(1.0)
@@ -942,7 +835,6 @@ async def main_async(args, worker_index=0, total_workers=1):
             pass
         finally:
             dispatcher_task.cancel()
-            # scaling_task.cancel()
             batcher_task.cancel()
             for task in list(active_robot_tasks.values()):
                 task.cancel()
