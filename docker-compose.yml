@@ -2,6 +2,7 @@ services:
 
   backend:
     build: ./backend
+    image: robot-fleet-platform-backend:latest
     command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --no-access-log" ]
     ports:
       - "8000:8000"
@@ -36,7 +37,10 @@ services:
       - fleet_net
 
   worker:
+    # Same image as the backend, different entrypoint — one build instead of
+    # two, and the two can't drift apart the way separate images could.
     build: ./backend
+    image: robot-fleet-platform-backend:latest
     command: python -m app.worker
     env_file:
       - ./backend/.env

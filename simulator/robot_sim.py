@@ -332,68 +332,72 @@ async def robot_loop(
             
             # Trigger network blackout with random probability
             if not is_blacked_out and robot.status not in ("DEAD", "STOPPED"):
-                blackout_chance = 0.003 + ((100.0 - robot.network_health) / 100.0) * 0.015
+                blackout_chance = 0.0015 + ((100.0 - robot.network_health) / 100.0) * 0.008
                 if rng.random() < blackout_chance:
-                    blackout_duration = rng.uniform(30.0, 90.0)
+                    blackout_duration = rng.uniform(10.0, 25.0)
                     robot.blackout_until = now + blackout_duration
                     is_blacked_out = True
                     safe_print(f"[R{robot.robot_id:02d}] Telemetry drop: Network blackout started for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)")
 
-            # Poll commands if not blacked out
-            if not is_blacked_out:
-                try:
-                    # POST /claim, not GET: claiming transitions commands to
-                    # DISPATCHED, so it is not a safe method.
-                    cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
-                    async with client.post(cmd_url, timeout=10.0) as cmd_resp:
-                        if cmd_resp.status == 200:
-                            data = await cmd_resp.json()
-                            for cmd_obj in data:
-                                cmd_id = cmd_obj["id"]
-                                cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
-                                
-                                if cmd_id in robot.processed_command_ids:
-                                    # End-to-end idempotency: replay the result
-                                    # rather than executing the command twice.
-                                    await patch_command_status(
-                                        client, base_api, cmd_id, "COMPLETED",
-                                        result={"message": "Already processed"},
-                                    )
-                                    continue
+            # Commands still poll during a blackout — a blackout drops this
+            # robot's telemetry uplink, not its ability to receive control
+            # commands. Gating RETURN_TO_BASE/EMERGENCY_STOP on the same flag
+            # meant an operator's Stop could sit unapplied for up to 90s,
+            # which reads as a stuck button rather than realistic degraded
+            # comms.
+            try:
+                # POST /claim, not GET: claiming transitions commands to
+                # DISPATCHED, so it is not a safe method.
+                cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
+                async with client.post(cmd_url, timeout=10.0) as cmd_resp:
+                    if cmd_resp.status == 200:
+                        data = await cmd_resp.json()
+                        for cmd_obj in data:
+                            cmd_id = cmd_obj["id"]
+                            cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
 
-                                robot.processed_command_ids.append(cmd_id)
-                                if len(robot.processed_command_ids) > 100:
-                                    robot.processed_command_ids.pop(0)
-
-                                await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
-                                await patch_command_status(client, base_api, cmd_id, "EXECUTING")
-
-                                status_to_patch = "COMPLETED"
-
-                                if cmd_action == "RETURN_TO_BASE":
-                                    clear_mission(robot)
-                                    robot.returning_to_charge = True
-                                    robot.status = "ACTIVE"
-                                    robot.online = True
-                                    safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})")
-                                elif cmd_action == "EMERGENCY_STOP":
-                                    robot.status = "STOPPED"
-                                    robot.speed = 0.0
-                                    clear_mission(robot)
-                                    robot.returning_to_charge = False
-                                    safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})")
-                                elif cmd_action == "RESUME":
-                                    robot.status = "ACTIVE"
-                                    robot.online = True
-                                    safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
-                                else:
-                                    status_to_patch = "FAILED"
-                                    
+                            if cmd_id in robot.processed_command_ids:
+                                # End-to-end idempotency: replay the result
+                                # rather than executing the command twice.
                                 await patch_command_status(
-                                    client, base_api, cmd_id, status_to_patch
+                                    client, base_api, cmd_id, "COMPLETED",
+                                    result={"message": "Already processed"},
                                 )
-                except Exception as e:
-                    logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
+                                continue
+
+                            robot.processed_command_ids.append(cmd_id)
+                            if len(robot.processed_command_ids) > 100:
+                                robot.processed_command_ids.pop(0)
+
+                            await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
+                            await patch_command_status(client, base_api, cmd_id, "EXECUTING")
+
+                            status_to_patch = "COMPLETED"
+
+                            if cmd_action == "RETURN_TO_BASE":
+                                clear_mission(robot)
+                                robot.returning_to_charge = True
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})")
+                            elif cmd_action == "EMERGENCY_STOP":
+                                robot.status = "STOPPED"
+                                robot.speed = 0.0
+                                clear_mission(robot)
+                                robot.returning_to_charge = False
+                                safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})")
+                            elif cmd_action == "RESUME":
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
+                            else:
+                                status_to_patch = "FAILED"
+
+                            await patch_command_status(
+                                client, base_api, cmd_id, status_to_patch
+                            )
+            except Exception as e:
+                logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
             # Meltdown / Battery exhaustion DEAD checks
             is_dead = (
