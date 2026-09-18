@@ -13,7 +13,7 @@
 [![AWS](https://img.shields.io/badge/AWS-EC2%20%7C%20RDS%20%7C%20CloudFront-232F3E?style=flat-square&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
 
-### **[▶ Live Demo](https://d14zlr0p01xdp8.cloudfront.net)**
+### **[▶ Live Demo](https://robot-fleet-platform-n5nm32fap-colin-110s-projects.vercel.app)**
 
 <img src="docs/images/dashboard-overview.png" alt="Real-time robot fleet operations dashboard" width="100%">
 
