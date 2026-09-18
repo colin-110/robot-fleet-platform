@@ -160,12 +160,21 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 docker compose up --build -d
 ```
 
-That brings up the API, worker, dashboard, a 40-robot simulator, PostgreSQL, Redis, Prometheus, and Grafana.
+That brings up the API, worker, dashboard, a 40-robot simulator, PostgreSQL, and Redis.
 
 | Service | URL |
 | :--- | :--- |
 | Dashboard | http://localhost |
 | API documentation (Swagger) | http://localhost:8000/docs |
+
+Prometheus and Grafana are opt-in (Grafana alone is ~250MB of RAM most local runs don't need). Add them with:
+
+```bash
+docker compose --profile observability up --build -d
+```
+
+| Service | URL |
+| :--- | :--- |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 (admin/admin) |
 
