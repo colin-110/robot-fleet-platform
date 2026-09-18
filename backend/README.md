@@ -93,10 +93,11 @@ alembic upgrade head
 
 ## Comprehensive Testing Suite
 
-The backend includes an extensive integration and unit testing suite powered by `pytest`. Tests are executed against an isolated, in-memory `aiosqlite` database to guarantee rapid, deterministic, and consequence-free execution.
+The backend includes an extensive integration and unit testing suite powered by `pytest`, run against a real PostgreSQL database — the app depends on Postgres-specific SQL (`date_trunc`, `INTERVAL` arithmetic, atomic conditional `UPDATE`s) that SQLite can't execute. A safety guard refuses to run against any database whose name doesn't contain `test`, since the fixtures drop and recreate the schema between tests. See `docker-compose.yml` for a local Postgres instance, then:
 
 ```bash
-pytest tests/ -v
+pip install -r requirements-dev.txt  # adds pytest, httpx, etc. on top of requirements.txt
+DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db pytest tests/ -v
 ```
 
 ## Security and Best Practices
