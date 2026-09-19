@@ -138,13 +138,17 @@ app.include_router(events_router)
 app.include_router(auth_router)
 
 
-@app.get("/", tags=["root"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["root"])
 def root():
     """Root endpoint — confirms the API is running."""
     return {"message": "FleetOps API running", "version": "1.0.0"}
 
 
-@app.get("/health", response_model=HealthResponse, tags=["health"])
+# GET and HEAD: uptime monitors (UptimeRobot, Render's own probes, load
+# balancers) commonly poll health endpoints with HEAD to skip the response
+# body. FastAPI's @app.get() only registers GET, so HEAD came back 405 —
+# which read as "service down" to monitors even though it was healthy.
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check — verifies database connectivity and reports active flags.
 
