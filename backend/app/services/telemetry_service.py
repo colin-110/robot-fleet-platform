@@ -192,7 +192,10 @@ class TelemetryService:
 
                 latest_by_robot: dict[int, datetime] = {}
                 for t in telemetries:
-                    if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
+                    if (
+                        t.robot_id not in latest_by_robot
+                        or t.timestamp > latest_by_robot[t.robot_id]
+                    ):
                         latest_by_robot[t.robot_id] = t.timestamp
                 # See the comment in ingest() — the direct path has no worker
                 # to register robots later, so it has to happen here.
