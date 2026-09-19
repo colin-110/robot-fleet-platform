@@ -502,6 +502,12 @@ a { color: inherit; }
   border: 1px solid var(--line-2);
   box-shadow: var(--shadow);
 }
+/* OSM only ships one (light) tile style. Scoped to the tile pane, not the
+   whole map, so markers/popups/controls keep their real colors instead of
+   inverting along with the basemap. */
+.mapDarkFilter .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+}
 
 /* ── Scrollbars ───────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

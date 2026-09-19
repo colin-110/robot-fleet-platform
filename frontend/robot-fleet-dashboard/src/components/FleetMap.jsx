@@ -21,13 +21,15 @@ L.Marker.prototype.options.icon = DefaultIcon;
 const CENTER_LAT = 37.7749;
 const CENTER_LNG = -122.4194;
 
-// Carto ships a light and a dark basemap at the same tile scheme, so the map
-// follows the console's theme instead of staying a dark rectangle on a light
-// page.
-const TILES = {
-  dark: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-  light: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-};
+// CartoDB's free anonymous basemap CDN (dark_all/light_all) was
+// discontinued — every tile now comes back as an "API KEY REQUIRED"
+// placeholder regardless of referrer or request pattern. OpenStreetMap's
+// standard tiles are free with no key and no signup, but ship only one
+// (light) style; the dark theme is approximated with a CSS filter on the
+// tile pane instead of a second tile source (see global.css).
+const TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_ATTRIBUTION =
+  "&copy; <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors";
 
 // Literal, not a CSS token: Leaflet writes these straight onto the SVG path,
 // and this red reads the same against either basemap.
@@ -46,15 +48,9 @@ function FleetMap({ robots }) {
         <span className="subtle">{robots.length} tracked</span>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      <div className={theme === "dark" ? "mapDarkFilter" : undefined} style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <MapContainer center={[CENTER_LAT, CENTER_LNG]} zoom={17} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
-          <TileLayer
-            // Keyed so a theme change swaps the layer rather than leaving the
-            // previous basemap mounted underneath.
-            key={theme}
-            url={TILES[theme] || TILES.dark}
-            attribution="&copy; <a href='https://carto.com/'>CartoDB</a>"
-          />
+          <TileLayer url={TILE_URL} attribution={TILE_ATTRIBUTION} />
           {robots.map(robot => {
             // Simulator Y maps to Latitude, X maps to Longitude
             if (!isFinite(robot.y) || !isFinite(robot.x)) return null;
