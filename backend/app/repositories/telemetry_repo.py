@@ -55,6 +55,46 @@ class TelemetryRepository:
         await self.db.refresh(telemetry)
         return telemetry
 
+    async def insert_many(self, rows: list[tuple[TelemetryCreate, datetime]]) -> list[Telemetry]:
+        """Persist many telemetry readings in a single transaction.
+
+        The direct (non-buffered) ingest path already pays one HTTP round
+        trip per request; committing once per row inside a batch turned a
+        single simulator POST into up to 50 sequential DB round trips to a
+        remote Postgres instance — slow enough to blow past the simulator's
+        own POST timeout and silently drop the whole batch. One INSERT, one
+        commit, for the whole list.
+
+        No per-row ``refresh()``: the session is ``expire_on_commit=False``
+        (see database.py), and SQLAlchemy's Postgres dialect already
+        populates autoincrement ``id`` via ``RETURNING`` on flush, so the ORM
+        objects are already fully populated once ``commit()`` returns.
+        """
+        telemetries = [
+            Telemetry(
+                robot_id=data.robot_id,
+                battery=data.battery,
+                temperature=data.temperature,
+                speed=data.speed,
+                status=data.status,
+                mission_id=data.mission_id,
+                mission_type=data.mission_type,
+                mission_progress=data.mission_progress,
+                mission_start_time=data.mission_start_time,
+                battery_health=data.battery_health,
+                motor_health=data.motor_health,
+                sensor_health=data.sensor_health,
+                network_health=data.network_health,
+                x=data.x,
+                y=data.y,
+                timestamp=timestamp,
+            )
+            for data, timestamp in rows
+        ]
+        self.db.add_all(telemetries)
+        await self.db.commit()
+        return telemetries
+
     # ── Read ────────────────────────────────────────────────────────
 
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:

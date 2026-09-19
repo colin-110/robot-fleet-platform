@@ -186,16 +186,14 @@ class TelemetryService:
                 result = {"message": f"{len(data)} telemetry readings queued in Redis"}
             else:
                 db_started = time.perf_counter()
-                payloads = []
+                rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
+                telemetries = await self.repo.insert_many(rows)
+                payloads = [_telemetry_to_broadcast_dict(t) for t in telemetries]
+
                 latest_by_robot: dict[int, datetime] = {}
-                for d in data:
-                    telemetry = await self.repo.insert(
-                        d, resolve_timestamp(d.timestamp, received_at)
-                    )
-                    payloads.append(_telemetry_to_broadcast_dict(telemetry))
-                    rid, ts = telemetry.robot_id, telemetry.timestamp
-                    if rid not in latest_by_robot or ts > latest_by_robot[rid]:
-                        latest_by_robot[rid] = ts
+                for t in telemetries:
+                    if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
+                        latest_by_robot[t.robot_id] = t.timestamp
                 # See the comment in ingest() — the direct path has no worker
                 # to register robots later, so it has to happen here.
                 await self.robot_repo.mark_seen(latest_by_robot)
