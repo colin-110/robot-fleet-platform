@@ -67,7 +67,10 @@ async def lifespan(app: FastAPI):
 
     await bootstrap_admin_user()
 
-    manager._listener_task = asyncio.create_task(manager.listen_to_redis())
+    # Nothing to consume in direct mode: broadcast() already fanned out
+    # in-process, so a Redis listener here would just poll an empty stream.
+    if settings.websocket_backend == "redis":
+        manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
     yield
 

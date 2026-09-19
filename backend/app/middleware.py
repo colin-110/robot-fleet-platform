@@ -225,20 +225,55 @@ def _log_access(scope: Scope, status_code: int, elapsed_seconds: float) -> None:
 
 # ── Shared limiter logic ────────────────────────────────────────────
 
+# In-memory backend's state. Module-level, not per-request: the whole point
+# is one process's counters, shared across requests within that process.
+# Unbounded by client IP, deliberately — see rate_limit_backend's docstring
+# in config.py for why that's fine at this app's actual keyspace size.
+_memory_windows: dict[str, list[float]] = {}
+
+
+def _check_rate_limit_memory(
+    client_ip: str, max_requests: int, window_seconds: int, bucket: str
+) -> bool:
+    """In-process equivalent of the Redis sliding window, for a single worker.
+
+    Same semantics: drop entries older than the window, count what's left,
+    record this request, return whether the count *before* recording was
+    under budget. No pipeline, no network call, no metered command.
+    """
+    key = f"{bucket}:{client_ip}"
+    now = time.time()
+    cutoff = now - window_seconds
+
+    timestamps = _memory_windows.setdefault(key, [])
+    fresh = [t for t in timestamps if t > cutoff]
+
+    allowed = len(fresh) < max_requests
+    fresh.append(now)
+    _memory_windows[key] = fresh
+    return allowed
+
 
 async def _check_rate_limit(
     client_ip: str, max_requests: int, window_seconds: int, bucket: str = INGEST_BUCKET
 ) -> bool:
     """Return ``True`` if this request is within the limit.
 
-    Sliding window over a Redis sorted set: drop entries older than the window,
-    count what's left, and record this request. The count is read *before* the
-    insert lands so a client gets exactly ``max_requests`` per window rather
-    than one fewer.
+    Sliding window: drop entries older than the window, count what's left,
+    and record this request. The count is read *before* the insert lands so a
+    client gets exactly ``max_requests`` per window rather than one fewer.
+    Backed by Redis (default, correct across multiple instances) or an
+    in-process dict (``RATE_LIMIT_BACKEND=memory``, correct for exactly one
+    instance and free) — see config.py.
 
-    Fails open — if Redis is unavailable we serve the request rather than
-    hard-failing ingestion on a cache outage.
+    The Redis path fails open — if Redis is unavailable we serve the request
+    rather than hard-failing ingestion on a cache outage.
     """
+    from app.config import get_settings
+
+    if get_settings().rate_limit_backend == "memory":
+        return _check_rate_limit_memory(client_ip, max_requests, window_seconds, bucket)
+
     redis = get_redis()
     if redis is None:
         return True

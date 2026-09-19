@@ -78,7 +78,27 @@ class Settings(BaseSettings):
     # ── CORS ────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # ── Realtime fan-out ────────────────────────────────────────────
+    # "redis" publishes every broadcast via XADD and a background XREAD loop
+    # consumes it — correct when multiple API instances each need every
+    # message, which is the whole point of Redis Streams here. A single
+    # instance (Render's free tier) has no other instance to synchronize
+    # with, and broadcasting on every telemetry reading from a continuously
+    # ingesting fleet turns into real, metered Redis command volume for no
+    # benefit. "direct" calls the same in-process fan-out immediately instead
+    # of round-tripping through Redis — same real-time behavior for exactly
+    # one instance, lower latency, and it's the other half (with
+    # rate_limit_backend) of what actually exhausted a free Upstash budget.
+    websocket_backend: str = "redis"
+
     # ── Rate Limiting ───────────────────────────────────────────────
+    # Same one-instance-vs-many reasoning as websocket_backend above: "redis"
+    # shares one counter across instances via a per-request pipeline (3
+    # writes + 1 read); "memory" is a plain in-process sliding window,
+    # correct for exactly one instance and free. The per-IP keyspace this app
+    # ever sees (a fleet's own IP, a handful of browsers) is small enough
+    # that it never needs pruning.
+    rate_limit_backend: str = "redis"
     rate_limit_per_minute: int = 600
     # Separate, tighter budget for what a browser can reach without the master
     # key: minting console tickets and dispatching commands. Both are public on
