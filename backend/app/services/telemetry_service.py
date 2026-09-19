@@ -27,6 +27,7 @@ from app.metrics import (
     telemetry_ingested_total,
 )
 from app.models import Telemetry
+from app.repositories.robot_repo import RobotRepository
 from app.repositories.telemetry_repo import TelemetryRepository
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
@@ -104,6 +105,7 @@ class TelemetryService:
 
     def __init__(self, db: AsyncSession) -> None:
         self.repo = TelemetryRepository(db)
+        self.robot_repo = RobotRepository(db)
 
     async def ingest(self, data: TelemetryCreate, background_tasks: BackgroundTasks = None) -> dict:
         """Persist telemetry, broadcast to WebSocket clients, return ack."""
@@ -129,6 +131,13 @@ class TelemetryService:
                 telemetry = await self.repo.insert(
                     data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
                 )
+                # The buffered path's roster upsert lives in the worker
+                # (app/worker.py's _register_robots) because there's a worker
+                # to do it later. The direct path has no later — skip this and
+                # the robot never appears in the roster, so it never shows up
+                # in fleet status no matter how much telemetry it sends.
+                await self.robot_repo.mark_seen({telemetry.robot_id: telemetry.timestamp})
+                await self.repo.db.commit()
                 db_write_latency_seconds.labels(mode="direct").observe(
                     time.perf_counter() - db_started
                 )
@@ -178,11 +187,19 @@ class TelemetryService:
             else:
                 db_started = time.perf_counter()
                 payloads = []
+                latest_by_robot: dict[int, datetime] = {}
                 for d in data:
                     telemetry = await self.repo.insert(
                         d, resolve_timestamp(d.timestamp, received_at)
                     )
                     payloads.append(_telemetry_to_broadcast_dict(telemetry))
+                    rid, ts = telemetry.robot_id, telemetry.timestamp
+                    if rid not in latest_by_robot or ts > latest_by_robot[rid]:
+                        latest_by_robot[rid] = ts
+                # See the comment in ingest() — the direct path has no worker
+                # to register robots later, so it has to happen here.
+                await self.robot_repo.mark_seen(latest_by_robot)
+                await self.repo.db.commit()
                 db_write_latency_seconds.labels(mode="direct").observe(
                     time.perf_counter() - db_started
                 )
