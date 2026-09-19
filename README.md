@@ -130,7 +130,7 @@ Two experiments initially reported wrong numbers. Both are [written up along wit
 | | Tests | Coverage | Environment |
 | :--- | ---: | ---: | :--- |
 | Backend (pytest) | 188 | 76% | Real PostgreSQL + Redis |
-| Frontend (vitest) | 69 | 88% hooks, 100% utils | jsdom |
+| Frontend (vitest) | 71 | 70% hooks, 89% utils | jsdom |
 
 The backend suite runs against real PostgreSQL rather than SQLite because the application depends on Postgres-specific SQL — `date_trunc`, `INTERVAL` arithmetic, and atomic conditional `UPDATE` dispatch — that SQLite cannot execute. A safety guard refuses to run against any database whose name does not contain `test`, since the fixtures drop and recreate the schema between tests.
 
@@ -200,9 +200,11 @@ cd frontend/robot-fleet-dashboard && npm ci && npm run test:coverage
 
 ## Deployment
 
-A single `t3.micro` EC2 instance runs the stack via Docker Compose, backed by managed RDS and ElastiCache, behind CloudFront for HTTPS.
+Two supported paths, chosen for different reasons.
 
-The host **pulls pre-built images from GHCR rather than building.** CI builds them on every push to `main` and publishes only after the tests pass, so what ships is what was verified. `IMAGE_TAG` defaults to `latest` but takes a commit SHA, giving each deploy a name and a rollback target.
+**The live demo linked above** runs free-tier: **Neon** (Postgres), **Render** (the API and the simulator, each a separate Docker web service), **Upstash** (Redis), and **Vercel** (the static frontend build). There's no separate worker process on this path — `OPT_REDIS_BUFFER=false` and `OPT_READ_CACHE=false` make the API write straight to Postgres instead of buffering through Redis. Redis itself stays in the picture regardless, because WebSocket fan-out is built on Redis Streams unconditionally (see [Architecture](#architecture)) — the flags only turn off ingest buffering and the read-through cache. This path costs nothing to run and is what you're looking at if you clicked Live Demo.
+
+**`docker-compose.aws.yml`** is the production-grade path this system was actually engineered for: a single EC2 instance behind CloudFront, backed by managed RDS and ElastiCache, with the full Redis-buffered write path and a dedicated worker — the architecture the [Performance](#performance) numbers were measured against. CI publishes versioned images to GHCR on every push to `main` that passes tests; `IMAGE_TAG` defaults to `latest` but takes a commit SHA, giving each deploy a name and a rollback target.
 
 ```bash
 IMAGE_TAG=<sha> docker compose -f docker-compose.aws.yml -p fleetops pull
