@@ -114,7 +114,17 @@ class ConnectionManager:
             pass
 
     async def broadcast(self, data: dict, stream: str = None) -> None:
-        """Publish data to Redis Streams (handles scaling/persistence)."""
+        """Fan out data to connected clients — directly, or via Redis Streams.
+
+        ``websocket_backend=direct`` calls ``_fan_out`` immediately; there's
+        no other instance that needs this message relayed to it. The default
+        publishes to Redis instead, for the listener task (``listen_to_redis``)
+        on every instance — including this one — to pick up and fan out.
+        """
+        if settings.websocket_backend == "direct":
+            self._fan_out(data)
+            return
+
         target_stream = stream or self.telemetry_stream
         try:
             await self.redis.xadd(
@@ -126,10 +136,16 @@ class ConnectionManager:
             logger.exception("Failed to publish to Redis Stream")
 
     async def broadcast_batch(self, data_list: list[dict], stream: str = None) -> None:
-        """Publish multiple messages to Redis Streams in a single pipeline."""
-        target_stream = stream or self.telemetry_stream
+        """Fan out multiple messages — directly, or via one Redis pipeline."""
         if not data_list:
             return
+
+        if settings.websocket_backend == "direct":
+            for data in data_list:
+                self._fan_out(data)
+            return
+
+        target_stream = stream or self.telemetry_stream
         try:
             pipeline = self.redis.pipeline()
             for data in data_list:
