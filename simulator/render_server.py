@@ -10,13 +10,36 @@ normal free web service and keep it running continuously.
 import asyncio
 import os
 import sys
+import time
 
 from aiohttp import web
 
 SIMULATOR_PROC: asyncio.subprocess.Process | None = None
 
+# robot_sim.py touches this file (see post_telemetry) on every telemetry POST
+# that actually succeeds. Checking only "is the subprocess still alive" missed
+# a real incident: the subprocess hung without exiting, so Render's restart
+# policy — which only fires from run_simulator()'s os._exit() below — never
+# triggered, and the health port kept reporting "ok" for 7+ hours with zero
+# telemetry actually reaching the backend.
+HEARTBEAT_FILE = "/tmp/simulator_healthy"
+START_TIME = time.time()
+STARTUP_GRACE_SECONDS = 60  # first successful batch needs time to land
+HEARTBEAT_STALE_SECONDS = 90  # generous vs. the simulator's own tick/batch cadence
+
 
 async def health(_request: web.Request) -> web.Response:
+    if time.time() - START_TIME < STARTUP_GRACE_SECONDS:
+        return web.Response(text="ok (starting)")
+
+    try:
+        age = time.time() - os.path.getmtime(HEARTBEAT_FILE)
+    except OSError:
+        return web.Response(status=503, text="no successful telemetry post yet")
+
+    if age > HEARTBEAT_STALE_SECONDS:
+        return web.Response(status=503, text=f"heartbeat stale ({age:.0f}s)")
+
     return web.Response(text="ok")
 
 

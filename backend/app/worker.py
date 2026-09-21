@@ -3,11 +3,11 @@ import logging
 import signal
 import socket
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import orjson
-from sqlalchemy import delete, func, insert, update
+from sqlalchemy import func, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -22,6 +22,7 @@ from app.metrics import (
 )
 from app.models import RobotCommand, Telemetry
 from app.repositories.robot_repo import RobotRepository
+from app.retention import prune_loop
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
 
@@ -269,54 +270,20 @@ async def redis_to_db_sync_worker():
 
 
 async def db_pruner_task():
-    """Daily database telemetry pruner to maintain bounded disk footprint."""
+    """Daily database telemetry pruner to maintain bounded disk footprint.
+
+    Thin wrapper around app.retention.prune_loop - see that module for the
+    actual pruning logic, which the backend also runs on its own so a
+    deployment with no separate worker process still prunes.
+    """
     logger.info(
         "Starting database retention pruner (retention=%d days)...", settings.retention_days
     )
-
-    while True:
-        try:
-            lock_acquired = await manager.redis.set("lock:db_pruner", "1", nx=True, ex=3600)
-            if lock_acquired:
-                limit_date = datetime.now(timezone.utc) - timedelta(days=settings.retention_days)
-
-                total_deleted = 0
-                while True:
-                    # Delete in bounded chunks: a single unbounded DELETE over a
-                    # day of telemetry would hold locks long enough to stall
-                    # ingestion.
-                    async with AsyncSessionLocal() as session, session.begin():
-                        subq = (
-                            select(Telemetry.id)
-                            .where(Telemetry.timestamp < limit_date)
-                            .limit(10000)
-                            .subquery()
-                        )
-                        stmt = delete(Telemetry).where(Telemetry.id.in_(select(subq)))
-                        result = await session.execute(stmt)
-
-                        deleted_count = result.rowcount
-                        total_deleted += deleted_count
-
-                    if deleted_count == 0:
-                        break
-                    await asyncio.sleep(0.1)  # Yield to avoid locking DB too hard
-
-                logger.info(
-                    "RETENTION: Pruned %d telemetry records older than %d days.",
-                    total_deleted,
-                    settings.retention_days,
-                )
-
-            # Run once every 24 hours
-            await asyncio.sleep(86400)
-
-        except asyncio.CancelledError:
-            logger.info("Retention pruner task cancelled. Exiting.")
-            break
-        except Exception as e:
-            logger.error("Error in retention pruner task: %s. Retrying in 1 hour...", e)
-            await asyncio.sleep(3600)
+    try:
+        await prune_loop(use_redis_lock=True, initial_delay_seconds=0, interval_seconds=86400)
+    except asyncio.CancelledError:
+        logger.info("Retention pruner task cancelled. Exiting.")
+        raise
 
 
 async def scan_for_timeouts(session: AsyncSession):

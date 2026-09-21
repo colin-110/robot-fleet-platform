@@ -234,11 +234,26 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
+# Touched on every telemetry POST that actually succeeds. render_server.py's
+# health check reads this file's mtime — see the comment there for why
+# "the subprocess hasn't exited" alone isn't a sufficient liveness signal.
+HEARTBEAT_FILE = "/tmp/simulator_healthy"
+
+
+def _touch_heartbeat() -> None:
+    try:
+        with open(HEARTBEAT_FILE, "w") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass
+
+
 async def post_telemetry(client: aiohttp.ClientSession, api_url: str, payload: dict, timeout_s: float):
     for attempt in range(3):
         try:
             response = await client.post(api_url, json=payload, timeout=timeout_s)
             response.raise_for_status()
+            _touch_heartbeat()
             return
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if attempt == 2:
