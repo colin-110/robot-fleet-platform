@@ -31,6 +31,7 @@ from app.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
+from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
@@ -72,10 +73,29 @@ async def lifespan(app: FastAPI):
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
+    # The worker also runs this loop (worker.py's db_pruner_task), but the
+    # worker is an optional, separately-deployed process. A deployment that
+    # skips it entirely - this app's free-tier Render path - previously
+    # never pruned anything: telemetry grew unbounded until it exhausted
+    # Neon's storage quota, at which point every INSERT started failing and
+    # ingestion silently stopped for hours before anyone noticed. The backend
+    # always runs, so the backend always prunes now too. Redis-locked only
+    # when Redis is actually meaningful here (multi-instance/AWS path) - a
+    # single instance with websocket_backend=direct has nothing to
+    # coordinate with.
+    pruner_task = asyncio.create_task(
+        prune_loop(
+            use_redis_lock=settings.websocket_backend == "redis",
+            initial_delay_seconds=300,
+            interval_seconds=6 * 3600,
+        )
+    )
+
     yield
 
     if manager._listener_task:
         manager._listener_task.cancel()
+    pruner_task.cancel()
 
     # Drop this worker's gauge samples so a restart doesn't leave phantom
     # connections summed into the multiprocess registry.
