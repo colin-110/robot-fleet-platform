@@ -50,10 +50,15 @@ async def run_simulator() -> None:
     workers = os.environ.get("SIMULATOR_WORKERS", "2")
 
     SIMULATOR_PROC = await asyncio.create_subprocess_exec(
-        sys.executable, "-u", "robot_sim.py",
-        "--api-url", api_url,
-        "--robots", robots,
-        "--workers", workers,
+        sys.executable,
+        "-u",
+        "robot_sim.py",
+        "--api-url",
+        api_url,
+        "--robots",
+        robots,
+        "--workers",
+        workers,
     )
     returncode = await SIMULATOR_PROC.wait()
     # The simulator died; exit so Render's restart policy brings the whole

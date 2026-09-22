@@ -14,14 +14,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Response, WebSocket
+from fastapi import Depends, FastAPI, Query, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
 from app import metrics
-from app.auth import is_valid_api_key
+from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
@@ -197,6 +197,19 @@ async def health_check():
 async def prometheus_metrics():
     """Prometheus metrics endpoint (multiprocess-aware)."""
     return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/api/v1/viewers", tags=["observability"])
+async def viewer_count(_=Depends(verify_api_key)):
+    """How many WebSocket clients are currently connected.
+
+    Lets a telemetry source (the simulator) decide whether anyone is actually
+    watching before spending bandwidth generating and posting data nobody
+    sees — see simulator/robot_sim.py's viewer_watch_loop. API-key gated,
+    not console-ticket: this is a fleet-side operational signal, not
+    something the dashboard itself needs to read.
+    """
+    return {"active_connections": manager.connection_count}
 
 
 # ── WebSocket ───────────────────────────────────────────────────────
