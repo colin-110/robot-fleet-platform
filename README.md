@@ -6,11 +6,13 @@ Real-time robot fleet monitoring and control platform built around asynchronous 
 
 ![Fleet dashboard](docs/images/dashboard-overview.png)
 
-## What it does
+## Problem
 
-A simulated fleet sends telemetry for battery, temperature, speed, position, component health, and mission progress. The backend ingests the data, maintains fleet state, streams updates to connected dashboards, and accepts operator commands such as Return to Base, Emergency Stop, and Resume.
+A fleet-control dashboard needs to ingest frequent telemetry without making every request wait for a database write. At the same time, connected operators need near-real-time state updates and reliable command handling.
 
-The main architectural decision is separating the write path from database persistence:
+FleetOps separates the telemetry write path from database persistence while keeping the operator path responsive.
+
+## Architecture
 
 ~~~text
 Robot Simulator
@@ -18,7 +20,8 @@ Robot Simulator
       v
   FastAPI API
       |
-      | XADD
+     XADD
+      |
       v
  Redis Streams
    |        |
@@ -27,46 +30,49 @@ Robot Simulator
    +----> Async Worker ----> PostgreSQL
 ~~~
 
-An ingest request does not wait for a PostgreSQL write. A worker consumes the Redis stream and performs batched inserts.
+The ingest API acknowledges telemetry after placing it on the Redis stream. A worker consumes the stream and performs batched PostgreSQL writes. WebSocket clients receive state updates independently of the persistence path.
 
-## Key engineering work
+## Engineering decisions
 
-- Async FastAPI backend with SQLAlchemy 2.0 and PostgreSQL.
-- Redis Streams with consumer groups for decoupled persistence.
-- WebSocket fan-out with bounded per-client queues so slow clients do not block the fleet.
-- Idempotent robot command state machine using atomic compare-and-set updates.
-- JWT authentication with viewer/operator/admin roles and short-lived WebSocket console tickets.
-- Structured JSON logging with request correlation.
-- Prometheus/Grafana observability.
-- Docker Compose and GitHub Actions CI/CD with container publishing to GHCR.
+- **Redis Streams + consumer groups:** buffer bursts and decouple ingestion from database writes.
+- **Bounded WebSocket queues:** isolate slow clients instead of allowing one connection to stall fan-out.
+- **Atomic command state transitions:** prevent duplicate or conflicting robot commands under concurrent requests.
+- **Short-lived WebSocket tickets:** avoid putting long-lived access tokens directly into the WebSocket connection flow.
+- **Structured logging + correlation IDs:** make asynchronous request/worker behavior traceable.
+- **Prometheus/Grafana:** expose operational behavior rather than relying only on application logs.
 
 ## Measured performance
 
-Benchmarks are run with feature flags that isolate individual optimizations.
+Benchmarks isolate individual optimizations and are documented in [the performance methodology](docs/performance.md).
 
-| Change | Baseline | Optimized |
+| Workload | Baseline | Optimized |
 |---|---:|---:|
 | Redis Stream ingest buffer | 1,271 ms p99 | 158 ms p99 |
 | Read-through fleet-status cache | 11,172 ms p99 | 265 ms p99 |
 | Worker bulk insert | 242 rows/s | 985 rows/s |
 | Bounded WebSocket fan-out | 5,977 msg/s | 14,352 msg/s |
 
-The load test also reached about **2,000 concurrent WebSocket clients** at roughly **15,000–18,000 messages/s** with >99% delivery on a single node.
-
-See [the full performance methodology](docs/performance.md) for the benchmark harness and limitations.
+A load test reached about **2,000 concurrent WebSocket clients** at roughly **15,000–18,000 messages/s**, with >99% delivery on a single node. These are portfolio-scale measurements, not production capacity guarantees.
 
 ## Testing
 
-The repository contains backend and frontend tests covering telemetry ingestion, fleet-state derivation, command concurrency/idempotency, worker behavior, WebSocket lifecycle, authentication, logging, reconnect behavior, and command dispatch.
+Tests cover:
 
-Run the backend tests with:
+- telemetry ingestion and fleet-state derivation
+- worker behavior and batch persistence
+- command concurrency and idempotency
+- WebSocket lifecycle and reconnect behavior
+- authentication and command dispatch
+- structured logging
+
+Backend:
 
 ~~~bash
 cd backend
 DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db pytest tests/ -v --cov=app
 ~~~
 
-Run the frontend tests with:
+Frontend:
 
 ~~~bash
 cd frontend/robot-fleet-dashboard
@@ -89,16 +95,16 @@ The stack starts the API, worker, dashboard, simulator, PostgreSQL, and Redis.
 
 ## Repository structure
 
-- `backend/app/` — FastAPI routes, services, repositories, authentication, metrics, and worker.
-- `backend/tests/` — backend test suite.
-- `frontend/robot-fleet-dashboard/` — React dashboard.
-- `simulator/` — asynchronous robot simulator.
-- `scripts/` — benchmark and load-test tooling.
-- `docs/` — architecture, performance, and operations documentation.
+- \`backend/app/\` — API routes, services, repositories, authentication, metrics, and worker
+- \`backend/tests/\` — backend test suite
+- \`frontend/robot-fleet-dashboard/\` — React dashboard
+- \`simulator/\` — asynchronous robot simulator
+- \`scripts/\` — benchmark and load-test tooling
+- \`docs/\` — architecture, performance, and operations documentation
 
 ## Limitations
 
-This is a portfolio-scale system, not a production fleet-control platform. The hosted demo uses synthetic data and deliberately runs with open authentication. The production configuration enables authentication, but the project still has single-node/high-availability and time-series-storage limitations documented in [operations.md](docs/operations.md).
+This is a portfolio-scale system using synthetic robot data. The hosted demo intentionally uses simplified authentication. The deployment is single-node and does not provide production-grade high availability or a dedicated time-series database.
 
 ## License
 
