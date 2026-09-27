@@ -26,6 +26,7 @@ from app.metrics import (
     telemetry_ingest_seconds,
     telemetry_ingested_total,
 )
+from app import telemetry_buffer
 from app.models import Telemetry
 from app.repositories.robot_repo import RobotRepository
 from app.repositories.telemetry_repo import TelemetryRepository
@@ -126,7 +127,7 @@ class TelemetryService:
                     await manager.broadcast(payload)
 
                 result = {"message": "Telemetry queued in Redis", "id": 0}
-            else:
+            elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
                 db_started = time.perf_counter()
                 telemetry = await self.repo.insert(
                     data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
@@ -149,6 +150,21 @@ class TelemetryService:
                     await manager.broadcast(broadcast)
 
                 result = {"message": "Telemetry received", "id": telemetry.id}
+            else:
+                # Nobody is watching, so nobody needs this row in Postgres
+                # this instant. Buffer it and let telemetry_buffer.flush_loop
+                # write it later in a batch — see that module for why.
+                resolved_ts = resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
+                await telemetry_buffer.buffer([(data, resolved_ts)])
+
+                payload = data.model_dump(mode="json")
+                payload["timestamp"] = _to_iso(resolved_ts)
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast, payload)
+                else:
+                    await manager.broadcast(payload)
+
+                result = {"message": "Telemetry buffered", "id": 0}
         finally:
             telemetry_ingest_seconds.labels(path="single", buffered=str(buffered).lower()).observe(
                 time.perf_counter() - started
@@ -184,7 +200,7 @@ class TelemetryService:
                     await manager.broadcast_batch(payloads)
 
                 result = {"message": f"{len(data)} telemetry readings queued in Redis"}
-            else:
+            elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
                 db_started = time.perf_counter()
                 rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
                 telemetries = await self.repo.insert_many(rows)
@@ -211,6 +227,24 @@ class TelemetryService:
                     await manager.broadcast_batch(payloads)
 
                 result = {"message": f"{len(data)} telemetry readings received"}
+            else:
+                # Nobody watching — see the comment in ingest()'s buffered
+                # branch. Same trade: batched to Postgres later, broadcast now.
+                rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
+                await telemetry_buffer.buffer(rows)
+
+                payloads = []
+                for d, ts in rows:
+                    payload = d.model_dump(mode="json")
+                    payload["timestamp"] = _to_iso(ts)
+                    payloads.append(payload)
+
+                if background_tasks:
+                    background_tasks.add_task(manager.broadcast_batch, payloads)
+                else:
+                    await manager.broadcast_batch(payloads)
+
+                result = {"message": f"{len(data)} telemetry readings buffered"}
         finally:
             telemetry_ingest_seconds.labels(path="batch", buffered=str(buffered).lower()).observe(
                 time.perf_counter() - started
