@@ -83,11 +83,17 @@ async def lifespan(app: FastAPI):
     # when Redis is actually meaningful here (multi-instance/AWS path) - a
     # single instance with websocket_backend=direct has nothing to
     # coordinate with.
+    # A 6-hour interval was sized for the old viewer-gated ingest rate. Run
+    # continuously (no gating) with settings.retention_days under a day, the
+    # worst-case unpruned peak is retention_days *plus* this interval — a
+    # long interval on a short retention window can itself blow the storage
+    # budget it's meant to protect. 30 minutes keeps that peak close to the
+    # configured retention window regardless of retention_days.
     pruner_task = asyncio.create_task(
         prune_loop(
             use_redis_lock=settings.websocket_backend == "redis",
             initial_delay_seconds=300,
-            interval_seconds=6 * 3600,
+            interval_seconds=1800,
         )
     )
 
