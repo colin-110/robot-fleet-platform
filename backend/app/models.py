@@ -95,7 +95,7 @@ class RobotCommand(Base):
 class Telemetry(Base):
     __tablename__ = "telemetry"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     robot_id = Column(Integer, index=True, nullable=False)
     battery = Column(Float, nullable=False)
     temperature = Column(Float, nullable=False)
@@ -119,10 +119,7 @@ class Telemetry(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (
-        Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),
-        Index("ix_telemetry_robot_id_desc", "robot_id", timestamp.desc()),
-    )
+    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),)
 
     def __repr__(self) -> str:
         return (
