@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     # sub-day window is a real deployment need, not just a testing knob.
     retention_days: float = 1
 
+    # Direct-write path only (no effect under OPT_REDIS_BUFFER). Off by
+    # default so every existing test and deployment keeps writing immediately
+    # on every request, exactly as before. A deployment on serverless Postgres
+    # that suspends on idle (Neon) opts in explicitly: with this on, a request
+    # is only written straight to the database while a dashboard viewer is
+    # connected; otherwise it's buffered in memory and flushed on a timer by
+    # telemetry_buffer.py, so the database gets long enough idle gaps to
+    # actually suspend instead of being kept awake by continuous ingestion.
+    defer_writes_without_viewers: bool = False
+
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"

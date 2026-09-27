@@ -1,0 +1,64 @@
+# Actual production topology for the single free-tier EC2 instance.
+#
+# Deliberately smaller than docker-compose.aws.yml: no worker, no Prometheus,
+# no frontend container (Vercel serves that). Just backend + simulator,
+# fronted by nginx + Let's Encrypt running directly on the host (not in
+# Compose) for HTTPS. Postgres and Redis are external managed free tiers
+# (Neon, Upstash) - their URLs come from .env on the host, not in this repo.
+#
+# Deploy:
+#   docker compose -f docker-compose.ec2.yml -p fleetops pull
+#   docker compose -f docker-compose.ec2.yml -p fleetops up -d
+#
+# IMAGE_TAG defaults to `latest`. Pin it to a commit SHA for a deploy you can
+# name and roll back to:
+#   IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    image: ghcr.io/colin-110/robot-fleet-backend:${IMAGE_TAG:-latest}
+    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log"]
+    env_file: [./.env]
+    environment:
+      - PYTHONPATH=.
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # /health/live, not /health: the latter runs `SELECT 1` against Neon,
+      # which only accrues free-tier compute-hours while a query is actually
+      # running and suspends after 5 idle minutes. A DB-querying healthcheck
+      # every 15s is by itself enough to keep Neon's compute permanently
+      # awake - see app/telemetry_buffer.py for the other half of this fix.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging: *default-logging
+    networks: [fleet_net]
+
+  simulator:
+    image: ghcr.io/colin-110/robot-fleet-simulator:${IMAGE_TAG:-latest}
+    # --always-active: this deployment has no viewer-gating pause on the
+    # simulator itself. Telemetry stays continuous; what's gated on viewer
+    # presence instead is the *database write cadence* (telemetry_buffer.py),
+    # since that's the layer with an actual metered cost on this deployment.
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24", "--always-active"]
+    env_file: [./.env]
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [fleet_net]
+
+networks:
+  fleet_net:
+    driver: bridge

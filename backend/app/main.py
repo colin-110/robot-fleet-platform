@@ -31,6 +31,7 @@ from app.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
+from app import telemetry_buffer
 from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
@@ -97,11 +98,24 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Only meaningful on the direct-ingest path — the Redis-buffered path
+    # already batches writes through its own worker. 600s (10 min) is
+    # comfortably past Neon's fixed 5-minute suspend timeout, so compute gets
+    # a real idle window between flushes instead of being nudged awake just
+    # often enough that it never actually suspends.
+    buffer_flush_task = (
+        asyncio.create_task(telemetry_buffer.flush_loop(interval_seconds=600))
+        if not settings.opt_redis_buffer and settings.defer_writes_without_viewers
+        else None
+    )
+
     yield
 
     if manager._listener_task:
         manager._listener_task.cancel()
     pruner_task.cancel()
+    if buffer_flush_task:
+        buffer_flush_task.cancel()
 
     # Drop this worker's gauge samples so a restart doesn't leave phantom
     # connections summed into the multiprocess registry.
@@ -171,6 +185,16 @@ app.include_router(auth_router)
 def root():
     """Root endpoint — confirms the API is running."""
     return {"message": "FleetOps API running", "version": "1.0.0"}
+
+
+# Process-liveness only, no database round trip. Docker's own healthcheck
+# polls every 15s forever - against a serverless Postgres (Neon) that only
+# accrues compute-hours while a query is actually running and suspends after
+# 5 idle minutes, a healthcheck that queries the DB every 15s is on its own
+# enough to keep it permanently awake, well beyond anything ingestion does.
+@app.api_route("/health/live", methods=["GET", "HEAD"], tags=["health"])
+def liveness():
+    return {"status": "ok"}
 
 
 # GET and HEAD: uptime monitors (UptimeRobot, Render's own probes, load
