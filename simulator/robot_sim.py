@@ -999,8 +999,12 @@ async def main_async(args, worker_index=0, total_workers=1):
         )
 
         viewer_state = ViewerState()
-        viewer_task = asyncio.create_task(
-            viewer_watch_loop(client, args.api_url, viewer_state, args.timeout)
+        viewer_task = (
+            None
+            if args.always_active
+            else asyncio.create_task(
+                viewer_watch_loop(client, args.api_url, viewer_state, args.timeout)
+            )
         )
 
         # Start robot loops
@@ -1029,7 +1033,8 @@ async def main_async(args, worker_index=0, total_workers=1):
         finally:
             dispatcher_task.cancel()
             batcher_task.cancel()
-            viewer_task.cancel()
+            if viewer_task is not None:
+                viewer_task.cancel()
             for task in list(active_robot_tasks.values()):
                 task.cancel()
 
@@ -1062,6 +1067,11 @@ def main():
     parser.add_argument("--tick-max", type=float, default=5.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--always-active",
+        action="store_true",
+        help="Skip viewer-gating: never poll /viewers, never idle telemetry.",
+    )
     args = parser.parse_args()
 
     if not args.api_key:
