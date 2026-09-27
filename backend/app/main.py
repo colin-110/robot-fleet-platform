@@ -20,7 +20,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import metrics
+from app import metrics, telemetry_buffer
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
@@ -31,7 +31,6 @@ from app.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
-from app import telemetry_buffer
 from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user

@@ -20,13 +20,13 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import telemetry_buffer
 from app.config import get_settings
 from app.metrics import (
     db_write_latency_seconds,
     telemetry_ingest_seconds,
     telemetry_ingested_total,
 )
-from app import telemetry_buffer
 from app.models import Telemetry
 from app.repositories.robot_repo import RobotRepository
 from app.repositories.telemetry_repo import TelemetryRepository
