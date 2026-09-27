@@ -31,6 +31,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.create_index("ix_telemetry_id", "telemetry", ["id"])
-    op.create_index(
-        "ix_telemetry_robot_id_desc", "telemetry", ["robot_id", "timestamp"]
-    )
+    op.create_index("ix_telemetry_robot_id_desc", "telemetry", ["robot_id", "timestamp"])
