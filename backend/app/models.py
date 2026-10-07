@@ -119,7 +119,13 @@ class Telemetry(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),)
+    # Unique, not just an index: (robot_id, timestamp) identifies a reading, which
+    # is what makes every write path idempotent. A redelivered stream entry or a
+    # client retry carries the same pair and is skipped via ON CONFLICT DO NOTHING.
+    # It also serves the (robot_id, timestamp) lookups the old plain index did.
+    __table_args__ = (
+        Index("uq_telemetry_robot_id_timestamp", "robot_id", "timestamp", unique=True),
+    )
 
     def __repr__(self) -> str:
         return (
