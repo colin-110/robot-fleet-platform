@@ -164,6 +164,14 @@ worker_batch_size = Histogram(
     buckets=(1, 5, 10, 25, 50, 100, 250, 500),
 )
 
+# Delivery is at-least-once, so a redelivered stream entry is expected after a
+# failed XACK or a worker crash. A nonzero rate means replays are happening; a
+# sustained high rate means something is acking badly.
+telemetry_duplicates_skipped_total = Counter(
+    "telemetry_duplicates_skipped_total",
+    "Telemetry rows the worker skipped because an identical reading already exists",
+)
+
 # The ingest stream is capped, and Redis trims the oldest entries past that cap
 # even if a consumer group has not acknowledged them. A worker that falls far
 # enough behind therefore loses telemetry silently. These two make it audible:

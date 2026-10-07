@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import orjson
-from sqlalchemy import func, insert, update
+from sqlalchemy import func, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -16,6 +17,7 @@ from app.database import AsyncSessionLocal
 from app.logging_config import configure_logging
 from app.metrics import (
     db_write_latency_seconds,
+    telemetry_duplicates_skipped_total,
     telemetry_stream_length,
     telemetry_stream_pending,
     worker_batch_size,
@@ -104,6 +106,10 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
     undecodable payloads are skipped, but every message id seen is returned so
     the caller can ``XACK`` the whole batch and avoid reprocessing.
 
+    Delivery is at-least-once: if the ``XACK`` fails after the commit, the same
+    entries are redelivered. Inserts use ``ON CONFLICT DO NOTHING`` so a
+    redelivered reading is skipped (and counted) instead of stored twice.
+
     With ``OPT_BATCH_INSERT`` on (default) the whole batch goes out as one
     multi-row INSERT in a single transaction. With it off, each row is its own
     INSERT + COMMIT — the naive approach, and the baseline the benchmark
@@ -129,15 +135,22 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
 
     if insert_dicts:
         started = time.perf_counter()
+        skipped = 0
 
         if settings.opt_batch_insert:
-            await session.execute(insert(Telemetry).values(insert_dicts))
+            result = await session.execute(
+                pg_insert(Telemetry).values(insert_dicts).on_conflict_do_nothing()
+            )
+            skipped = len(insert_dicts) - result.rowcount
             await _register_robots(session, insert_dicts)
             await session.commit()
             mode = "batch"
         else:
             for row in insert_dicts:
-                await session.execute(insert(Telemetry).values(row))
+                result = await session.execute(
+                    pg_insert(Telemetry).values(row).on_conflict_do_nothing()
+                )
+                skipped += 1 - result.rowcount
                 await session.commit()
             await _register_robots(session, insert_dicts)
             await session.commit()
@@ -146,11 +159,14 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
         elapsed = time.perf_counter() - started
         db_write_latency_seconds.labels(mode=mode).observe(elapsed)
         worker_batch_size.observe(len(insert_dicts))
+        if skipped:
+            telemetry_duplicates_skipped_total.inc(skipped)
         logger.info(
-            "Persisted %d telemetry records (%s) in %.1f ms.",
-            len(insert_dicts),
+            "Persisted %d telemetry records (%s) in %.1f ms, %d duplicates skipped.",
+            len(insert_dicts) - skipped,
             mode,
             elapsed * 1000,
+            skipped,
         )
 
     return message_ids

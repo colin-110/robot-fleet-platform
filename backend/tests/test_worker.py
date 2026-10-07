@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import orjson
 import pytest
@@ -15,6 +15,7 @@ def _msg(msg_id: str, payload: dict):
 @pytest.mark.asyncio
 async def test_process_batch_inserts_telemetry():
     session = AsyncMock()
+    session.execute.return_value = MagicMock(rowcount=2)
     messages = [
         _msg(
             "12345-0",
@@ -63,7 +64,7 @@ async def test_process_batch_registers_robots_with_latest_timestamp():
     async def capture(statement, *args, **kwargs):
         # The second statement is the roster upsert.
         captured.setdefault("statements", []).append(statement)
-        return AsyncMock()
+        return MagicMock(rowcount=2)
 
     session.execute.side_effect = capture
 
