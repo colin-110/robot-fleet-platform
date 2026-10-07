@@ -129,9 +129,14 @@ class TelemetryService:
                 result = {"message": "Telemetry queued in Redis", "id": 0}
             elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
                 db_started = time.perf_counter()
-                telemetry = await self.repo.insert(
-                    data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
-                )
+                resolved_ts = resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
+                telemetry = await self.repo.insert(data, resolved_ts)
+                if telemetry is None:
+                    # Same reading already stored: a client retry. Answer as a
+                    # success with the original id; the first copy already
+                    # registered the robot and was broadcast.
+                    existing_id = await self.repo.find_id(data.robot_id, resolved_ts)
+                    return {"message": "Telemetry already received", "id": existing_id}
                 # The buffered path's roster upsert lives in the worker
                 # (app/worker.py's _register_robots) because there's a worker
                 # to do it later. The direct path has no later — skip this and

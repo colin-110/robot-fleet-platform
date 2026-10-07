@@ -9,9 +9,11 @@ that leverage the composite indexes defined in ``models.py``.
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.metrics import telemetry_duplicates_skipped_total
 from app.models import Telemetry
 from app.schemas import TelemetryCreate
 
@@ -24,36 +26,21 @@ class TelemetryRepository:
 
     # ── Write ───────────────────────────────────────────────────────
 
-    async def insert(self, data: TelemetryCreate, timestamp: datetime | None = None) -> Telemetry:
+    async def insert(
+        self, data: TelemetryCreate, timestamp: datetime | None = None
+    ) -> Telemetry | None:
         """Persist a single telemetry reading and return the ORM row.
 
         ``timestamp`` is the already-resolved measurement time (device time
         where reported, server time otherwise). The caller resolves it so that
         clock-skew handling lives in one place rather than being duplicated
         across the buffered and direct write paths.
+
+        Returns ``None`` when an identical reading (same robot, same timestamp)
+        is already stored — a client retry, not an error.
         """
-        telemetry = Telemetry(
-            robot_id=data.robot_id,
-            battery=data.battery,
-            temperature=data.temperature,
-            speed=data.speed,
-            status=data.status,
-            mission_id=data.mission_id,
-            mission_type=data.mission_type,
-            mission_progress=data.mission_progress,
-            mission_start_time=data.mission_start_time,
-            battery_health=data.battery_health,
-            motor_health=data.motor_health,
-            sensor_health=data.sensor_health,
-            network_health=data.network_health,
-            x=data.x,
-            y=data.y,
-            timestamp=timestamp or datetime.now(timezone.utc),
-        )
-        self.db.add(telemetry)
-        await self.db.commit()
-        await self.db.refresh(telemetry)
-        return telemetry
+        rows = await self.insert_many([(data, timestamp or datetime.now(timezone.utc))])
+        return rows[0] if rows else None
 
     async def insert_many(self, rows: list[tuple[TelemetryCreate, datetime]]) -> list[Telemetry]:
         """Persist many telemetry readings in a single transaction.
@@ -65,35 +52,52 @@ class TelemetryRepository:
         own POST timeout and silently drop the whole batch. One INSERT, one
         commit, for the whole list.
 
-        No per-row ``refresh()``: the session is ``expire_on_commit=False``
-        (see database.py), and SQLAlchemy's Postgres dialect already
-        populates autoincrement ``id`` via ``RETURNING`` on flush, so the ORM
-        objects are already fully populated once ``commit()`` returns.
+        ``ON CONFLICT DO NOTHING`` makes the write idempotent: a reading that
+        already exists (same robot, same timestamp) is skipped and counted,
+        not stored twice and not an error. Only the rows actually inserted are
+        returned, so callers broadcast and register only what is new.
         """
-        telemetries = [
-            Telemetry(
-                robot_id=data.robot_id,
-                battery=data.battery,
-                temperature=data.temperature,
-                speed=data.speed,
-                status=data.status,
-                mission_id=data.mission_id,
-                mission_type=data.mission_type,
-                mission_progress=data.mission_progress,
-                mission_start_time=data.mission_start_time,
-                battery_health=data.battery_health,
-                motor_health=data.motor_health,
-                sensor_health=data.sensor_health,
-                network_health=data.network_health,
-                x=data.x,
-                y=data.y,
-                timestamp=timestamp,
-            )
+        if not rows:
+            return []
+
+        values = [
+            {
+                "robot_id": data.robot_id,
+                "battery": data.battery,
+                "temperature": data.temperature,
+                "speed": data.speed,
+                "status": data.status,
+                "mission_id": data.mission_id,
+                "mission_type": data.mission_type,
+                "mission_progress": data.mission_progress,
+                "mission_start_time": data.mission_start_time,
+                "battery_health": data.battery_health,
+                "motor_health": data.motor_health,
+                "sensor_health": data.sensor_health,
+                "network_health": data.network_health,
+                "x": data.x,
+                "y": data.y,
+                "timestamp": timestamp,
+            }
             for data, timestamp in rows
         ]
-        self.db.add_all(telemetries)
+        stmt = pg_insert(Telemetry).values(values).on_conflict_do_nothing().returning(Telemetry)
+        result = await self.db.execute(stmt)
+        telemetries = list(result.scalars().all())
         await self.db.commit()
+
+        skipped = len(rows) - len(telemetries)
+        if skipped:
+            telemetry_duplicates_skipped_total.inc(skipped)
         return telemetries
+
+    async def find_id(self, robot_id: int, timestamp: datetime) -> int | None:
+        """Id of the stored reading for this robot and instant, if any."""
+        stmt = select(Telemetry.id).where(
+            Telemetry.robot_id == robot_id, Telemetry.timestamp == timestamp
+        )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
     # ── Read ────────────────────────────────────────────────────────
 
