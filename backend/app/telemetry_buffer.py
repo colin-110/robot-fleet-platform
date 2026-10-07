@@ -43,7 +43,10 @@ async def flush() -> int:
     if not rows:
         return 0
 
-    async with AsyncSessionLocal() as session, session.begin():
+    # No ``session.begin()`` block: insert_many commits on its own, and a commit
+    # inside that block closed its transaction, so the roster update below failed
+    # with "Can't operate on closed transaction" on every flush.
+    async with AsyncSessionLocal() as session:
         telemetry_repo = TelemetryRepository(session)
         robot_repo = RobotRepository(session)
         telemetries = await telemetry_repo.insert_many(rows)
@@ -53,6 +56,7 @@ async def flush() -> int:
             if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
                 latest_by_robot[t.robot_id] = t.timestamp
         await robot_repo.mark_seen(latest_by_robot)
+        await session.commit()
 
     return len(rows)
 
