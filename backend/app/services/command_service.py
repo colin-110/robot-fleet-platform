@@ -29,6 +29,17 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "EXECUTING": frozenset({"COMPLETED", "FAILED", "TIMEOUT"}),
 }
 
+# The column each non-terminal state stamps when a command enters it. A set
+# column is proof the command already went through that state, which is what
+# separates a late retry ("ACKNOWLEDGED", resent after its response was lost,
+# arriving once the command is EXECUTING) from a genuinely invalid request
+# ("EXECUTING" for a command cancelled before it ever ran).
+REACHED_AT: dict[str, str] = {
+    "DISPATCHED": "dispatched_at",
+    "ACKNOWLEDGED": "acknowledged_at",
+    "EXECUTING": "started_at",
+}
+
 
 class CommandService:
     def __init__(self, db: AsyncSession):
@@ -66,6 +77,9 @@ class CommandService:
             await self.db.commit()
         except IntegrityError as exc:
             await self.db.rollback()
+            if command.idempotency_key is None:
+                # No key, so this is not a replay. Don't dress it up as one.
+                raise
             # Idempotency key collision — return the command that won the race.
             stmt = select(RobotCommand).where(
                 RobotCommand.robot_id == robot_id,
@@ -76,6 +90,14 @@ class CommandService:
             if not existing_cmd:
                 raise HTTPException(
                     status_code=500, detail="Database conflict handling failed"
+                ) from exc
+            if not self._same_request(existing_cmd, command):
+                # A replay must be the same request. Returning the old command
+                # for a different one would tell the caller its new command was
+                # queued when it was not.
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency key already used for a different command",
                 ) from exc
             return self._to_dict(existing_cmd)
 
@@ -111,8 +133,9 @@ class CommandService:
         new_status = update_data.status
         now = datetime.now(timezone.utc)
 
-        # Replaying the same status is a no-op, not an error — makes retries safe.
-        if current_status == new_status:
+        # Replaying the same status is a no-op, not an error — makes retries
+        # safe. So is replaying a step the command has already moved past.
+        if current_status == new_status or self._already_passed(record, new_status):
             return self._to_dict(record)
 
         if current_status in TERMINAL_STATES:
@@ -147,7 +170,7 @@ class CommandService:
         if result.rowcount == 0:
             # Another writer moved the command between our read and our write.
             current = await self._get_or_404(command_id)
-            if current.status == new_status:
+            if current.status == new_status or self._already_passed(current, new_status):
                 # They applied the same transition we wanted — treat as success.
                 return self._to_dict(current)
             raise HTTPException(
@@ -169,6 +192,20 @@ class CommandService:
         return payload
 
     # ── Internals ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _same_request(record: RobotCommand, command: CommandCreate) -> bool:
+        return (
+            record.command_type == command.command_type
+            and record.payload == command.payload
+            and record.timeout_seconds == command.timeout_seconds
+        )
+
+    @staticmethod
+    def _already_passed(record: RobotCommand, status: str) -> bool:
+        """Whether ``record`` has already been through non-terminal ``status``."""
+        column = REACHED_AT.get(status)
+        return column is not None and getattr(record, column) is not None
 
     @staticmethod
     def _transition_values(

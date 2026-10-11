@@ -9,11 +9,48 @@ that leverage the composite indexes defined in ``models.py``.
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models import Telemetry
 from app.schemas import TelemetryCreate
+
+
+def insert_telemetry_ignoring_duplicates(rows: list[dict]):
+    """``INSERT ... ON CONFLICT (robot_id, timestamp) DO NOTHING`` for ``rows``.
+
+    The single write statement for telemetry. Every path that persists
+    readings (direct ingest, the deferred buffer, the stream worker) goes
+    through it, so each one is safe to retry: a reading already stored is
+    dropped, not duplicated. Duplicates within one batch are dropped too.
+    """
+    return (
+        pg_insert(Telemetry)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=[Telemetry.robot_id, Telemetry.timestamp])
+    )
+
+
+def _to_row(data: TelemetryCreate, timestamp: datetime) -> dict:
+    return {
+        "robot_id": data.robot_id,
+        "battery": data.battery,
+        "temperature": data.temperature,
+        "speed": data.speed,
+        "status": data.status,
+        "mission_id": data.mission_id,
+        "mission_type": data.mission_type,
+        "mission_progress": data.mission_progress,
+        "mission_start_time": data.mission_start_time,
+        "battery_health": data.battery_health,
+        "motor_health": data.motor_health,
+        "sensor_health": data.sensor_health,
+        "network_health": data.network_health,
+        "x": data.x,
+        "y": data.y,
+        "timestamp": timestamp,
+    }
 
 
 class TelemetryRepository:
@@ -24,76 +61,50 @@ class TelemetryRepository:
 
     # ── Write ───────────────────────────────────────────────────────
 
-    async def insert(self, data: TelemetryCreate, timestamp: datetime | None = None) -> Telemetry:
-        """Persist a single telemetry reading and return the ORM row.
+    async def insert(
+        self, data: TelemetryCreate, timestamp: datetime | None = None
+    ) -> Telemetry | None:
+        """Persist a single telemetry reading.
 
         ``timestamp`` is the already-resolved measurement time (device time
         where reported, server time otherwise). The caller resolves it so that
         clock-skew handling lives in one place rather than being duplicated
         across the buffered and direct write paths.
+
+        Returns ``None`` when the reading is already stored — see
+        ``insert_many``. Does not commit.
         """
-        telemetry = Telemetry(
-            robot_id=data.robot_id,
-            battery=data.battery,
-            temperature=data.temperature,
-            speed=data.speed,
-            status=data.status,
-            mission_id=data.mission_id,
-            mission_type=data.mission_type,
-            mission_progress=data.mission_progress,
-            mission_start_time=data.mission_start_time,
-            battery_health=data.battery_health,
-            motor_health=data.motor_health,
-            sensor_health=data.sensor_health,
-            network_health=data.network_health,
-            x=data.x,
-            y=data.y,
-            timestamp=timestamp or datetime.now(timezone.utc),
-        )
-        self.db.add(telemetry)
-        await self.db.commit()
-        await self.db.refresh(telemetry)
-        return telemetry
+        rows = await self.insert_many([(data, timestamp or datetime.now(timezone.utc))])
+        return rows[0] if rows else None
 
     async def insert_many(self, rows: list[tuple[TelemetryCreate, datetime]]) -> list[Telemetry]:
-        """Persist many telemetry readings in a single transaction.
+        """Persist many telemetry readings in one statement, skipping duplicates.
 
-        The direct (non-buffered) ingest path already pays one HTTP round
-        trip per request; committing once per row inside a batch turned a
-        single simulator POST into up to 50 sequential DB round trips to a
-        remote Postgres instance — slow enough to blow past the simulator's
-        own POST timeout and silently drop the whole batch. One INSERT, one
-        commit, for the whole list.
+        One multi-row INSERT rather than a commit per row: committing per row
+        turned a single simulator POST into up to 50 sequential round trips to
+        a remote Postgres instance, slow enough to blow past the simulator's
+        own POST timeout and drop the whole batch.
 
-        No per-row ``refresh()``: the session is ``expire_on_commit=False``
-        (see database.py), and SQLAlchemy's Postgres dialect already
-        populates autoincrement ``id`` via ``RETURNING`` on flush, so the ORM
-        objects are already fully populated once ``commit()`` returns.
+        Returns only the rows actually inserted. A reading whose
+        ``(robot_id, timestamp)`` is already stored is a retry of one we have,
+        and is skipped rather than duplicated. Does not commit: the caller
+        commits, so the roster update lands in the same transaction.
         """
-        telemetries = [
-            Telemetry(
-                robot_id=data.robot_id,
-                battery=data.battery,
-                temperature=data.temperature,
-                speed=data.speed,
-                status=data.status,
-                mission_id=data.mission_id,
-                mission_type=data.mission_type,
-                mission_progress=data.mission_progress,
-                mission_start_time=data.mission_start_time,
-                battery_health=data.battery_health,
-                motor_health=data.motor_health,
-                sensor_health=data.sensor_health,
-                network_health=data.network_health,
-                x=data.x,
-                y=data.y,
-                timestamp=timestamp,
-            )
-            for data, timestamp in rows
-        ]
-        self.db.add_all(telemetries)
-        await self.db.commit()
-        return telemetries
+        if not rows:
+            return []
+
+        stmt = insert_telemetry_ignoring_duplicates(
+            [_to_row(data, timestamp) for data, timestamp in rows]
+        ).returning(Telemetry)
+        result = await self.db.scalars(stmt, execution_options={"populate_existing": True})
+        return list(result.all())
+
+    async def get_id(self, robot_id: int, timestamp: datetime) -> int | None:
+        """Id of the stored reading for ``(robot_id, timestamp)``, if any."""
+        stmt = select(Telemetry.id).where(
+            Telemetry.robot_id == robot_id, Telemetry.timestamp == timestamp
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
 
     # ── Read ────────────────────────────────────────────────────────
 

@@ -4,6 +4,15 @@ import { getStatusMeta, healthTone, formatRuntime, formatLastSeen } from "../uti
 import { getTicket } from "../utils/ticket";
 import { authHeaders } from "../utils/auth";
 
+// crypto.randomUUID only exists in secure contexts (HTTPS or localhost). The
+// local stack can be opened over plain HTTP from another machine, so fall
+// back to getRandomValues, which works everywhere.
+function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function formatMission(robot) {
   if (!robot.mission_id || !robot.mission_type) return "Idle";
   const progress =
@@ -34,13 +43,17 @@ function RobotCard({ robot }) {
   const handleCommand = async (action) => {
     const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
     setLoadingAction(action);
+    // One key per click, made before the request. Anything that resends this
+    // request (a proxy retry, a replayed connection) gets the command that
+    // was already queued instead of queuing a second one.
+    const idempotencyKey = newIdempotencyKey();
     try {
       // Console-scoped and short-lived. The master key stays server-side, so a
       // bundle reader cannot forge telemetry for the fleet.
       const ticket = await getTicket();
       await axios.post(
         `${API_BASE}/api/v1/commands/${robot.robot_id}`,
-        { command_type: action },
+        { command_type: action, idempotency_key: idempotencyKey },
         // Ticket proves the client may reach the console; the bearer token
         // proves the person holds the operator role. The backend checks both.
         { headers: { "X-Console-Ticket": ticket, ...authHeaders() } },

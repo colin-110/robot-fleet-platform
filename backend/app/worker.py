@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import orjson
-from sqlalchemy import func, insert, update
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -20,8 +20,9 @@ from app.metrics import (
     telemetry_stream_pending,
     worker_batch_size,
 )
-from app.models import RobotCommand, Telemetry
+from app.models import RobotCommand
 from app.repositories.robot_repo import RobotRepository
+from app.repositories.telemetry_repo import insert_telemetry_ignoring_duplicates
 from app.retention import prune_loop
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
@@ -109,6 +110,11 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
     INSERT + COMMIT — the naive approach, and the baseline the benchmark
     compares against. The difference is round trips: one per batch versus one
     per row, each carrying full transaction-commit overhead.
+
+    Safe to run twice on the same messages. The caller XACKs only after this
+    commits, so a crash between the two leaves the batch pending, and it is
+    redelivered on restart (or XAUTOCLAIMed by another consumer). The insert
+    skips readings already stored, so the replay writes nothing new.
     """
     message_ids: list = []
     insert_dicts: list = []
@@ -131,13 +137,13 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
         started = time.perf_counter()
 
         if settings.opt_batch_insert:
-            await session.execute(insert(Telemetry).values(insert_dicts))
+            await session.execute(insert_telemetry_ignoring_duplicates(insert_dicts))
             await _register_robots(session, insert_dicts)
             await session.commit()
             mode = "batch"
         else:
             for row in insert_dicts:
-                await session.execute(insert(Telemetry).values(row))
+                await session.execute(insert_telemetry_ignoring_duplicates([row]))
                 await session.commit()
             await _register_robots(session, insert_dicts)
             await session.commit()

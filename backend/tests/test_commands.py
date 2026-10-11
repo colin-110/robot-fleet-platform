@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -26,8 +27,8 @@ async def test_command_valid_lifecycle(client: AsyncClient, db: AsyncSession):
     assert cmd_data["status"] == "PENDING"
     cmd_id = cmd_data["command_id"]
 
-    # 2. GET Commands (Simulator poll) -> DISPATCHED
-    resp = await client.get(f"/api/v1/commands/{TEST_ROBOT_ID}")
+    # 2. Claim (simulator poll) -> DISPATCHED
+    resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
     assert resp.status_code == 200
     cmds = resp.json()
     assert len(cmds) == 1
@@ -125,7 +126,7 @@ async def test_repeated_same_state_update(client: AsyncClient):
     resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json=payload)
     cmd_id = resp.json()["payload"]["command_id"]
 
-    await client.get(f"/api/v1/commands/{TEST_ROBOT_ID}")
+    await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
 
     resp1 = await client.patch(f"/api/v1/commands/{cmd_id}/status", json={"status": "ACKNOWLEDGED"})
     resp2 = await client.patch(f"/api/v1/commands/{cmd_id}/status", json={"status": "ACKNOWLEDGED"})
@@ -174,15 +175,86 @@ async def test_concurrent_dispatch(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_deprecated_get_still_claims(client: AsyncClient):
-    """The old GET polling route stays functional during a rollout."""
+async def test_get_does_not_claim(client: AsyncClient, db: AsyncSession):
+    """GET must be safe. The removed GET alias dispatched commands, so any
+    crawler, prefetcher or retrying proxy could drain a robot's queue."""
     payload = {"command_type": "TEST", "idempotency_key": "test-key-legacy"}
     resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json=payload)
     cmd_id = resp.json()["payload"]["command_id"]
 
     resp = await client.get(f"/api/v1/commands/{TEST_ROBOT_ID}")
-    assert resp.status_code == 200
-    assert [c["id"] for c in resp.json()] == [cmd_id]
+    assert resp.status_code == 405
+
+    result = await db.execute(select(RobotCommand).where(RobotCommand.id == cmd_id))
+    assert result.scalars().first().status == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_reused_idempotency_key_with_a_different_body_is_rejected(client: AsyncClient):
+    """A replay must be the same request. Answering a different command with
+    the old one would tell the operator a stop was queued when it was not."""
+    key = "test-key-mismatch"
+    first = await client.post(
+        f"/api/v1/commands/{TEST_ROBOT_ID}",
+        json={"command_type": "RETURN_TO_BASE", "idempotency_key": key},
+    )
+    second = await client.post(
+        f"/api/v1/commands/{TEST_ROBOT_ID}",
+        json={"command_type": "EMERGENCY_STOP", "idempotency_key": key},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_late_retry_of_an_earlier_step_is_a_no_op(client: AsyncClient):
+    """A robot's ACK whose response was lost, resent after it already moved
+    on to EXECUTING, must succeed without rewinding the command."""
+    resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json={"command_type": "TEST"})
+    cmd_id = resp.json()["payload"]["command_id"]
+    await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
+    url = f"/api/v1/commands/{cmd_id}/status"
+
+    await client.patch(url, json={"status": "ACKNOWLEDGED"})
+    await client.patch(url, json={"status": "EXECUTING"})
+    await client.patch(url, json={"status": "COMPLETED"})
+
+    for stale in ("DISPATCHED", "ACKNOWLEDGED", "EXECUTING"):
+        resp = await client.patch(url, json={"status": stale})
+        assert resp.status_code == 200, (stale, resp.json())
+        assert resp.json()["payload"]["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_unacknowledged_command_is_redelivered(client: AsyncClient, db: AsyncSession):
+    """Claiming commits DISPATCHED before the response is sent. If that
+    response is lost, the next claim must hand the command out again rather
+    than leaving it stranded in DISPATCHED."""
+    resp = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}", json={"command_type": "TEST"})
+    cmd_id = resp.json()["payload"]["command_id"]
+
+    first = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
+    assert [c["id"] for c in first.json()] == [cmd_id]
+
+    # Within the grace period the robot may still be working through it.
+    soon = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
+    assert soon.json() == []
+
+    # Past it, with no acknowledgement, it comes back.
+    await db.execute(
+        update(RobotCommand)
+        .where(RobotCommand.id == cmd_id)
+        .values(dispatched_at=datetime.now(timezone.utc) - timedelta(minutes=5))
+    )
+    await db.commit()
+    later = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
+    assert [c["id"] for c in later.json()] == [cmd_id]
+
+    # Once acknowledged, it is the robot's and is not redelivered.
+    await client.patch(f"/api/v1/commands/{cmd_id}/status", json={"status": "ACKNOWLEDGED"})
+    after_ack = await client.post(f"/api/v1/commands/{TEST_ROBOT_ID}/claim")
+    assert after_ack.json() == []
 
 
 @pytest.mark.asyncio

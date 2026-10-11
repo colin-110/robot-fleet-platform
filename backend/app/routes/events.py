@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -26,27 +27,48 @@ async def create_event(
     db: AsyncSession = Depends(get_db),
     _=Depends(verify_api_key),
 ):
-    """Ingest a generic event from a robot, persist it, and broadcast it."""
-    new_event = Event(
-        robot_id=event.robot_id, message=event.message, timestamp=datetime.now(timezone.utc)
+    """Ingest a generic event from a robot, persist it, and broadcast it.
+
+    With an ``idempotency_key``, a retried POST returns the event already
+    logged under that key instead of logging and broadcasting it twice.
+    """
+    timestamp = datetime.now(timezone.utc)
+    stmt = (
+        pg_insert(Event)
+        .values(
+            robot_id=event.robot_id,
+            message=event.message,
+            idempotency_key=event.idempotency_key,
+            timestamp=timestamp,
+        )
+        .on_conflict_do_nothing(index_elements=[Event.robot_id, Event.idempotency_key])
+        .returning(Event.id)
     )
-    db.add(new_event)
+    event_id = (await db.execute(stmt)).scalar_one_or_none()
     await db.commit()
-    await db.refresh(new_event)
+
+    if event_id is None:
+        # Only a keyed event can conflict, and it is already logged and was
+        # broadcast when it first arrived.
+        existing = await db.execute(
+            select(Event.id).where(
+                Event.robot_id == event.robot_id,
+                Event.idempotency_key == event.idempotency_key,
+            )
+        )
+        return {"message": "Event logged", "id": existing.scalar_one()}
 
     payload = {
         "type": "EVENT",
-        "robot_id": new_event.robot_id,
-        "message": new_event.message,
-        "timestamp": new_event.timestamp.isoformat().replace("+00:00", "Z")
-        if new_event.timestamp
-        else None,
+        "robot_id": event.robot_id,
+        "message": event.message,
+        "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
     }
     # event_stream, not the default telemetry_stream: that stream is a bounded
     # ingest buffer whose overflow drops unacknowledged telemetry, so events
     # sharing it would consume the worker's catch-up headroom.
     await manager.broadcast(payload, stream=manager.event_stream)
-    return {"message": "Event logged", "id": new_event.id}
+    return {"message": "Event logged", "id": event_id}
 
 
 @router.get("/events", response_model=list[EventResponse])

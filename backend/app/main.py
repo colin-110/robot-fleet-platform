@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
 
     # The worker also runs this loop (worker.py's db_pruner_task), but the
     # worker is an optional, separately-deployed process. A deployment that
-    # skips it entirely - this app's free-tier Render path - previously
+    # skips it entirely - this app's free-tier EC2 deployment - previously
     # never pruned anything: telemetry grew unbounded until it exhausted
     # Neon's storage quota, at which point every INSERT started failing and
     # ingestion silently stopped for hours before anyone noticed. The backend
@@ -115,6 +115,17 @@ async def lifespan(app: FastAPI):
     pruner_task.cancel()
     if buffer_flush_task:
         buffer_flush_task.cancel()
+        # Wait for it: a flush cancelled mid-write requeues its batch, and the
+        # final flush below has to run after that, not race it.
+        await asyncio.gather(buffer_flush_task, return_exceptions=True)
+        # Readings deferred since the last timed flush would otherwise be lost
+        # on every restart and deploy.
+        try:
+            flushed = await telemetry_buffer.flush()
+            if flushed:
+                logger.info("TELEMETRY BUFFER: flushed %d readings on shutdown.", flushed)
+        except Exception:
+            logger.exception("Final telemetry buffer flush failed; buffered readings lost")
 
     # Drop this worker's gauge samples so a restart doesn't leave phantom
     # connections summed into the multiprocess registry.
@@ -196,9 +207,8 @@ def liveness():
     return {"status": "ok"}
 
 
-# GET and HEAD: uptime monitors (UptimeRobot, Render's own probes, load
-# balancers) commonly poll health endpoints with HEAD to skip the response
-# body. FastAPI's @app.get() only registers GET, so HEAD came back 405 —
+# GET and HEAD: uptime monitors (UptimeRobot, load balancers) commonly poll
+# health endpoints with HEAD to skip the response body. FastAPI's @app.get() only registers GET, so HEAD came back 405 —
 # which read as "service down" to monitors even though it was healthy.
 @app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["health"])
 async def health_check():

@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import random
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
@@ -82,7 +83,9 @@ class RobotState:
     charging_suspended: bool = False
     dead_since: float = 0.0
     returning_to_charge: bool = False
-    processed_command_ids: list[str] = field(default_factory=list)
+    # Command id -> the final status this robot reported for it. Insertion
+    # ordered, so the oldest entry is the first to go once it is full.
+    processed_commands: dict[str, str] = field(default_factory=dict)
     in_fence: bool = False
     fence_cooldown_until: float = 0.0
 
@@ -251,32 +254,42 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
-# Touched on every telemetry POST that actually succeeds. render_server.py's
-# health check reads this file's mtime — see the comment there for why
-# "the subprocess hasn't exited" alone isn't a sufficient liveness signal.
-HEARTBEAT_FILE = "/tmp/simulator_healthy"
-
-
-def _touch_heartbeat() -> None:
-    try:
-        with open(HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except OSError:
-        pass
-
-
 async def post_telemetry(
     client: aiohttp.ClientSession, api_url: str, payload: dict, timeout_s: float
 ):
+    # Retrying is safe: every reading carries the robot's own timestamp, and
+    # the backend drops a (robot_id, timestamp) it has already stored. A POST
+    # that timed out after the server accepted it is resent without
+    # duplicating rows.
     for attempt in range(3):
         try:
-            response = await client.post(api_url, json=payload, timeout=timeout_s)
-            response.raise_for_status()
-            _touch_heartbeat()
+            async with client.post(api_url, json=payload, timeout=timeout_s) as response:
+                response.raise_for_status()
             return
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if attempt == 2:
                 raise exc
+            await asyncio.sleep(0.5 * (2**attempt))
+
+
+async def post_event(
+    client: aiohttp.ClientSession, base_api: str, robot_id: int, message: str
+) -> None:
+    """Log an event, retrying transient failures. Best effort.
+
+    One idempotency key for every attempt, so a retry after a lost response
+    returns the event already logged instead of recording it twice.
+    """
+    payload = {"robot_id": robot_id, "message": message, "idempotency_key": str(uuid.uuid4())}
+    for attempt in range(3):
+        try:
+            async with client.post(f"{base_api}/events", json=payload, timeout=10.0) as response:
+                await response.read()
+                if response.status < 500:
+                    return
+        except Exception:
+            pass
+        if attempt < 2:
             await asyncio.sleep(0.5 * (2**attempt))
 
 
@@ -313,8 +326,6 @@ async def viewer_watch_loop(
                 data = await resp.json()
                 count = data.get("active_connections", 0)
 
-            _touch_heartbeat()  # Proves the process is alive regardless of active/idle.
-
             if count > 0:
                 consecutive_zero = 0
                 if not state.active:
@@ -346,11 +357,22 @@ async def patch_command_status(
     reconcile anything left dangling.
     """
     payload = {"status": status, **extra}
-    try:
-        async with client.patch(f"{base_api}/commands/{cmd_id}/status", json=payload) as response:
-            await response.read()
-    except Exception as exc:
-        logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
+    # Retrying is safe: the backend treats a status the command already has,
+    # or has already moved past, as a no-op. Without retries one dropped
+    # response left a command stuck mid-lifecycle until the timeout sweeper,
+    # and forever for a command sent without a timeout.
+    for attempt in range(3):
+        try:
+            async with client.patch(
+                f"{base_api}/commands/{cmd_id}/status", json=payload, timeout=10.0
+            ) as response:
+                await response.read()
+                if response.status < 500:
+                    return
+        except Exception as exc:
+            logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
+        if attempt < 2:
+            await asyncio.sleep(0.5 * (2**attempt))
 
 
 async def dispatcher_loop(
@@ -456,21 +478,27 @@ async def robot_loop(
                                 cmd_id = cmd_obj["id"]
                                 cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
 
-                                if cmd_id in robot.processed_command_ids:
-                                    # End-to-end idempotency: replay the result
+                                if cmd_id in robot.processed_commands:
+                                    # Redelivered: the backend never saw this
+                                    # robot's reports for it. Re-send them
                                     # rather than executing the command twice.
-                                    await patch_command_status(
-                                        client,
-                                        base_api,
-                                        cmd_id,
-                                        "COMPLETED",
-                                        result={"message": "Already processed"},
-                                    )
+                                    # Each step is a no-op if it already landed.
+                                    for replay_status in (
+                                        "ACKNOWLEDGED",
+                                        "EXECUTING",
+                                        robot.processed_commands[cmd_id],
+                                    ):
+                                        await patch_command_status(
+                                            client, base_api, cmd_id, replay_status
+                                        )
                                     continue
 
-                                robot.processed_command_ids.append(cmd_id)
-                                if len(robot.processed_command_ids) > 100:
-                                    robot.processed_command_ids.pop(0)
+                                # Recorded before executing, so a redelivery
+                                # that arrives mid-execution is not re-run.
+                                processed = robot.processed_commands
+                                processed[cmd_id] = "COMPLETED"
+                                if len(processed) > 100:
+                                    del processed[next(iter(processed))]
 
                                 await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
                                 await patch_command_status(client, base_api, cmd_id, "EXECUTING")
@@ -500,6 +528,7 @@ async def robot_loop(
                                 else:
                                     status_to_patch = "FAILED"
 
+                                robot.processed_commands[cmd_id] = status_to_patch
                                 await patch_command_status(
                                     client, base_api, cmd_id, status_to_patch
                                 )
@@ -726,18 +755,12 @@ async def robot_loop(
                             )
                             if not is_blacked_out:
                                 await emit_telemetry(robot, queue, rng, viewer_state)
-                                try:
-                                    async with client.post(
-                                        f"{base_api}/events",
-                                        json={
-                                            "robot_id": robot.robot_id,
-                                            "message": f"Completed {mission.mission_type} mission {mission.mission_id}",
-                                        },
-                                        timeout=10.0,
-                                    ) as _r:
-                                        await _r.read()
-                                except Exception:
-                                    pass
+                                await post_event(
+                                    client,
+                                    base_api,
+                                    robot.robot_id,
+                                    f"Completed {mission.mission_type} mission {mission.mission_id}",
+                                )
                             clear_mission(robot)
                             robot.status = "ACTIVE"
                         else:
@@ -799,18 +822,7 @@ async def robot_loop(
                 if now >= robot.fence_cooldown_until and not is_blacked_out:
                     robot.fence_cooldown_until = now + 45.0
                     safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
-                    try:
-                        async with client.post(
-                            f"{base_api}/events",
-                            json={
-                                "robot_id": robot.robot_id,
-                                "message": "Entered Restricted Zone!",
-                            },
-                            timeout=10.0,
-                        ) as _r:
-                            await _r.read()
-                    except Exception:
-                        pass
+                    await post_event(client, base_api, robot.robot_id, "Entered Restricted Zone!")
             elif dist_to_fence > 7.0 and robot.in_fence:
                 robot.in_fence = False
 

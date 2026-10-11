@@ -26,6 +26,11 @@ from app.schemas import TelemetryCreate
 
 logger = logging.getLogger(__name__)
 
+# Ceiling on readings held while the database is unreachable. At the demo
+# fleet's rate this is well over an hour of telemetry; past it the oldest
+# readings are dropped so a long outage can't exhaust the host's memory.
+MAX_PENDING = 50_000
+
 _pending: list[tuple[TelemetryCreate, datetime]] = []
 _lock = asyncio.Lock()
 
@@ -43,18 +48,39 @@ async def flush() -> int:
     if not rows:
         return 0
 
-    async with AsyncSessionLocal() as session, session.begin():
-        telemetry_repo = TelemetryRepository(session)
-        robot_repo = RobotRepository(session)
-        telemetries = await telemetry_repo.insert_many(rows)
+    try:
+        async with AsyncSessionLocal() as session, session.begin():
+            await TelemetryRepository(session).insert_many(rows)
 
-        latest_by_robot: dict[int, datetime] = {}
-        for t in telemetries:
-            if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
-                latest_by_robot[t.robot_id] = t.timestamp
-        await robot_repo.mark_seen(latest_by_robot)
+            latest_by_robot: dict[int, datetime] = {}
+            for data, ts in rows:
+                if data.robot_id not in latest_by_robot or ts > latest_by_robot[data.robot_id]:
+                    latest_by_robot[data.robot_id] = ts
+            await RobotRepository(session).mark_seen(latest_by_robot)
+    except BaseException:
+        # Put the batch back rather than losing it. Retrying is safe even if
+        # the COMMIT landed and only its acknowledgement was lost: the insert
+        # skips readings already stored, so nothing is written twice.
+        # BaseException so a shutdown cancelling a flush mid-write requeues
+        # too; the final flush in main.py's lifespan then gets another try.
+        await _requeue(rows)
+        raise
 
     return len(rows)
+
+
+async def _requeue(rows: list[tuple[TelemetryCreate, datetime]]) -> None:
+    async with _lock:
+        _pending[:0] = rows
+        overflow = len(_pending) - MAX_PENDING
+        if overflow > 0:
+            del _pending[:overflow]
+            logger.warning(
+                "TELEMETRY BUFFER: dropped %d oldest readings; database unreachable "
+                "and the buffer is at its %d-reading cap.",
+                overflow,
+                MAX_PENDING,
+            )
 
 
 async def flush_loop(interval_seconds: float) -> None:

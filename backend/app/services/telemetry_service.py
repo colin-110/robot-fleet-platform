@@ -129,27 +129,32 @@ class TelemetryService:
                 result = {"message": "Telemetry queued in Redis", "id": 0}
             elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
                 db_started = time.perf_counter()
-                telemetry = await self.repo.insert(
-                    data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
-                )
+                resolved_ts = resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
+                telemetry = await self.repo.insert(data, resolved_ts)
                 # The buffered path's roster upsert lives in the worker
                 # (app/worker.py's _register_robots) because there's a worker
                 # to do it later. The direct path has no later — skip this and
                 # the robot never appears in the roster, so it never shows up
                 # in fleet status no matter how much telemetry it sends.
-                await self.robot_repo.mark_seen({telemetry.robot_id: telemetry.timestamp})
+                await self.robot_repo.mark_seen({data.robot_id: resolved_ts})
                 await self.repo.db.commit()
                 db_write_latency_seconds.labels(mode="direct").observe(
                     time.perf_counter() - db_started
                 )
 
-                broadcast = _telemetry_to_broadcast_dict(telemetry)
-                if background_tasks:
-                    background_tasks.add_task(manager.broadcast, broadcast)
+                if telemetry is None:
+                    # Already stored: this is a retry of a reading we accepted
+                    # and broadcast the first time. Answer the way we did then.
+                    existing_id = await self.repo.get_id(data.robot_id, resolved_ts)
+                    result = {"message": "Telemetry received", "id": existing_id}
                 else:
-                    await manager.broadcast(broadcast)
+                    broadcast = _telemetry_to_broadcast_dict(telemetry)
+                    if background_tasks:
+                        background_tasks.add_task(manager.broadcast, broadcast)
+                    else:
+                        await manager.broadcast(broadcast)
 
-                result = {"message": "Telemetry received", "id": telemetry.id}
+                    result = {"message": "Telemetry received", "id": telemetry.id}
             else:
                 # Nobody is watching, so nobody needs this row in Postgres
                 # this instant. Buffer it and let telemetry_buffer.flush_loop
@@ -203,16 +208,15 @@ class TelemetryService:
             elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
                 db_started = time.perf_counter()
                 rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
+                # Only newly stored readings come back; ones already stored by
+                # an earlier attempt of this POST were broadcast back then.
                 telemetries = await self.repo.insert_many(rows)
                 payloads = [_telemetry_to_broadcast_dict(t) for t in telemetries]
 
                 latest_by_robot: dict[int, datetime] = {}
-                for t in telemetries:
-                    if (
-                        t.robot_id not in latest_by_robot
-                        or t.timestamp > latest_by_robot[t.robot_id]
-                    ):
-                        latest_by_robot[t.robot_id] = t.timestamp
+                for d, ts in rows:
+                    if d.robot_id not in latest_by_robot or ts > latest_by_robot[d.robot_id]:
+                        latest_by_robot[d.robot_id] = ts
                 # See the comment in ingest() — the direct path has no worker
                 # to register robots later, so it has to happen here.
                 await self.robot_repo.mark_seen(latest_by_robot)

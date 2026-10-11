@@ -3,12 +3,13 @@ API v1 routes — Robot command dispatch and status management.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_role, verify_api_key, verify_console_access
+from app.config import get_settings
 from app.database import get_db
 from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
@@ -17,6 +18,7 @@ from app.services.command_service import CommandService
 from app.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/api/v1", tags=["commands"])
 
@@ -54,9 +56,20 @@ async def _claim_pending_commands(robot_id: int, db: AsyncSession) -> list[dict]
     Each candidate is claimed with a conditional ``UPDATE ... WHERE
     status='PENDING'``, so when several pollers race for the same command
     exactly one wins and the losers move on to the next.
+
+    Delivery is at-least-once. Commands this robot claimed more than
+    ``command_redelivery_seconds`` ago and never acknowledged come back too:
+    the claim committed, but the response carrying them may never have
+    arrived. The robot de-duplicates by id, and re-acknowledging is a no-op.
     """
     repo = CommandRepository(db)
-    claimed: list[dict] = []
+    redeliver_before = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.command_redelivery_seconds
+    )
+    claimed: list[dict] = [
+        {"id": record.id, "command_type": record.command_type, "payload": record.payload}
+        for record in await repo.get_unacknowledged(robot_id, redeliver_before)
+    ]
 
     while True:
         record = await repo.get_next_pending(robot_id)
@@ -100,21 +113,8 @@ async def claim_commands(
 
     POST rather than GET: this mutates state. A GET that dispatches commands
     breaks the safe-method contract — any crawler, prefetcher, or retrying
-    proxy would silently consume the robot's command queue.
-    """
-    return await _claim_pending_commands(robot_id, db)
-
-
-@router.get("/commands/{robot_id}", deprecated=True)
-async def get_commands(
-    robot_id: int,
-    db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
-):
-    """Deprecated alias for ``POST /commands/{robot_id}/claim``.
-
-    Kept so already-deployed simulators keep working through a rollout; new
-    clients should use the POST endpoint.
+    proxy would silently consume the robot's command queue. (The old
+    ``GET /commands/{robot_id}`` alias did exactly that and has been removed.)
     """
     return await _claim_pending_commands(robot_id, db)
 
