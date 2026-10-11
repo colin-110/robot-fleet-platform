@@ -76,7 +76,7 @@ describe("RobotCard", () => {
     await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
     expect(axios.post).toHaveBeenCalledWith(
       "/api/v1/commands/7",
-      { command_type: "RETURN_TO_BASE" },
+      { command_type: "RETURN_TO_BASE", idempotency_key: expect.any(String) },
       { headers: { "X-Console-Ticket": "v1.console.9999999999.abc.sig" } },
     );
     // The ingest key must never reach the browser.
@@ -89,14 +89,34 @@ describe("RobotCard", () => {
 
     await user.click(screen.getByRole("button", { name: "Emergency Stop" }));
     await waitFor(() =>
-      expect(axios.post.mock.calls[0][1]).toEqual({ command_type: "EMERGENCY_STOP" }),
+      expect(axios.post.mock.calls[0][1]).toMatchObject({ command_type: "EMERGENCY_STOP" }),
     );
 
     rerender(<RobotCard robot={robot({ status: "STOPPED" })} />);
     await user.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() =>
-      expect(axios.post.mock.calls[1][1]).toEqual({ command_type: "RESUME" }),
+      expect(axios.post.mock.calls[1][1]).toMatchObject({ command_type: "RESUME" }),
     );
+  });
+
+  // The key is what lets the backend collapse a resent request into the
+  // command it already queued, so it has to differ between real clicks.
+  it("sends a fresh idempotency key with each click", async () => {
+    const user = userEvent.setup();
+    render(<RobotCard robot={robot()} />);
+
+    await user.click(screen.getByRole("button", { name: "Return to Base" }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Return to Base" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Return to Base" }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+
+    const [first, second] = axios.post.mock.calls.map((call) => call[1].idempotency_key);
+    expect(first).toMatch(/^[0-9a-f-]{32,36}$/);
+    expect(second).toMatch(/^[0-9a-f-]{32,36}$/);
+    expect(first).not.toBe(second);
   });
 
   // Guards against double-dispatch: the command API is idempotent, but the

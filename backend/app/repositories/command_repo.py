@@ -36,6 +36,26 @@ class CommandRepository:
         result = await self.db.execute(stmt)
         return result.scalars().first()
 
+    async def get_unacknowledged(
+        self, robot_id: int, dispatched_before: datetime
+    ) -> list[RobotCommand]:
+        """DISPATCHED commands the robot never acknowledged, oldest first.
+
+        Dispatched before ``dispatched_before``, so a command claimed a moment
+        ago, which the robot is still working through, is not handed out twice.
+        """
+        stmt = (
+            select(RobotCommand)
+            .where(
+                RobotCommand.robot_id == robot_id,
+                RobotCommand.status == "DISPATCHED",
+                RobotCommand.dispatched_at < dispatched_before,
+            )
+            .order_by(RobotCommand.created_at.asc())
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     # ── Atomic Dispatch ─────────────────────────────────────────────
 
     async def try_dispatch(self, command_id: str, now: datetime | None = None) -> bool:

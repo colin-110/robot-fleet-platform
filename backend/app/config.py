@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # "redis" publishes every broadcast via XADD and a background XREAD loop
     # consumes it — correct when multiple API instances each need every
     # message, which is the whole point of Redis Streams here. A single
-    # instance (Render's free tier) has no other instance to synchronize
+    # instance (the free-tier EC2 host) has no other instance to synchronize
     # with, and broadcasting on every telemetry reading from a continuously
     # ingesting fleet turns into real, metered Redis command volume for no
     # benefit. "direct" calls the same in-process fan-out immediately instead
@@ -153,6 +153,13 @@ class Settings(BaseSettings):
     # clock would otherwise poison time-bucketed analytics, so a reading dated
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
+
+    # A command a robot claimed but never acknowledged is handed out again on
+    # its next claim once this long has passed. Claiming flips PENDING to
+    # DISPATCHED before the response is sent, so a claim response lost in
+    # transit would otherwise strand the command in DISPATCHED for good.
+    # Robots de-duplicate by command id.
+    command_redelivery_seconds: int = 30
 
     # Max entries retained in the telemetry Redis Stream. Redis trims the
     # oldest beyond this — including entries a consumer group has not yet

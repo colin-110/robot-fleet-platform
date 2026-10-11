@@ -1,7 +1,7 @@
-# Actual production topology for the single free-tier EC2 instance.
+# Production topology for the single free-tier EC2 instance.
 #
-# Deliberately smaller than docker-compose.aws.yml: no worker, no Prometheus,
-# no frontend container (Vercel serves that). Just backend + simulator,
+# Deliberately smaller than the local docker-compose.yml: no worker, no
+# Prometheus, no frontend container (Vercel serves that). Just backend + simulator,
 # fronted by nginx + Let's Encrypt running directly on the host (not in
 # Compose) for HTTPS. Postgres and Redis are external managed free tiers
 # (Neon, Upstash) - their URLs come from .env on the host, not in this repo.

@@ -32,6 +32,7 @@ class EventCreate(BaseModel):
 
     robot_id: int
     message: str
+    idempotency_key: str | None = None
 
 
 class EventResponse(BaseModel):

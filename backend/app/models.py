@@ -119,7 +119,12 @@ class Telemetry(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),)
+    # Unique, not just indexed: a robot cannot take two readings at the same
+    # instant, so (robot_id, timestamp) is the reading's natural identity.
+    # Every write path inserts with ON CONFLICT DO NOTHING against it, which
+    # makes a retried POST, a worker redelivery after a crash between COMMIT
+    # and XACK, or a re-queued buffer flush land each reading exactly once.
+    __table_args__ = (Index("uq_telemetry_robot_timestamp", "robot_id", "timestamp", unique=True),)
 
     def __repr__(self) -> str:
         return (
@@ -134,6 +139,10 @@ class Event(Base):
     id = Column(Integer, primary_key=True, index=True)
     robot_id = Column(Integer, index=True, nullable=False)
     message = Column(String(512), nullable=False)
+    # Optional, client-chosen. Scoped per robot like RobotCommand's key, so a
+    # retried POST /events returns the original row instead of logging the
+    # event twice. NULLs never conflict, so keyless clients behave as before.
+    idempotency_key = Column(String(128), nullable=True)
     timestamp = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -142,7 +151,10 @@ class Event(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),)
+    __table_args__ = (
+        Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),
+        UniqueConstraint("robot_id", "idempotency_key", name="uix_events_robot_id_idempotency_key"),
+    )
 
 
 class User(Base):

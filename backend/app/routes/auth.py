@@ -18,6 +18,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal, current_principal, verify_read_access
@@ -166,6 +167,11 @@ async def bootstrap_admin_user() -> None:
             )
     except asyncio.CancelledError:
         raise
+    except IntegrityError:
+        # Every uvicorn worker runs this at startup. Several can see the empty
+        # table at once; the first insert wins and the rest hit the unique
+        # username. The account exists, which is all this function promises.
+        logger.info("Bootstrap admin already created by another worker.")
     except Exception:
         # A failed bootstrap must not stop the app from booting; the operator
         # can create the account by hand, and the log says what happened.
