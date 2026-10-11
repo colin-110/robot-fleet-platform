@@ -4,8 +4,8 @@ Telemetry retention pruning.
 Shared between the worker's loop (``worker.py``'s ``db_pruner_task``) and a
 loop the backend runs on its own (``main.py``'s lifespan). The backend needs
 its own copy of this because the worker is an optional, separately-deployed
-process — a deployment that skips it (this app's free-tier Render path, which
-has no worker at all) would otherwise never prune anything. Telemetry grew
+process — a deployment that skips it (this app's free-tier EC2 deployment,
+which has no worker at all) would otherwise never prune anything. Telemetry grew
 unbounded until it hit Neon's free-tier storage quota, at which point every
 INSERT started failing with ``DiskFullError`` and ingestion silently stopped
 for hours before anyone noticed.
