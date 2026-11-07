@@ -1,10 +1,8 @@
 """No reading is lost or stored twice.
 
-Covers the three pieces that make that true together:
-
 - every reading carries its device timestamp, which identifies it;
-- the Redis-stream path skips readings already queued;
-- every response tells the robot which readings are stored (``ack``).
+- the Redis-stream path skips readings already queued, and fails the request
+  instead of dropping readings when Redis is down.
 """
 
 import os
@@ -15,7 +13,7 @@ import pytest_asyncio
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
 
-from app import durability, telemetry_stream
+from app import telemetry_stream
 from app.config import get_settings
 from app.models import Telemetry
 from app.websocket_manager import manager
@@ -41,12 +39,6 @@ def iso(value: datetime) -> str:
 
 async def row_count(db) -> int:
     return (await db.execute(select(func.count()).select_from(Telemetry))).scalar_one()
-
-
-@pytest.fixture
-def test_sessions(monkeypatch):
-    """Point background writers at the per-test session factory."""
-    monkeypatch.setattr(durability, "AsyncSessionLocal", TestSessionLocal)
 
 
 # ── Identity ────────────────────────────────────────────────────────
@@ -135,35 +127,3 @@ async def test_queued_ingest_fans_out_locally_without_the_redis_listener(client,
     await client.post("/api/v1/telemetry", json=reading())
 
     assert len(shown) == 1
-
-
-# ── Acknowledgements ────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_direct_write_acks_the_stored_reading(client):
-    response = await client.post(
-        "/api/v1/telemetry/batch", json=[reading(offset_s=0), reading(offset_s=5)]
-    )
-
-    ack = response.json()["ack"]
-    assert ack["server"] == durability.BOOT_ID
-    assert ack["durable_until"] == {"1": iso(T0 + timedelta(seconds=5))}
-
-
-@pytest.mark.asyncio
-async def test_a_duplicate_is_acked_as_stored(client):
-    await client.post("/api/v1/telemetry", json=reading())
-    retry = await client.post("/api/v1/telemetry", json=reading())
-
-    assert retry.json()["ack"]["durable_until"] == {"1": iso(T0)}
-
-
-@pytest.mark.asyncio
-async def test_watermarks_are_seeded_from_the_roster(client, test_sessions):
-    await client.post("/api/v1/telemetry", json=reading(robot_id=4, offset_s=7))
-    durability.reset()
-
-    await durability.load()
-
-    assert durability.durable_until(4) == T0 + timedelta(seconds=7)

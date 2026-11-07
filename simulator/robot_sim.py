@@ -291,49 +291,34 @@ def _parse_ts(value: str) -> datetime:
 
 
 class Outbox:
-    """Readings kept until the server confirms they are stored.
+    """Readings kept until the server has accepted them.
 
-    Every response carries an ``ack`` with the server's id and, per robot, a
-    ``durable_until`` timestamp. A reading is dropped once that server has
-    accepted it and the watermark covers it. If the server id changes (it
-    restarted and may have lost readings it was still holding), everything
-    not yet confirmed is sent again. The server skips duplicates, so
-    resending is safe.
+    A reading stays here until a POST containing it succeeds, so a failed
+    upload or an unreachable server costs nothing but a retry. The server
+    skips readings it already has, so resending is safe.
     """
 
     MAX_PER_ROBOT = 5000
 
     def __init__(self) -> None:
-        # robot_id -> timestamp -> {"payload": ..., "server": id or None}
+        # robot_id -> timestamp -> payload
         self._entries: dict[int, dict[str, dict]] = {}
         self.generated = 0
-        self.resent = 0
         self.dropped = 0
 
     def add(self, payload: dict) -> None:
         entries = self._entries.setdefault(payload["robot_id"], {})
-        entries[payload["timestamp"]] = {"payload": payload, "server": None}
+        entries[payload["timestamp"]] = payload
         self.generated += 1
         if len(entries) > self.MAX_PER_ROBOT:
             entries.pop(next(iter(entries)))
             self.dropped += 1
 
     def unsent(self) -> list[dict]:
-        return [
-            entry["payload"]
-            for entries in self._entries.values()
-            for entry in entries.values()
-            if entry["server"] is None
-        ]
-
-    def mark_sent(self, payloads: list[dict], server: str) -> None:
-        for payload in payloads:
-            entry = self._entries.get(payload["robot_id"], {}).get(payload["timestamp"])
-            if entry is not None:
-                entry["server"] = server
+        return [payload for entries in self._entries.values() for payload in entries.values()]
 
     def confirm(self, payloads: list[dict]) -> None:
-        """Forget readings known to be stored."""
+        """Forget readings the server accepted."""
         for payload in payloads:
             self._entries.get(payload["robot_id"], {}).pop(payload["timestamp"], None)
 
@@ -342,32 +327,8 @@ class Outbox:
         self.confirm(payloads)
         self.dropped += len(payloads)
 
-    def apply_ack(self, ack: dict) -> None:
-        server = ack["server"]
-        for robot_raw, until_raw in ack.get("durable_until", {}).items():
-            if not until_raw:
-                continue
-            until = _parse_ts(until_raw)
-            entries = self._entries.get(int(robot_raw), {})
-            for ts in [
-                ts
-                for ts, entry in entries.items()
-                if entry["server"] == server and _parse_ts(ts) <= until
-            ]:
-                del entries[ts]
-
-        # Anything accepted by a different server id may have been lost.
-        for entries in self._entries.values():
-            for entry in entries.values():
-                if entry["server"] is not None and entry["server"] != server:
-                    entry["server"] = None
-                    self.resent += 1
-
     def pending_count(self) -> int:
         return sum(len(entries) for entries in self._entries.values())
-
-    def unsent_count(self) -> int:
-        return len(self.unsent())
 
 
 class PermanentRejection(Exception):
@@ -1056,9 +1017,7 @@ async def telemetry_batcher(
             for start in range(0, len(items), MAX_PER_REQUEST):
                 chunk = items[start : start + MAX_PER_REQUEST]
                 try:
-                    body = await post_telemetry(
-                        client, batch_url, chunk, post_timeout_s, headers=headers
-                    )
+                    await post_telemetry(client, batch_url, chunk, post_timeout_s, headers=headers)
                 except PermanentRejection as exc:
                     safe_print(f"[BATCHER] Readings rejected, dropping {len(chunk)}: {exc}")
                     outbox.discard(chunk)
@@ -1069,13 +1028,7 @@ async def telemetry_batcher(
                     retry_at = time.monotonic() + backoff
                     backoff = min(backoff * 2, 30.0)
                     return
-                ack = body.get("ack")
-                if ack:
-                    outbox.mark_sent(chunk, ack["server"])
-                    outbox.apply_ack(ack)
-                else:
-                    # A server without acks: treat a 2xx as stored.
-                    outbox.confirm(chunk)
+                outbox.confirm(chunk)
         backoff = 1.0
 
     while True:
@@ -1089,7 +1042,7 @@ async def telemetry_batcher(
             if new_since_flush >= MAX_BATCH:
                 await flush()
         except asyncio.TimeoutError:
-            if outbox.unsent_count():
+            if outbox.pending_count():
                 await flush()
         except asyncio.CancelledError:
             break
@@ -1199,8 +1152,8 @@ async def main_async(args, worker_index=0, total_workers=1):
             pass
         finally:
             safe_print(
-                f"[OUTBOX] generated={outbox.generated} unconfirmed={outbox.pending_count()} "
-                f"unsent={outbox.unsent_count()} resent={outbox.resent} dropped={outbox.dropped}"
+                f"[OUTBOX] generated={outbox.generated} unsent={outbox.pending_count()} "
+                f"dropped={outbox.dropped}"
             )
             dispatcher_task.cancel()
             batcher_task.cancel()

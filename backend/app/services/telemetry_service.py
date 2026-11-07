@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import durability, telemetry_stream
+from app import telemetry_stream
 from app.config import get_settings
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository, persist
@@ -109,19 +109,17 @@ class TelemetryService:
     async def ingest(self, data: TelemetryCreate, background_tasks: BackgroundTasks = None) -> dict:
         """Ingest one reading. Same paths as ``ingest_batch``."""
         mode, stored = await self._ingest([data], background_tasks)
-        ack = durability.ack([data.robot_id])
         if mode == "queued":
-            return {"message": "Telemetry queued in Redis", "ack": ack}
+            return {"message": "Telemetry queued in Redis"}
         if not stored:
-            return {"message": "Telemetry already received", "ack": ack}
-        return {"message": "Telemetry received", "ack": ack}
+            return {"message": "Telemetry already received"}
+        return {"message": "Telemetry received"}
 
     async def ingest_batch(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None
     ) -> dict:
         """Ingest a batch of readings."""
         mode, stored = await self._ingest(data, background_tasks)
-        ack = durability.ack(d.robot_id for d in data)
         if mode == "queued":
             message = f"{len(stored)} telemetry readings queued in Redis"
         else:
@@ -129,7 +127,7 @@ class TelemetryService:
         duplicates = len(data) - len(stored)
         if duplicates:
             message += f", {duplicates} already stored"
-        return {"message": message, "ack": ack}
+        return {"message": message}
 
     async def _ingest(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks | None
@@ -151,7 +149,6 @@ class TelemetryService:
             # Awaited, not a background task: the response tells the robot the
             # readings are safe, so they must be on the stream first.
             queued = await telemetry_stream.enqueue([_reading_to_dict(d, ts) for d, ts in rows])
-            durability.mark_stored((d.robot_id, ts) for d, ts in rows)
             if settings.websocket_backend == "direct":
                 # The Redis listener is off in this mode, so fan out here.
                 await self._broadcast(queued, background_tasks)
@@ -159,7 +156,6 @@ class TelemetryService:
 
         inserted = await persist(self.repo.db, rows)
         await self.repo.db.commit()
-        durability.mark_stored((d.robot_id, ts) for d, ts in rows)
 
         # Only new rows are broadcast, so a retried upload is not shown twice.
         await self._broadcast([_telemetry_to_broadcast_dict(t) for t in inserted], background_tasks)

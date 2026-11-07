@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import device_keys, durability
+from app import device_keys
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
@@ -66,13 +66,6 @@ async def lifespan(app: FastAPI):
         logger.info("Loaded device keys for %d robots", loaded)
     except Exception:
         logger.exception("Could not load device keys at startup")
-
-    try:
-        await durability.load()
-    except Exception:
-        # Robots just keep unconfirmed readings a little longer.
-        logger.exception("Could not load stored-reading watermarks at startup")
-    logger.info("Server id %s", durability.BOOT_ID)
 
     # A single instance updates its own cache when keys change. Several
     # instances need a periodic reload so a revocation reaches all of them.
