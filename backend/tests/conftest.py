@@ -25,7 +25,6 @@ from sqlalchemy.pool import NullPool
 
 from app import device_keys, durability, telemetry_buffer
 from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
-from app.cache import cache
 from app.config import get_settings
 from app.database import Base, get_db
 from app.main import app
@@ -84,10 +83,6 @@ TestSessionLocal = sessionmaker(
 # so pin the buffer off regardless of the ambient environment.
 get_settings().opt_redis_buffer = False
 
-# The read-through cache is mocked with an in-memory dict below, but several
-# tests assert on freshly computed values, so keep it off by default.
-get_settings().opt_read_cache = False
-
 
 async def override_get_db():
     """Dependency override that yields a test database session."""
@@ -117,7 +112,6 @@ def setup_database():
         async with test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
-        await cache.clear()
         device_keys.reset()
         durability.reset()
         telemetry_buffer._pending.clear()
@@ -133,9 +127,8 @@ def setup_database():
 
 @pytest.fixture(autouse=True)
 def mock_redis(monkeypatch):
-    """Mock Redis so tests don't need a live broadcast/cache backend."""
+    """Mock Redis so tests don't need a live broadcast backend."""
     from app import middleware
-    from app.cache import cache
     from app.websocket_manager import manager
 
     async def mock_broadcast(*args, **kwargs):
@@ -143,22 +136,6 @@ def mock_redis(monkeypatch):
 
     monkeypatch.setattr(manager, "broadcast", mock_broadcast)
     monkeypatch.setattr(middleware, "get_redis", lambda: None)
-
-    # In-memory mock for cache
-    _store = {}
-
-    async def mock_get(key):
-        return _store.get(key)
-
-    async def mock_set(key, value, ttl_seconds=5.0):
-        _store[key] = value
-
-    async def mock_clear():
-        _store.clear()
-
-    monkeypatch.setattr(cache, "get", mock_get)
-    monkeypatch.setattr(cache, "set", mock_set)
-    monkeypatch.setattr(cache, "clear", mock_clear)
 
 
 @pytest_asyncio.fixture

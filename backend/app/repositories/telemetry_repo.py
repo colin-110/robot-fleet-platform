@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.models import Telemetry
 from app.repositories.robot_repo import RobotRepository, latest_seen
@@ -21,15 +20,28 @@ from app.schemas import TelemetryCreate
 async def persist(
     db: AsyncSession, rows: list[tuple[TelemetryCreate, datetime]]
 ) -> list[Telemetry]:
-    """The one write path for telemetry: insert readings and update the roster.
+    """The one write path for telemetry: insert, register robots, update state.
 
     Used by direct ingest, the deferred-write flush and the worker, so all
     three skip duplicates and register robots the same way. Both statements
     run in the caller's transaction; the caller commits.
     """
     inserted = await TelemetryRepository(db).insert_many(rows)
-    await RobotRepository(db).mark_seen(latest_seen((d.robot_id, ts) for d, ts in rows))
+    robots = RobotRepository(db)
+    await robots.mark_seen(latest_seen((d.robot_id, ts) for d, ts in rows))
+    await robots.upsert_state(_latest_readings(rows))
     return inserted
+
+
+def _latest_readings(rows: list[tuple[TelemetryCreate, datetime]]) -> list[dict]:
+    """The newest reading per robot, as robot_state values."""
+    newest: dict[int, tuple[TelemetryCreate, datetime]] = {}
+    for data, ts in rows:
+        if data.robot_id not in newest or ts > newest[data.robot_id][1]:
+            newest[data.robot_id] = (data, ts)
+    return [
+        {**data.model_dump(exclude={"timestamp"}), "timestamp": ts} for data, ts in newest.values()
+    ]
 
 
 class TelemetryRepository:
@@ -67,55 +79,6 @@ class TelemetryRepository:
         stmt = select(Telemetry).order_by(Telemetry.id.desc()).offset(skip).limit(limit)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
-
-    async def get_recent_per_robot(
-        self, per_robot_limit: int = 30, window_minutes: int = 15
-    ) -> dict[int, list[Telemetry]]:
-        """
-        Return the most recent *per_robot_limit* rows **per robot**.
-
-        Only rows within the last *window_minutes* are considered.  This keeps
-        the query bounded to a small, index-friendly tail of the table instead
-        of scanning/sorting the entire telemetry history, which grows without
-        bound while the fleet is running.  Robots that have not reported within
-        the window are treated as gone from the current fleet.
-        """
-        # Use a window function to avoid N+1 queries.  The WHERE clause limits
-        # the scan to the recent tail of the table (uses the timestamp index),
-        # so the query cost stays flat as history grows.
-        subq = (
-            select(
-                Telemetry,
-                func.row_number()
-                .over(partition_by=Telemetry.robot_id, order_by=Telemetry.timestamp.desc())
-                .label("rn"),
-            )
-            .where(
-                Telemetry.timestamp > func.now() - text(f"INTERVAL '{int(window_minutes)} minutes'")
-            )
-            .subquery()
-        )
-
-        telemetry_alias = aliased(Telemetry, subq)
-        stmt = (
-            select(telemetry_alias)
-            .where(subq.c.rn <= per_robot_limit)
-            .order_by(telemetry_alias.robot_id, telemetry_alias.timestamp.desc())
-        )
-
-        result = await self.db.execute(stmt)
-        rows = result.scalars().all()
-
-        grouped: dict[int, list[Telemetry]] = {}
-        for row in rows:
-            grouped.setdefault(row.robot_id, []).append(row)
-
-        for rid in grouped:
-            grouped[rid] = list(reversed(grouped[rid]))  # oldest first
-
-        return grouped
-
-    # ── Analytics ───────────────────────────────────────────────────
 
     async def get_fleet_health_trend(self, limit_minutes: int = 20) -> list[dict]:
         """Calculates fleet health trend over the last limit_minutes by grouping by minute."""

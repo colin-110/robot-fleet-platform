@@ -132,10 +132,6 @@ class Settings(BaseSettings):
     # and rendered OFFLINE - rather than disappearing from the fleet entirely.
     fleet_window_minutes: int = 15
 
-    # Rows of history per robot used to derive status and extrapolate battery
-    # drain rate.
-    fleet_history_per_robot: int = 30
-
     # ── Ingest ──────────────────────────────────────────────────────
 
     # Devices may report their own measurement time, which is what makes
@@ -164,11 +160,6 @@ class Settings(BaseSettings):
     # worker running to persist it), versus INSERT + COMMIT on the request
     # path. Production on EC2 runs with this off and no worker.
     opt_redis_buffer: bool = True
-
-    # Read path: Redis read-through cache in front of fleet-status and
-    # analytics aggregation, versus recomputing on every request. Off in
-    # production to keep Upstash command volume down.
-    opt_read_cache: bool = True
 
     # ── Derived / validated ─────────────────────────────────────────
 

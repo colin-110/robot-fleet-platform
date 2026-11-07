@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.robot_service import _health, summarize_robot_history
+from app.services.robot_service import _health, summarize_state
 
 
 class Row:
@@ -34,6 +34,7 @@ class Row:
             "motor_health": 90.0,
             "sensor_health": 90.0,
             "network_health": 90.0,
+            "battery_drain_per_min": None,
         }
         for key, value in {**defaults, **overrides}.items():
             setattr(self, key, value)
@@ -66,15 +67,13 @@ def test_a_dead_component_is_not_rendered_as_healthy():
     This is the failure mode the whole roster design exists to prevent: not
     "shows nothing" but "confidently shows the opposite".
     """
-    summary = summarize_robot_history(
-        [
-            Row(
-                battery_health=0.0,
-                motor_health=0.0,
-                sensor_health=0.0,
-                network_health=0.0,
-            )
-        ]
+    summary = summarize_state(
+        Row(
+            battery_health=0.0,
+            motor_health=0.0,
+            sensor_health=0.0,
+            network_health=0.0,
+        )
     )
 
     assert summary["battery_health"] == 0.0
@@ -84,22 +83,20 @@ def test_a_dead_component_is_not_rendered_as_healthy():
 
 
 def test_one_failed_component_among_healthy_ones_survives():
-    summary = summarize_robot_history([Row(motor_health=0.0)])
+    summary = summarize_state(Row(motor_health=0.0))
 
     assert summary["motor_health"] == 0.0
     assert summary["battery_health"] == 90.0
 
 
 def test_absent_component_readings_default_to_full_health():
-    summary = summarize_robot_history(
-        [
-            Row(
-                battery_health=None,
-                motor_health=None,
-                sensor_health=None,
-                network_health=None,
-            )
-        ]
+    summary = summarize_state(
+        Row(
+            battery_health=None,
+            motor_health=None,
+            sensor_health=None,
+            network_health=None,
+        )
     )
 
     assert summary["battery_health"] == 100.0

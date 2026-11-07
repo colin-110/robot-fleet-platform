@@ -48,7 +48,6 @@ These two pick between the full stack and the single-instance stack production r
 | Flag | `true` (local default) | `false` (production on EC2) |
 | :--- | :--- | :--- |
 | `OPT_REDIS_BUFFER` | `XADD` to a Redis Stream; the worker persists in batches | `INSERT` on the request path; no worker needed |
-| `OPT_READ_CACHE` | Redis read-through cache, 10 s TTL | Recompute the aggregation per request (fewer Upstash commands) |
 
 ---
 
@@ -64,7 +63,7 @@ Viewer --HTTPS--> Vercel (static dashboard)
                                    '--> Upstash (Redis)
 ```
 
-There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false` and `OPT_READ_CACHE=false`, plus `DEFER_WRITES_WITHOUT_VIEWERS=true` so Neon gets idle windows long enough to suspend. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
+There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false`, plus `DEFER_WRITES_WITHOUT_VIEWERS=true` so Neon gets idle windows long enough to suspend. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
 
 The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
 

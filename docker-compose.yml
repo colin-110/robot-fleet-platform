@@ -11,10 +11,9 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       - PYTHONPATH=.
-      # Full local stack: Redis Stream buffer + worker + read cache. Set both
-      # to false to mimic the production (EC2, no worker) shape.
+      # Full local stack: Redis Stream buffer + worker. Set to false to mimic
+      # the production (EC2, no worker) shape.
       - OPT_REDIS_BUFFER=${OPT_REDIS_BUFFER:-true}
-      - OPT_READ_CACHE=${OPT_READ_CACHE:-true}
     restart: unless-stopped
     depends_on:
       db:

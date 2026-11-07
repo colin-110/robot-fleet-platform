@@ -1,8 +1,8 @@
 """
 Robot service - fleet status derivation.
 
-Fleet status is the roster LEFT JOINed onto recent telemetry, not a GROUP BY
-over recent telemetry. The distinction matters: deriving the fleet from
+Fleet status is the roster LEFT JOINed onto each robot's latest state, not a
+GROUP BY over recent telemetry. The distinction matters: deriving the fleet from
 telemetry alone means a robot that stops reporting eventually falls outside the
 query window and silently disappears from the dashboard. A monitoring system
 that quietly forgets a unit it can no longer see has failed at its one job, so
@@ -14,11 +14,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cache import cache
 from app.config import get_settings
 from app.models import Robot
 from app.repositories.robot_repo import RobotRepository
-from app.repositories.telemetry_repo import TelemetryRepository
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -72,71 +70,55 @@ def _health(value: float | None) -> float:
     return round(value, 2) if value is not None else 100.0
 
 
-def _estimate_runtime_minutes(rows, latest_ts: datetime) -> float | None:
-    """Extrapolate remaining runtime from the observed battery drain rate.
+def _estimate_runtime_minutes(state) -> float | None:
+    """Remaining runtime from the smoothed drain rate.
 
-    Returns ``None`` when the history spans no time or the battery is not
-    falling - a flat or charging battery has no meaningful time-to-empty, and
-    dividing by a zero span would raise.
+    None when there is no rate yet or the battery is not falling: a flat or
+    charging battery has no meaningful time-to-empty.
     """
-    if len(rows) < 2:
+    drain = getattr(state, "battery_drain_per_min", None)
+    if drain is None or drain <= 0:
         return None
-
-    oldest = rows[0]
-    latest = rows[-1]
-    span_minutes = (latest_ts - _as_utc(oldest.timestamp)).total_seconds() / 60.0
-    drained = oldest.battery - latest.battery
-
-    if span_minutes <= 0 or drained <= 0:
-        return None
-
-    drain_per_minute = drained / span_minutes
-    effective_battery = latest.battery * ((latest.battery_health or 100.0) / 100.0)
-    return round(effective_battery / drain_per_minute, 1)
+    effective_battery = state.battery * ((state.battery_health or 100.0) / 100.0)
+    return round(effective_battery / drain, 1)
 
 
-def summarize_robot_history(rows) -> dict | None:
-    """Condense a robot's recent telemetry into a single status payload."""
-    if not rows:
-        return None
-
-    # Rows arrive oldest-first from the window-function query.
-    latest = rows[-1]
+def summarize_state(state) -> dict:
+    """Turn a robot's latest state into a status payload."""
     now = datetime.now(timezone.utc)
-    ts = _as_utc(latest.timestamp)
+    ts = _as_utc(state.timestamp)
     age_seconds = (now - ts).total_seconds()
 
     return {
-        "robot_id": latest.robot_id,
-        "battery": round(latest.battery, 2),
-        "temperature": round(latest.temperature, 2),
-        "speed": round(latest.speed, 2),
-        "status": _derive_status(latest, age_seconds),
-        "mission_id": latest.mission_id,
-        "mission_type": latest.mission_type,
-        "mission_progress": round(latest.mission_progress, 1)
-        if latest.mission_progress is not None
+        "robot_id": state.robot_id,
+        "battery": round(state.battery, 2),
+        "temperature": round(state.temperature, 2),
+        "speed": round(state.speed, 2),
+        "status": _derive_status(state, age_seconds),
+        "mission_id": state.mission_id,
+        "mission_type": state.mission_type,
+        "mission_progress": round(state.mission_progress, 1)
+        if state.mission_progress is not None
         else None,
-        "mission_start_time": _iso(_as_utc(latest.mission_start_time)),
+        "mission_start_time": _iso(_as_utc(state.mission_start_time)),
         "last_seen": _iso(ts),
-        "runtime_remaining_minutes": _estimate_runtime_minutes(rows, ts),
-        "x": round(latest.x, 2) if latest.x is not None else 0.0,
-        "y": round(latest.y, 2) if latest.y is not None else 0.0,
-        "battery_health": _health(latest.battery_health),
-        "motor_health": _health(latest.motor_health),
-        "sensor_health": _health(latest.sensor_health),
-        "network_health": _health(latest.network_health),
+        "runtime_remaining_minutes": _estimate_runtime_minutes(state),
+        "x": round(state.x, 2) if state.x is not None else 0.0,
+        "y": round(state.y, 2) if state.y is not None else 0.0,
+        "battery_health": _health(state.battery_health),
+        "motor_health": _health(state.motor_health),
+        "sensor_health": _health(state.sensor_health),
+        "network_health": _health(state.network_health),
     }
 
 
 def summarize_silent_robot(robot: Robot) -> dict:
     """Build a status payload for a registered robot with no recent telemetry.
 
-    Telemetry-derived fields are zeroed rather than guessed: the last reading
-    is outside the query window, and showing a stale battery percentage next to
-    an OFFLINE badge invites an operator to trust a number that may be hours
-    old. ``last_seen`` carries the roster's record of when it was last heard
-    from, which is the only fact still known about it.
+    Telemetry-derived fields are zeroed rather than guessed: showing a stale
+    battery percentage next to an OFFLINE badge invites an operator to trust a
+    number that may be hours old. ``last_seen`` carries the roster's record of
+    when it was last heard from, which is the only fact still known about it.
     """
     return {
         "robot_id": robot.id,
@@ -160,52 +142,22 @@ def summarize_silent_robot(robot: Robot) -> dict:
 
 
 class RobotService:
-    """Derives current fleet status from the roster plus recent telemetry."""
+    """Fleet status: the roster joined with each robot's latest state."""
 
     def __init__(self, db: AsyncSession) -> None:
-        self.repo = TelemetryRepository(db)
         self.robots = RobotRepository(db)
 
     async def get_fleet_status(self, limit: int = 50, skip: int = 0) -> list[dict]:
         """Return the current status summary for every registered robot.
 
-        Cached briefly to keep repeated dashboard polls off the database.
+        One row per robot from robot_state, so the cost does not depend on how
+        much telemetry history exists. A robot whose latest reading is older
+        than the fleet window is listed as silent rather than with stale values.
         """
-        cache_key = f"fleet_status_summary_{limit}_{skip}"
-        use_cache = settings.opt_read_cache
-
-        if use_cache:
-            cached = await cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        registered = await self.robots.list_active()
-        grouped = await self.repo.get_recent_per_robot(
-            per_robot_limit=settings.fleet_history_per_robot,
-            window_minutes=settings.fleet_window_minutes,
-        )
-
-        summaries: dict[int, dict] = {}
-
-        for robot in registered:
-            rows = grouped.get(robot.id)
-            summary = summarize_robot_history(rows) if rows else None
-            summaries[robot.id] = summary or summarize_silent_robot(robot)
-
-        # A robot reporting telemetry before the worker has registered it would
-        # otherwise be invisible for one batch. Include it rather than drop it.
-        for robot_id, rows in grouped.items():
-            if robot_id not in summaries:
-                summary = summarize_robot_history(rows)
-                if summary is not None:
-                    summaries[robot_id] = summary
-
-        robots = [summaries[robot_id] for robot_id in sorted(summaries)]
-        offline = sum(1 for r in robots if r["status"] == OFFLINE)
-        logger.debug("Fleet status computed for %d robots (%d offline)", len(robots), offline)
-
-        paginated = robots[skip : skip + limit]
-
-        if use_cache:
-            await cache.set(cache_key, paginated, ttl_seconds=10.0)
-        return paginated
+        window = settings.fleet_window_minutes * 60
+        now = datetime.now(timezone.utc)
+        robots = []
+        for robot, state in await self.robots.list_with_state(limit=limit, skip=skip):
+            fresh = state is not None and (now - _as_utc(state.timestamp)).total_seconds() <= window
+            robots.append(summarize_state(state) if fresh else summarize_silent_robot(robot))
+        return robots

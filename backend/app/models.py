@@ -60,6 +60,38 @@ class Robot(Base):
         return f"<Robot id={self.id} name={self.name!r} active={self.is_active}>"
 
 
+class RobotState(Base):
+    """The latest reading per robot, kept current on every write.
+
+    Fleet status and analytics read this (one row per robot) instead of
+    recomputing state from telemetry history on each request. Only a newer
+    reading replaces the row, so late or resent readings never move a robot
+    backwards.
+    """
+
+    __tablename__ = "robot_state"
+
+    robot_id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    battery = Column(Float, nullable=False)
+    temperature = Column(Float, nullable=False)
+    speed = Column(Float, nullable=False)
+    status = Column(String(32), nullable=True)
+    mission_id = Column(String(64), nullable=True)
+    mission_type = Column(String(32), nullable=True)
+    mission_progress = Column(Float, nullable=True)
+    mission_start_time = Column(DateTime(timezone=True), nullable=True)
+    battery_health = Column(Float, nullable=True)
+    motor_health = Column(Float, nullable=True)
+    sensor_health = Column(Float, nullable=True)
+    network_health = Column(Float, nullable=True)
+    x = Column(Float, nullable=True)
+    y = Column(Float, nullable=True)
+    # Smoothed battery drain in percent per minute; NULL until two readings
+    # have been seen or after the battery starts charging.
+    battery_drain_per_min = Column(Float, nullable=True)
+
+
 class RobotCommand(Base):
     __tablename__ = "robot_commands"
 
