@@ -18,6 +18,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
 | `TELEMETRY_API_KEY` | *required* | Master key for the `X-API-Key` header (ingest, robot-facing command polling) and the signing key that console tickets are derived from |
 | `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
+| `DEFERRED_FLUSH_SECONDS` | `600` | How often deferred writes are flushed. Deferred writes assume a single API process, since the buffer and acknowledgements are per process |
 | `ALLOW_SHARED_INGEST_KEY` | `true` | Whether the master key still works on robot endpoints. Set `false` once every robot has a device key |
 | `DEVICE_KEY_REFRESH_SECONDS` | `60` | How often each instance reloads device keys (multi-instance only), which bounds how long a revoked key keeps working on other instances |
 | `AUTH_MODE` | `open` (`required` in production) | `open` = public console, no accounts; `required` = every console action needs a JWT |

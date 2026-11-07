@@ -286,22 +286,116 @@ async def provision_device_keys(
     safe_print(f"[KEYS] Issued device keys for {len(robot_ids)} robots.")
 
 
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class Outbox:
+    """Readings kept until the server confirms they are stored.
+
+    Every response carries an ``ack`` with the server's id and, per robot, a
+    ``durable_until`` timestamp. A reading is dropped once that server has
+    accepted it and the watermark covers it. If the server id changes (it
+    restarted and may have lost readings it was still holding), everything
+    not yet confirmed is sent again. The server skips duplicates, so
+    resending is safe.
+    """
+
+    MAX_PER_ROBOT = 5000
+
+    def __init__(self) -> None:
+        # robot_id -> timestamp -> {"payload": ..., "server": id or None}
+        self._entries: dict[int, dict[str, dict]] = {}
+        self.generated = 0
+        self.resent = 0
+        self.dropped = 0
+
+    def add(self, payload: dict) -> None:
+        entries = self._entries.setdefault(payload["robot_id"], {})
+        entries[payload["timestamp"]] = {"payload": payload, "server": None}
+        self.generated += 1
+        if len(entries) > self.MAX_PER_ROBOT:
+            entries.pop(next(iter(entries)))
+            self.dropped += 1
+
+    def unsent(self) -> list[dict]:
+        return [
+            entry["payload"]
+            for entries in self._entries.values()
+            for entry in entries.values()
+            if entry["server"] is None
+        ]
+
+    def mark_sent(self, payloads: list[dict], server: str) -> None:
+        for payload in payloads:
+            entry = self._entries.get(payload["robot_id"], {}).get(payload["timestamp"])
+            if entry is not None:
+                entry["server"] = server
+
+    def confirm(self, payloads: list[dict]) -> None:
+        """Forget readings known to be stored."""
+        for payload in payloads:
+            self._entries.get(payload["robot_id"], {}).pop(payload["timestamp"], None)
+
+    def discard(self, payloads: list[dict]) -> None:
+        """Forget readings the server rejected outright (they would never succeed)."""
+        self.confirm(payloads)
+        self.dropped += len(payloads)
+
+    def apply_ack(self, ack: dict) -> None:
+        server = ack["server"]
+        for robot_raw, until_raw in ack.get("durable_until", {}).items():
+            if not until_raw:
+                continue
+            until = _parse_ts(until_raw)
+            entries = self._entries.get(int(robot_raw), {})
+            for ts in [
+                ts
+                for ts, entry in entries.items()
+                if entry["server"] == server and _parse_ts(ts) <= until
+            ]:
+                del entries[ts]
+
+        # Anything accepted by a different server id may have been lost.
+        for entries in self._entries.values():
+            for entry in entries.values():
+                if entry["server"] is not None and entry["server"] != server:
+                    entry["server"] = None
+                    self.resent += 1
+
+    def pending_count(self) -> int:
+        return sum(len(entries) for entries in self._entries.values())
+
+    def unsent_count(self) -> int:
+        return len(self.unsent())
+
+
+class PermanentRejection(Exception):
+    """The server refused the readings in a way a retry will not fix."""
+
+
 async def post_telemetry(
     client: aiohttp.ClientSession,
     api_url: str,
     payload: dict | list,
     timeout_s: float,
     headers: dict | None = None,
-):
+) -> dict:
+    """POST readings and return the response body."""
     for attempt in range(3):
         try:
-            response = await client.post(api_url, json=payload, timeout=timeout_s, headers=headers)
-            response.raise_for_status()
-            return
+            async with client.post(
+                api_url, json=payload, timeout=timeout_s, headers=headers
+            ) as response:
+                if 400 <= response.status < 500 and response.status not in (408, 429):
+                    raise PermanentRejection(f"{response.status}: {await response.text()}")
+                response.raise_for_status()
+                return await response.json()
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if attempt == 2:
                 raise exc
             await asyncio.sleep(0.5 * (2**attempt))
+    raise RuntimeError("unreachable")
 
 
 # Consecutive zero-viewer polls required before actually going idle. At
@@ -920,49 +1014,82 @@ async def emit_telemetry(
 
 
 async def telemetry_batcher(
-    client: aiohttp.ClientSession, api_url: str, post_timeout_s: float, queue: asyncio.Queue
+    client: aiohttp.ClientSession,
+    api_url: str,
+    post_timeout_s: float,
+    queue: asyncio.Queue,
+    outbox: Outbox,
 ):
-    # Flush at 50 queued readings or 1s after the oldest unflushed one,
-    # whichever comes first. Measuring from the oldest item (not the newest)
-    # keeps status changes from waiting several seconds behind a busy queue.
+    # Flush at 50 new readings or 1s after the oldest unflushed one, whichever
+    # comes first. Measuring from the oldest item (not the newest) keeps status
+    # changes from waiting several seconds behind a busy queue.
     MAX_BATCH = 50
     MAX_WAIT_S = 1.0
+    MAX_PER_REQUEST = 500
 
-    batch = []
     base_api = get_base_api(api_url)
     batch_url = f"{base_api}/telemetry/batch"
     deadline = None
+    new_since_flush = 0
+    retry_at = 0.0
+    backoff = 1.0
 
     async def flush():
-        nonlocal deadline
+        nonlocal deadline, new_since_flush, retry_at, backoff
+        deadline = None
+        new_since_flush = 0
+        if time.monotonic() < retry_at:
+            return
+
+        unsent = outbox.unsent()
         # A device key only covers its own robot, so with device keys the
-        # batch goes out as one request per robot.
+        # readings go out as one request per robot.
         if _device_keys:
             groups: dict[int, list] = {}
-            for item in batch:
+            for item in unsent:
                 groups.setdefault(item["robot_id"], []).append(item)
             requests = [(items, key_headers(rid)) for rid, items in groups.items()]
         else:
-            requests = [(list(batch), None)]
+            requests = [(unsent, None)]
+
         for items, headers in requests:
-            try:
-                await post_telemetry(client, batch_url, items, post_timeout_s, headers=headers)
-            except Exception as exc:
-                safe_print(f"[BATCHER] POST failed: {exc}")
-        batch.clear()
-        deadline = None
+            for start in range(0, len(items), MAX_PER_REQUEST):
+                chunk = items[start : start + MAX_PER_REQUEST]
+                try:
+                    body = await post_telemetry(
+                        client, batch_url, chunk, post_timeout_s, headers=headers
+                    )
+                except PermanentRejection as exc:
+                    safe_print(f"[BATCHER] Readings rejected, dropping {len(chunk)}: {exc}")
+                    outbox.discard(chunk)
+                    continue
+                except Exception as exc:
+                    # Kept in the outbox and retried with backoff.
+                    safe_print(f"[BATCHER] POST failed, will retry: {exc!r}")
+                    retry_at = time.monotonic() + backoff
+                    backoff = min(backoff * 2, 30.0)
+                    return
+                ack = body.get("ack")
+                if ack:
+                    outbox.mark_sent(chunk, ack["server"])
+                    outbox.apply_ack(ack)
+                else:
+                    # A server without acks: treat a 2xx as stored.
+                    outbox.confirm(chunk)
+        backoff = 1.0
 
     while True:
         timeout = MAX_WAIT_S if deadline is None else max(0.0, deadline - time.monotonic())
         try:
             payload = await asyncio.wait_for(queue.get(), timeout=timeout)
-            batch.append(payload)
+            outbox.add(payload)
+            new_since_flush += 1
             if deadline is None:
                 deadline = time.monotonic() + MAX_WAIT_S
-            if len(batch) >= MAX_BATCH:
+            if new_since_flush >= MAX_BATCH:
                 await flush()
         except asyncio.TimeoutError:
-            if batch:
+            if outbox.unsent_count():
                 await flush()
         except asyncio.CancelledError:
             break
@@ -1033,8 +1160,9 @@ async def main_async(args, worker_index=0, total_workers=1):
             )
 
         # Start batcher
+        outbox = Outbox()
         batcher_task = asyncio.create_task(
-            telemetry_batcher(client, args.api_url, args.timeout, telemetry_queue)
+            telemetry_batcher(client, args.api_url, args.timeout, telemetry_queue, outbox)
         )
 
         viewer_state = ViewerState()
@@ -1070,6 +1198,10 @@ async def main_async(args, worker_index=0, total_workers=1):
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
+            safe_print(
+                f"[OUTBOX] generated={outbox.generated} unconfirmed={outbox.pending_count()} "
+                f"unsent={outbox.unsent_count()} resent={outbox.resent} dropped={outbox.dropped}"
+            )
             dispatcher_task.cancel()
             batcher_task.cancel()
             if viewer_task is not None:

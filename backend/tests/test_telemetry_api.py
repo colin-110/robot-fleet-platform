@@ -52,9 +52,10 @@ async def test_get_telemetry_empty(client: AsyncClient):
 async def test_get_telemetry_with_data(client: AsyncClient, sample_telemetry: dict):
     """Test GET /telemetry after ingestion."""
     headers = {"X-API-Key": "test-api-key"}
-    # Insert 3 rows
-    for _ in range(3):
-        await client.post("/api/v1/telemetry", json=sample_telemetry, headers=headers)
+    # Insert 3 rows, each a distinct reading
+    for second in range(3):
+        reading = {**sample_telemetry, "timestamp": f"2026-11-01T12:00:0{second}Z"}
+        await client.post("/api/v1/telemetry", json=reading, headers=headers)
 
     response = await client.get("/api/v1/telemetry?limit=2", headers=headers)
     assert response.status_code == 200

@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import device_keys, telemetry_buffer
+from app import device_keys, durability, telemetry_buffer
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
@@ -68,6 +68,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Could not load device keys at startup")
 
+    try:
+        await durability.load()
+    except Exception:
+        # Robots just keep unconfirmed readings a little longer.
+        logger.exception("Could not load stored-reading watermarks at startup")
+    logger.info("Server id %s", durability.BOOT_ID)
+
     # A single instance updates its own cache when keys change. Several
     # instances need a periodic reload so a revocation reaches all of them.
     key_refresh_task = (
@@ -94,10 +101,11 @@ async def lifespan(app: FastAPI):
         )
     )
 
-    # Direct-ingest path only. 10 minutes is well past Neon's 5-minute
-    # suspend timeout, so the database can sleep between flushes.
+    # Direct-ingest path only.
     buffer_flush_task = (
-        asyncio.create_task(telemetry_buffer.flush_loop(interval_seconds=600))
+        asyncio.create_task(
+            telemetry_buffer.flush_loop(interval_seconds=settings.deferred_flush_seconds)
+        )
         if not settings.opt_redis_buffer and settings.defer_writes_without_viewers
         else None
     )

@@ -30,17 +30,20 @@ def buffered(monkeypatch):
 @pytest.fixture
 def captured_broadcasts(monkeypatch):
     """Record what would have been XADDed, without needing a live Redis."""
+    from app import telemetry_stream
     from app.websocket_manager import manager
 
     sent = []
 
-    async def fake_broadcast(payload, *_args, **_kwargs):
-        sent.append(payload)
+    async def fake_enqueue(payloads, *_args, **_kwargs):
+        sent.extend(payloads)
+        return payloads
 
     async def fake_broadcast_batch(payloads, *_args, **_kwargs):
         sent.extend(payloads)
 
-    monkeypatch.setattr(manager, "broadcast", fake_broadcast)
+    monkeypatch.setattr(telemetry_stream, "enqueue", fake_enqueue)
+    # The direct path broadcasts instead of queueing.
     monkeypatch.setattr(manager, "broadcast_batch", fake_broadcast_batch)
     return sent
 

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app import device_keys
+from app import device_keys, durability, telemetry_buffer
 from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.cache import cache
 from app.config import get_settings
@@ -119,6 +119,8 @@ def setup_database():
             await conn.run_sync(Base.metadata.create_all)
         await cache.clear()
         device_keys.reset()
+        durability.reset()
+        telemetry_buffer._pending.clear()
 
     async def drop_db():
         async with test_engine.begin() as conn:
@@ -181,11 +183,18 @@ async def db():
         yield session
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 @pytest.fixture
 def sample_telemetry():
     """Sample telemetry payload for POST requests."""
     return {
         "robot_id": 1,
+        "timestamp": _now_iso(),
         "battery": 85.5,
         "temperature": 38.2,
         "speed": 1.1,
@@ -207,6 +216,7 @@ def sample_telemetry_low_battery():
     """Telemetry payload with critically low battery."""
     return {
         "robot_id": 2,
+        "timestamp": _now_iso(),
         "battery": 8.0,
         "temperature": 42.5,
         "speed": 0.0,
@@ -225,6 +235,7 @@ def sample_telemetry_overheating():
     """Telemetry payload with dangerous temperature."""
     return {
         "robot_id": 3,
+        "timestamp": _now_iso(),
         "battery": 60.0,
         "temperature": 105.0,
         "speed": 0.5,

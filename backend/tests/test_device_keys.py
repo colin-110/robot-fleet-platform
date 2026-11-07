@@ -4,6 +4,9 @@
 tests remove that override so the real key check runs.
 """
 
+import itertools
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from sqlalchemy import select
 
@@ -36,8 +39,19 @@ def real_fleet_auth(monkeypatch):
         app.dependency_overrides[verify_fleet_key] = override
 
 
+_tick = itertools.count()
+
+
 def reading(robot_id: int) -> dict:
-    return {"robot_id": robot_id, "battery": 80.0, "temperature": 35.0, "speed": 1.0}
+    """A reading with a unique timestamp, so repeated posts are not duplicates."""
+    ts = datetime.now(timezone.utc) + timedelta(microseconds=next(_tick))
+    return {
+        "robot_id": robot_id,
+        "battery": 80.0,
+        "temperature": 35.0,
+        "speed": 1.0,
+        "timestamp": ts.isoformat(),
+    }
 
 
 async def issue_key(client, robot_id: int) -> str:

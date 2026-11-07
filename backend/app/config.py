@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # while a dashboard is connected; otherwise telemetry_buffer.py batches it
     # in memory so a serverless Postgres (Neon) gets idle time to suspend.
     defer_writes_without_viewers: bool = False
+    # How often deferred writes are flushed. Longer than Neon's 5-minute
+    # suspend timeout so the database can sleep between flushes.
+    deferred_flush_seconds: int = 600
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"

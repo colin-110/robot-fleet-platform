@@ -27,6 +27,7 @@ from app.services.telemetry_service import resolve_timestamp
 def _payload(robot_id: int, **overrides) -> dict:
     payload = {
         "robot_id": robot_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "battery": 80.0,
         "temperature": 30.0,
         "speed": 1.0,
@@ -203,16 +204,16 @@ async def test_device_timestamp_is_honoured(client: AsyncClient, db):
 
 
 @pytest.mark.asyncio
-async def test_missing_timestamp_falls_back_to_server_time(client: AsyncClient, db):
-    """Without a device timestamp the server stamps on arrival."""
-    before = datetime.now(timezone.utc) - timedelta(seconds=5)
-    await client.post("/api/v1/telemetry", json=_payload(22))
+async def test_missing_timestamp_is_rejected(client: AsyncClient, db):
+    """The device timestamp identifies a reading, so it is required."""
+    payload = _payload(22)
+    del payload["timestamp"]
 
+    response = await client.post("/api/v1/telemetry", json=payload)
+
+    assert response.status_code == 422
     result = await db.execute(select(Telemetry).where(Telemetry.robot_id == 22))
-    stored = result.scalars().first()
-
-    assert stored is not None
-    assert stored.timestamp >= before
+    assert result.scalars().first() is None
 
 
 def test_future_timestamp_is_clamped():

@@ -12,6 +12,7 @@ from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app import telemetry_stream
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.logging_config import configure_logging
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-STREAM_KEY = "telemetry_stream"
+STREAM_KEY = telemetry_stream.STREAM_KEY
 CONSUMER_GROUP = "db_writers"
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
 

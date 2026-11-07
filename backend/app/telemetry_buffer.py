@@ -34,11 +34,29 @@ async def buffer(rows: list[tuple[TelemetryCreate, datetime]]) -> None:
         _pending.extend(rows)
 
 
-async def flush() -> int:
-    """Write everything buffered since the last flush in one batch."""
+async def take() -> list[tuple[TelemetryCreate, datetime]]:
+    """Remove and return everything buffered."""
     async with _lock:
         rows, _pending[:] = list(_pending), []
+    return rows
 
+
+async def restore(rows: list[tuple[TelemetryCreate, datetime]]) -> None:
+    """Put rows back at the front after a failed write, keeping their order."""
+    if rows:
+        async with _lock:
+            _pending[:0] = rows
+
+
+def oldest_pending(robot_id: int) -> datetime | None:
+    """Earliest buffered timestamp for a robot, or None if nothing is buffered."""
+    stamps = [ts for data, ts in _pending if data.robot_id == robot_id]
+    return min(stamps) if stamps else None
+
+
+async def flush() -> int:
+    """Write everything buffered since the last flush in one batch."""
+    rows = await take()
     if not rows:
         return 0
 
@@ -48,10 +66,12 @@ async def flush() -> int:
     except Exception:
         # Put the rows back so the next flush retries them. Writes skip
         # readings already stored, so a partial earlier attempt is harmless.
-        async with _lock:
-            _pending[:0] = rows
+        await restore(rows)
         raise
 
+    from app import durability
+
+    durability.mark_stored((d.robot_id, ts) for d, ts in rows)
     return len(rows)
 
 
