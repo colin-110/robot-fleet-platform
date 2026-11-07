@@ -15,10 +15,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
+from app import command_timeouts
+from app.command_timeouts import scan_for_timeouts
 from app.models import Robot, RobotCommand
-from app.worker import scan_for_timeouts
 from tests.conftest import TestSessionLocal
 
 
@@ -158,7 +159,7 @@ async def test_a_genuinely_stalled_command_still_times_out_during_a_race(db, mon
 async def test_no_timeout_is_broadcast_for_a_command_that_completed(db, monkeypatch):
     """A broadcast cannot be retracted, so nothing may be announced that the
     database did not actually commit."""
-    from app import worker
+    from app import command_timeouts
 
     await _seed_robot(db)
     cmd_id = await _expired_command(db)
@@ -168,7 +169,7 @@ async def test_no_timeout_is_broadcast_for_a_command_that_completed(db, monkeypa
     async def record(payload, *_args, **_kwargs):
         broadcasts.append(payload)
 
-    monkeypatch.setattr(worker.manager, "broadcast", record)
+    monkeypatch.setattr(command_timeouts.manager, "broadcast", record)
     _race_after_select(db, monkeypatch, cmd_id)
 
     await scan_for_timeouts(db)
@@ -179,7 +180,7 @@ async def test_no_timeout_is_broadcast_for_a_command_that_completed(db, monkeypa
 
 @pytest.mark.asyncio
 async def test_timeout_is_broadcast_once_it_is_committed(db, monkeypatch):
-    from app import worker
+    from app import command_timeouts
 
     await _seed_robot(db)
     cmd_id = await _expired_command(db)
@@ -189,10 +190,32 @@ async def test_timeout_is_broadcast_once_it_is_committed(db, monkeypatch):
     async def record(payload, *_args, **_kwargs):
         broadcasts.append(payload)
 
-    monkeypatch.setattr(worker.manager, "broadcast", record)
+    monkeypatch.setattr(command_timeouts.manager, "broadcast", record)
 
     await scan_for_timeouts(db)
 
     assert len(broadcasts) == 1
     assert broadcasts[0]["status"] == "TIMEOUT"
     assert broadcasts[0]["command_id"] == cmd_id
+
+
+@pytest.mark.asyncio
+async def test_a_round_runs_the_scan(db):
+    cmd_id = await _expired_command(db, status="EXECUTING")
+
+    assert await command_timeouts.run_once(TestSessionLocal) is True
+
+    assert await _status_of(db, cmd_id) == "TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_a_round_is_skipped_while_another_process_holds_the_lock(db):
+    cmd_id = await _expired_command(db, status="EXECUTING")
+
+    async with TestSessionLocal() as other, other.begin():
+        await other.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": command_timeouts._LOCK_KEY}
+        )
+        assert await command_timeouts.run_once(TestSessionLocal) is False
+
+    assert await _status_of(db, cmd_id) == "EXECUTING"

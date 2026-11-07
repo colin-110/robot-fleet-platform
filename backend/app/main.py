@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import device_keys
 from app.auth import is_valid_api_key, verify_api_key
+from app.command_timeouts import timeout_loop
 from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
@@ -80,8 +81,11 @@ async def lifespan(app: FastAPI):
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
+    timeout_task = asyncio.create_task(timeout_loop())
+
     yield
 
+    timeout_task.cancel()
     if manager._listener_task:
         manager._listener_task.cancel()
     if key_refresh_task:
