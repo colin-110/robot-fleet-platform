@@ -53,11 +53,10 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
     # Database schema is created by prestart.py before workers start.
     logger.info(
-        "FleetOps started  env=%s  auth=%s  cors=%s  optimizations=%s",
+        "FleetOps started  env=%s  auth=%s  cors=%s",
         settings.app_env,
         settings.resolved_auth_mode,
         settings.cors_origin_list,
-        settings.optimization_flags(),
     )
 
     await bootstrap_admin_user()
@@ -158,10 +157,10 @@ def liveness():
 # which read as "service down" to monitors even though it was healthy.
 @app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["health"])
 async def health_check():
-    """Health check - verifies database connectivity and reports active flags.
+    """Health check - verifies database connectivity.
 
-    Unlike /health/live this queries the database, so don't point a frequent
-    poller at it on a serverless Postgres that bills for awake time.
+    Unlike /health/live this queries the database, so frequent pollers such as
+    the Docker healthcheck should use /health/live instead.
     """
     db_status = "healthy"
     try:
@@ -174,7 +173,6 @@ async def health_check():
     return HealthResponse(
         status="ok" if db_status == "healthy" else "degraded",
         database=db_status,
-        optimizations=settings.optimization_flags(),
     )
 
 

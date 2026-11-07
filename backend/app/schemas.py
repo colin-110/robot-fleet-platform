@@ -219,8 +219,6 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     version: str = "1.0.0"
-    # Active opt_* flags, so you can see which deployment shape is running.
-    optimizations: dict[str, bool] = {}
 
 
 class DeviceKeyResponse(BaseModel):

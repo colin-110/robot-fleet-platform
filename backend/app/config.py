@@ -3,10 +3,6 @@ Centralized application configuration using pydantic-settings.
 
 All settings are loaded from environment variables (or .env file).
 The app will fail fast at startup if required settings are missing.
-
-The two ``opt_*`` flags pick between deployment shapes: the full stack (Redis
-Stream buffer + worker + read cache) and the single-instance free-tier stack
-(direct writes, no worker, no cache) that production runs.
 """
 
 import logging
@@ -139,8 +135,6 @@ class Settings(BaseSettings):
     # a key to every browser; set true for any deployment with real data.
     require_auth_for_reads: bool = False
 
-    # ── Deployment-shape flags ──────────────────────────────────────
-
     # ── Derived / validated ─────────────────────────────────────────
 
     @property
@@ -220,16 +214,6 @@ class Settings(BaseSettings):
         if self.resolved_auth_mode not in ("open", "required"):
             raise ValueError(f"AUTH_MODE must be 'open' or 'required', got {self.auth_mode!r}.")
         return self
-
-    def optimization_flags(self) -> dict[str, bool]:
-        """Current state of every ``opt_*`` flag, for /health and startup logs."""
-        # type(self).model_fields, not self.model_fields: Pydantic 2.11
-        # deprecated instance access, and this runs on every /health scrape.
-        return {
-            name: getattr(self, name)
-            for name in sorted(type(self).model_fields)
-            if name.startswith("opt_")
-        }
 
 
 @lru_cache

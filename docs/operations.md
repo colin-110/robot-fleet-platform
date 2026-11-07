@@ -112,7 +112,7 @@ Each request also produces a structured access line (`http_method`, `http_path`,
 There is no metrics stack. The signals that exist are:
 
 - `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
-- `GET /health` - checks the database and reports the active `opt_*` flags. Use it by hand; don't poll it against Neon.
+- `GET /health` - checks the database. Use it by hand; Docker polls `/health/live`.
 - Structured logs (above).
 
 Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
