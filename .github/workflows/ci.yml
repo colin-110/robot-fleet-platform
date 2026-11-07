@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15-alpine
+        image: timescale/timescaledb:2.17.2-pg16
         env:
           POSTGRES_USER: test_user
           POSTGRES_PASSWORD: test_password
@@ -58,6 +58,14 @@ jobs:
           cd .. && ruff check simulator
       - name: Check formatting (ruff format)
         run: cd backend && ruff format --check app tests
+      # Applies every migration to a real TimescaleDB, so a migration that only
+      # works on plain Postgres (or not at all) fails here, not on deploy.
+      - name: Check migrations
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db
+          TELEMETRY_API_KEY: ci-test-key-not-a-real-secret
+          PYTHONPATH: .
+        run: cd backend && alembic upgrade head && alembic downgrade base && alembic upgrade head
       - name: Run Pytest
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db

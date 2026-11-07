@@ -67,11 +67,6 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
 
-    # A float, not an int: a fleet that ingests continuously (no viewer-gating)
-    # can outgrow a small free-tier database well within 24 hours, so a
-    # sub-day window is a real deployment need, not just a testing knob.
-    retention_days: float = 1
-
     # Direct-write path only. When on, telemetry is written immediately only
     # while a dashboard is connected; otherwise telemetry_buffer.py batches it
     # in memory so a serverless Postgres (Neon) gets idle time to suspend.

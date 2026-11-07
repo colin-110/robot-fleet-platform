@@ -113,12 +113,12 @@ class TelemetryService:
         mode, stored = await self._ingest([data], background_tasks)
         ack = durability.ack([data.robot_id])
         if mode == "queued":
-            return {"message": "Telemetry queued in Redis", "id": 0, "ack": ack}
+            return {"message": "Telemetry queued in Redis", "ack": ack}
         if mode == "buffered":
-            return {"message": "Telemetry buffered", "id": 0, "ack": ack}
+            return {"message": "Telemetry buffered", "ack": ack}
         if not stored:
-            return {"message": "Telemetry already received", "id": None, "ack": ack}
-        return {"message": "Telemetry received", "id": stored[0].id, "ack": ack}
+            return {"message": "Telemetry already received", "ack": ack}
+        return {"message": "Telemetry received", "ack": ack}
 
     async def ingest_batch(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None

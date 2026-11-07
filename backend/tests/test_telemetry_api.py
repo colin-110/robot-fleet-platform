@@ -17,7 +17,7 @@ async def test_ingest_telemetry(client: AsyncClient, sample_telemetry: dict):
     assert response.status_code == 200
     data = response.json()
     assert "message" in data
-    assert "id" in data
+    assert data["message"] == "Telemetry received"
 
 
 @pytest.mark.asyncio

@@ -25,7 +25,6 @@ from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, RequestIDMiddleware
-from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
@@ -88,19 +87,6 @@ async def lifespan(app: FastAPI):
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
-    # Retention pruning runs here as well as in the worker, because a
-    # deployment without a worker would otherwise never prune. The Redis lock
-    # only matters when several instances share the work. A 30-minute
-    # interval keeps peak storage close to retention_days even when that
-    # window is under a day.
-    pruner_task = asyncio.create_task(
-        prune_loop(
-            use_redis_lock=settings.websocket_backend == "redis",
-            initial_delay_seconds=300,
-            interval_seconds=1800,
-        )
-    )
-
     # Direct-ingest path only.
     buffer_flush_task = (
         asyncio.create_task(
@@ -114,7 +100,6 @@ async def lifespan(app: FastAPI):
 
     if manager._listener_task:
         manager._listener_task.cancel()
-    pruner_task.cancel()
     if buffer_flush_task:
         buffer_flush_task.cancel()
     if key_refresh_task:

@@ -75,7 +75,6 @@ class TelemetryCreate(BaseModel):
 class TelemetryResponse(BaseModel):
     """Telemetry response payload."""
 
-    id: int
     robot_id: int
     battery: float
     temperature: float

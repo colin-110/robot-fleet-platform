@@ -130,12 +130,14 @@ class RobotCommand(Base):
 class Telemetry(Base):
     __tablename__ = "telemetry"
 
-    id = Column(Integer, primary_key=True)
-    robot_id = Column(Integer, index=True, nullable=False)
+    # A reading is identified by its robot and device timestamp. That pair is
+    # the primary key, which makes retried uploads idempotent and is what
+    # TimescaleDB requires of a hypertable's unique keys.
+    robot_id = Column(Integer, primary_key=True)
     battery = Column(Float, nullable=False)
     temperature = Column(Float, nullable=False)
     speed = Column(Float, nullable=False)
-    status = Column(String(32), nullable=True, index=True)
+    status = Column(String(32), nullable=True)
     mission_id = Column(String(64), nullable=True)
     mission_type = Column(String(32), nullable=True)
     mission_progress = Column(Float, nullable=True)
@@ -146,21 +148,11 @@ class Telemetry(Base):
     network_health = Column(Float, nullable=True)
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
-    timestamp = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        index=True,
-        default=lambda: datetime.now(timezone.utc),
-        server_default=func.now(),
-    )
-
-    # Unique: a reading is identified by its robot and measurement time, which
-    # is what makes retried uploads and replayed worker batches idempotent.
-    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp", unique=True),)
+    timestamp = Column(DateTime(timezone=True), primary_key=True)
 
     def __repr__(self) -> str:
         return (
-            f"<Telemetry id={self.id} robot_id={self.robot_id} "
+            f"<Telemetry robot_id={self.robot_id} timestamp={self.timestamp} "
             f"status={self.status!r} battery={self.battery}>"
         )
 

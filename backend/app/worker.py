@@ -18,7 +18,6 @@ from app.database import AsyncSessionLocal
 from app.logging_config import configure_logging
 from app.models import RobotCommand
 from app.repositories.telemetry_repo import persist
-from app.retention import prune_loop
 from app.schemas import TelemetryCreate
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
@@ -185,23 +184,6 @@ async def redis_to_db_sync_worker():
             retry_delay = min(max_retry_delay, retry_delay * 2.0)
 
 
-async def db_pruner_task():
-    """Daily database telemetry pruner to maintain bounded disk footprint.
-
-    Thin wrapper around app.retention.prune_loop - see that module for the
-    actual pruning logic, which the backend also runs on its own so a
-    deployment with no separate worker process still prunes.
-    """
-    logger.info(
-        "Starting database retention pruner (retention=%d days)...", settings.retention_days
-    )
-    try:
-        await prune_loop(use_redis_lock=True, initial_delay_seconds=0, interval_seconds=86400)
-    except asyncio.CancelledError:
-        logger.info("Retention pruner task cancelled. Exiting.")
-        raise
-
-
 async def scan_for_timeouts(session: AsyncSession):
     """Expire commands that ran past their deadline.
 
@@ -321,10 +303,9 @@ async def main():
     # Add a small delay to allow database/redis to finish booting in docker
     await asyncio.sleep(2.0)
 
-    # Run sync worker, retention pruner, timeout scanner, and health heartbeat concurrently
+    # Run the sync worker, timeout scanner and health heartbeat concurrently
     tasks = [
         asyncio.create_task(redis_to_db_sync_worker()),
-        asyncio.create_task(db_pruner_task()),
         asyncio.create_task(timeout_worker_loop()),
         asyncio.create_task(health_heartbeat()),
         asyncio.create_task(report_stream_depth()),

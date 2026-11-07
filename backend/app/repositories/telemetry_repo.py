@@ -76,7 +76,7 @@ class TelemetryRepository:
 
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the *limit* most recent telemetry rows (all robots)."""
-        stmt = select(Telemetry).order_by(Telemetry.id.desc()).offset(skip).limit(limit)
+        stmt = select(Telemetry).order_by(Telemetry.timestamp.desc()).offset(skip).limit(limit)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

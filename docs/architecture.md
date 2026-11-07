@@ -21,7 +21,7 @@ graph TB
     PG["PostgreSQL 15<br/>(source of truth)"]
   end
 
-  WORKER["Async Worker<br/>(batch INSERT, retention, timeouts)"]
+  WORKER["Async Worker<br/>(batch INSERT, timeouts)"]
 
   SIM -->|"POST telemetry"| ROUTES
   DASH -->|"REST (poll)"| ROUTES
