@@ -23,8 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import telemetry_buffer
 from app.config import get_settings
 from app.models import Telemetry
-from app.repositories.robot_repo import RobotRepository
-from app.repositories.telemetry_repo import TelemetryRepository
+from app.repositories.telemetry_repo import TelemetryRepository, persist
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
 
@@ -96,127 +95,87 @@ def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
     }
 
 
+def _reading_to_dict(data: TelemetryCreate, timestamp: datetime) -> dict:
+    """JSON-ready reading with its resolved timestamp (stream and broadcast)."""
+    payload = data.model_dump(mode="json")
+    payload["timestamp"] = _to_iso(timestamp)
+    return payload
+
+
 class TelemetryService:
     """Handles telemetry ingestion, broadcast, and retrieval."""
 
     def __init__(self, db: AsyncSession) -> None:
         self.repo = TelemetryRepository(db)
-        self.robot_repo = RobotRepository(db)
 
     async def ingest(self, data: TelemetryCreate, background_tasks: BackgroundTasks = None) -> dict:
-        """Persist telemetry, broadcast to WebSocket clients, return ack."""
-        if settings.opt_redis_buffer:
-            received_at = datetime.now(timezone.utc)
-            payload = data.model_dump(mode="json")
-            payload["timestamp"] = _to_iso(resolve_timestamp(data.timestamp, received_at))
-
-            # XADD both publishes to dashboards and queues the row for the
-            # worker that writes it to PostgreSQL - one hop, not two.
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast, payload)
-            else:
-                await manager.broadcast(payload)
-
-            result = {"message": "Telemetry queued in Redis", "id": 0}
-        elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
-            telemetry = await self.repo.insert(
-                data, resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
-            )
-            # The buffered path's roster upsert lives in the worker
-            # (app/worker.py's _register_robots) because there's a worker
-            # to do it later. The direct path has no later - skip this and
-            # the robot never appears in the roster, so it never shows up
-            # in fleet status no matter how much telemetry it sends.
-            await self.robot_repo.mark_seen({telemetry.robot_id: telemetry.timestamp})
-            await self.repo.db.commit()
-
-            broadcast = _telemetry_to_broadcast_dict(telemetry)
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast, broadcast)
-            else:
-                await manager.broadcast(broadcast)
-
-            result = {"message": "Telemetry received", "id": telemetry.id}
-        else:
-            # Nobody is watching, so nobody needs this row in Postgres
-            # this instant. Buffer it and let telemetry_buffer.flush_loop
-            # write it later in a batch - see that module for why.
-            resolved_ts = resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
-            await telemetry_buffer.buffer([(data, resolved_ts)])
-
-            payload = data.model_dump(mode="json")
-            payload["timestamp"] = _to_iso(resolved_ts)
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast, payload)
-            else:
-                await manager.broadcast(payload)
-
-            result = {"message": "Telemetry buffered", "id": 0}
-        return result
+        """Ingest one reading. Same paths as ``ingest_batch``."""
+        mode, inserted = await self._ingest([data], background_tasks)
+        if mode == "queued":
+            return {"message": "Telemetry queued in Redis", "id": 0}
+        if mode == "buffered":
+            return {"message": "Telemetry buffered", "id": 0}
+        if not inserted:
+            return {"message": "Telemetry already received", "id": None}
+        return {"message": "Telemetry received", "id": inserted[0].id}
 
     async def ingest_batch(
-        self, data: list[TelemetryCreate], background_tasks: BackgroundTasks
+        self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None
     ) -> dict:
-        """Batch ingestion for high-throughput simulator pushing."""
+        """Ingest a batch of readings."""
+        mode, inserted = await self._ingest(data, background_tasks)
+        if mode == "queued":
+            return {"message": f"{len(data)} telemetry readings queued in Redis"}
+        if mode == "buffered":
+            return {"message": f"{len(data)} telemetry readings buffered"}
+        duplicates = len(data) - len(inserted)
+        message = f"{len(inserted)} telemetry readings received"
+        if duplicates:
+            message += f", {duplicates} already stored"
+        return {"message": message}
+
+    async def _ingest(
+        self, data: list[TelemetryCreate], background_tasks: BackgroundTasks | None
+    ) -> tuple[str, list[Telemetry]]:
+        """Route readings to one of three paths and broadcast them.
+
+        - ``queued``: XADD to the Redis stream; the worker persists it.
+        - ``direct``: written now, in one transaction.
+        - ``buffered``: held in memory and flushed later, because nobody is
+          watching (DEFER_WRITES_WITHOUT_VIEWERS, see telemetry_buffer.py).
+
+        Returns the path taken and, for ``direct``, the rows actually
+        inserted (duplicates of already-stored readings are skipped).
+        """
         received_at = datetime.now(timezone.utc)
+        # Resolved per reading: stamping a whole batch with one time would
+        # collapse readings taken seconds apart onto a single instant.
+        rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
 
         if settings.opt_redis_buffer:
-            payloads = []
-            for d in data:
-                payload = d.model_dump(mode="json")
-                # Resolved per reading, not once for the batch. Stamping the
-                # whole batch with one time collapses readings taken seconds
-                # apart onto a single instant, which flattens the per-minute
-                # trend buckets and zeroes the span the battery drain-rate
-                # extrapolation divides by.
-                payload["timestamp"] = _to_iso(resolve_timestamp(d.timestamp, received_at))
-                payloads.append(payload)
+            # The XADD both feeds dashboards and queues the rows for the worker.
+            await self._broadcast([_reading_to_dict(d, ts) for d, ts in rows], background_tasks)
+            return "queued", []
 
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast_batch, payloads)
-            else:
-                await manager.broadcast_batch(payloads)
-
-            result = {"message": f"{len(data)} telemetry readings queued in Redis"}
-        elif not settings.defer_writes_without_viewers or manager.connection_count > 0:
-            rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
-            telemetries = await self.repo.insert_many(rows)
-            payloads = [_telemetry_to_broadcast_dict(t) for t in telemetries]
-
-            latest_by_robot: dict[int, datetime] = {}
-            for t in telemetries:
-                if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
-                    latest_by_robot[t.robot_id] = t.timestamp
-            # See the comment in ingest() - the direct path has no worker
-            # to register robots later, so it has to happen here.
-            await self.robot_repo.mark_seen(latest_by_robot)
-            await self.repo.db.commit()
-
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast_batch, payloads)
-            else:
-                await manager.broadcast_batch(payloads)
-
-            result = {"message": f"{len(data)} telemetry readings received"}
-        else:
-            # Nobody watching - see the comment in ingest()'s buffered
-            # branch. Same trade: batched to Postgres later, broadcast now.
-            rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
+        if settings.defer_writes_without_viewers and manager.connection_count == 0:
             await telemetry_buffer.buffer(rows)
+            await self._broadcast([_reading_to_dict(d, ts) for d, ts in rows], background_tasks)
+            return "buffered", []
 
-            payloads = []
-            for d, ts in rows:
-                payload = d.model_dump(mode="json")
-                payload["timestamp"] = _to_iso(ts)
-                payloads.append(payload)
+        inserted = await persist(self.repo.db, rows)
+        await self.repo.db.commit()
+        # Only new rows are broadcast, so a retried upload is not shown twice.
+        await self._broadcast([_telemetry_to_broadcast_dict(t) for t in inserted], background_tasks)
+        return "direct", inserted
 
-            if background_tasks:
-                background_tasks.add_task(manager.broadcast_batch, payloads)
-            else:
-                await manager.broadcast_batch(payloads)
-
-            result = {"message": f"{len(data)} telemetry readings buffered"}
-        return result
+    @staticmethod
+    async def _broadcast(payloads: list[dict], background_tasks: BackgroundTasks | None) -> None:
+        if not payloads:
+            return
+        if background_tasks:
+            background_tasks.add_task(manager.broadcast_batch, payloads)
+        else:
+            await manager.broadcast_batch(payloads)
 
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the most recent telemetry rows."""

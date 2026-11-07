@@ -20,8 +20,7 @@ import logging
 from datetime import datetime
 
 from app.database import AsyncSessionLocal
-from app.repositories.robot_repo import RobotRepository
-from app.repositories.telemetry_repo import TelemetryRepository
+from app.repositories.telemetry_repo import persist
 from app.schemas import TelemetryCreate
 
 logger = logging.getLogger(__name__)
@@ -43,16 +42,15 @@ async def flush() -> int:
     if not rows:
         return 0
 
-    async with AsyncSessionLocal() as session, session.begin():
-        telemetry_repo = TelemetryRepository(session)
-        robot_repo = RobotRepository(session)
-        telemetries = await telemetry_repo.insert_many(rows)
-
-        latest_by_robot: dict[int, datetime] = {}
-        for t in telemetries:
-            if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
-                latest_by_robot[t.robot_id] = t.timestamp
-        await robot_repo.mark_seen(latest_by_robot)
+    try:
+        async with AsyncSessionLocal() as session, session.begin():
+            await persist(session, rows)
+    except Exception:
+        # Put the rows back so the next flush retries them. Writes skip
+        # readings already stored, so a partial earlier attempt is harmless.
+        async with _lock:
+            _pending[:0] = rows
+        raise
 
     return len(rows)
 

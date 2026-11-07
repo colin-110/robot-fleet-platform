@@ -122,7 +122,9 @@ class Telemetry(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),)
+    # Unique: a reading is identified by its robot and measurement time, which
+    # is what makes retried uploads and replayed worker batches idempotent.
+    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp", unique=True),)
 
     def __repr__(self) -> str:
         return (

@@ -54,6 +54,8 @@ The two Redis read modes are deliberate. The worker path uses `XREADGROUP` so th
 
 **Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. Future-dated readings beyond a configurable skew are clamped, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
 
+**Idempotent writes.** A reading is identified by its robot and device timestamp, enforced by a unique index on `(robot_id, timestamp)`. Every write path (direct ingest, the deferred-write flush and the worker) goes through one function that inserts with `ON CONFLICT DO NOTHING` and updates the roster in the same transaction. A retried upload, or a worker batch replayed after a crash between commit and `XACK`, therefore cannot create duplicate rows, and only newly stored readings are broadcast.
+
 **Idempotent command dispatch with compare-and-set transitions.** Commands move through an explicit state machine (`PENDING` to `DISPATCHED` to `ACKNOWLEDGED` to `EXECUTING` to `COMPLETED`). Both claiming a command and advancing its status are performed as a single conditional `UPDATE ... WHERE status = :expected`, so when two pollers or two status updates race, exactly one matches a row and the loser receives a `409`. Doing the validation in application code and writing afterwards would allow both writers to observe the same state and both commit. Expired commands are swept to `TIMEOUT` under a distributed Redis lock.
 
 ---

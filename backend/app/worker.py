@@ -7,16 +7,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import orjson
-from sqlalchemy import func, insert, update
+from pydantic import ValidationError
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.logging_config import configure_logging
-from app.models import RobotCommand, Telemetry
-from app.repositories.robot_repo import RobotRepository
+from app.models import RobotCommand
+from app.repositories.telemetry_repo import persist
 from app.retention import prune_loop
+from app.schemas import TelemetryCreate
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
 
@@ -30,65 +32,6 @@ CONSUMER_GROUP = "db_writers"
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
 
 
-def _payload_to_insert_dict(p: dict) -> dict:
-    """Normalize a decoded telemetry payload into a Telemetry insert row."""
-    ts_raw = p.get("timestamp") or datetime.now(timezone.utc).isoformat()
-    try:
-        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-    except ValueError:
-        ts = datetime.now(timezone.utc)
-
-    mst_raw = p.get("mission_start_time")
-    if isinstance(mst_raw, str):
-        try:
-            mst = datetime.fromisoformat(mst_raw.replace("Z", "+00:00"))
-        except ValueError:
-            mst = None
-    else:
-        mst = None
-
-    return {
-        "robot_id": p.get("robot_id", 0),
-        "battery": p.get("battery", 0.0),
-        "temperature": p.get("temperature", 0.0),
-        "speed": p.get("speed", 0.0),
-        "status": p.get("status", "UNKNOWN"),
-        "mission_id": p.get("mission_id"),
-        "mission_type": p.get("mission_type"),
-        "mission_progress": p.get("mission_progress"),
-        "mission_start_time": mst,
-        "battery_health": p.get("battery_health"),
-        "motor_health": p.get("motor_health"),
-        "sensor_health": p.get("sensor_health"),
-        "network_health": p.get("network_health"),
-        "x": p.get("x"),
-        "y": p.get("y"),
-        "timestamp": ts,
-    }
-
-
-async def _register_robots(session: AsyncSession, insert_dicts: list[dict]) -> None:
-    """Keep the robot roster in step with the telemetry just persisted.
-
-    Done here rather than on the request path deliberately: the Redis buffer
-    exists so an ingest request performs no database work, and a per-request
-    roster upsert would put it straight back. Batching it costs one extra
-    statement per batch instead of one per reading.
-
-    The roster is what lets the dashboard show a robot that has gone silent.
-    Without it the fleet list is just "whoever reported recently", and a dead
-    unit disappears instead of being flagged.
-    """
-    latest_by_robot: dict[int, datetime] = {}
-    for row in insert_dicts:
-        robot_id = row["robot_id"]
-        ts = row["timestamp"]
-        if robot_id not in latest_by_robot or ts > latest_by_robot[robot_id]:
-            latest_by_robot[robot_id] = ts
-
-    await RobotRepository(session).mark_seen(latest_by_robot)
-
-
 async def process_batch(session: AsyncSession, stream_messages: list) -> list:
     """Parse a batch of Redis-stream telemetry entries and persist them.
 
@@ -98,11 +41,12 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
     undecodable payloads are skipped, but every message id seen is returned so
     the caller can ``XACK`` the whole batch and avoid reprocessing.
 
-    The whole batch goes out as one multi-row INSERT in a single transaction:
-    one round trip per batch instead of one INSERT + COMMIT per row.
+    The batch is written with the shared ``persist`` path in one transaction.
+    Readings already stored are skipped, so replaying a batch after a crash
+    between commit and XACK cannot create duplicates.
     """
     message_ids: list = []
-    insert_dicts: list = []
+    rows: list[tuple[TelemetryCreate, datetime]] = []
 
     for msg_id, fields in stream_messages:
         message_ids.append(msg_id)
@@ -115,21 +59,24 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
             logger.warning("Failed to decode Redis payload: %s", payload_raw)
             continue
         # Only telemetry objects carry a battery reading; ignore events/commands.
-        if "battery" in decoded:
-            insert_dicts.append(_payload_to_insert_dict(decoded))
+        if "battery" not in decoded:
+            continue
+        try:
+            reading = TelemetryCreate.model_validate(decoded)
+        except ValidationError:
+            logger.warning("Skipping invalid telemetry payload: %s", payload_raw)
+            continue
+        rows.append((reading, reading.timestamp or datetime.now(timezone.utc)))
 
-    if insert_dicts:
+    if rows:
         started = time.perf_counter()
-
-        await session.execute(insert(Telemetry).values(insert_dicts))
-        await _register_robots(session, insert_dicts)
+        inserted = await persist(session, rows)
         await session.commit()
-
-        elapsed = time.perf_counter() - started
         logger.info(
-            "Persisted %d telemetry records in %.1f ms.",
-            len(insert_dicts),
-            elapsed * 1000,
+            "Persisted %d telemetry records (%d duplicates skipped) in %.1f ms.",
+            len(inserted),
+            len(rows) - len(inserted),
+            (time.perf_counter() - started) * 1000,
         )
 
     return message_ids

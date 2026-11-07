@@ -7,6 +7,7 @@ cannot distinguish a healthy robot from one that died an hour ago, because both
 produce the same thing: no rows.
 """
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import func, select, update
@@ -14,6 +15,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Robot
+
+
+def latest_seen(readings: Iterable[tuple[int, datetime]]) -> dict[int, datetime]:
+    """Newest timestamp per robot from ``(robot_id, timestamp)`` pairs."""
+    latest: dict[int, datetime] = {}
+    for robot_id, ts in readings:
+        if robot_id not in latest or ts > latest[robot_id]:
+            latest[robot_id] = ts
+    return latest
 
 
 class RobotRepository:
