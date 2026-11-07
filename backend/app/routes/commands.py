@@ -1,5 +1,5 @@
 """
-API v1 routes — Robot command dispatch and status management.
+API v1 routes - Robot command dispatch and status management.
 """
 
 import logging
@@ -34,7 +34,7 @@ async def send_command(
     Two independent checks, because they answer different questions.
     ``verify_console_access`` asks whether this *client* holds a usable
     credential (master key or console ticket). ``require_role`` asks whether
-    the *person* is allowed to drive robots — in open mode everyone is, in
+    the *person* is allowed to drive robots - in open mode everyone is, in
     required mode a viewer is not. Dropping either one would let a valid
     ticket act on behalf of a read-only account, or a signed-in operator act
     without a ticket.
@@ -65,7 +65,7 @@ async def _claim_pending_commands(robot_id: int, db: AsyncSession) -> list[dict]
 
         now = datetime.now(timezone.utc)
         if not await repo.try_dispatch(record.id, now):
-            # Another poller got it — try the next one.
+            # Another poller got it - try the next one.
             continue
 
         claimed.append(
@@ -99,7 +99,7 @@ async def claim_commands(
     """Claim pending commands for a robot, transitioning them to DISPATCHED.
 
     POST rather than GET: this mutates state. A GET that dispatches commands
-    breaks the safe-method contract — any crawler, prefetcher, or retrying
+    breaks the safe-method contract - any crawler, prefetcher, or retrying
     proxy would silently consume the robot's command queue.
     """
     return await _claim_pending_commands(robot_id, db)

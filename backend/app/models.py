@@ -28,7 +28,7 @@ class Robot(Base):
 
     This is what makes absence detectable. Deriving the fleet purely from
     recent telemetry means a robot that stops reporting eventually falls out of
-    the query window and silently disappears from the dashboard — which, for a
+    the query window and silently disappears from the dashboard - which, for a
     monitoring system, is the one failure it must never have. Registered robots
     are always listed; missing telemetry renders as OFFLINE.
 
@@ -150,7 +150,7 @@ class User(Base):
 
     Exists only when ``AUTH_MODE=required``. The hosted demo runs in ``open``
     mode with no accounts at all, because a login wall on a portfolio demo
-    means nobody clicks past it — see ``app/security.py`` for the full
+    means nobody clicks past it - see ``app/security.py`` for the full
     reasoning about why this is a mode rather than a hard requirement.
 
     Passwords are stored as bcrypt hashes. The column is sized for bcrypt's
@@ -162,7 +162,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(64), unique=True, nullable=False, index=True)
     password_hash = Column(String(128), nullable=False)
-    # viewer | operator | admin — see app.security.ROLES.
+    # viewer | operator | admin - see app.security.ROLES.
     role = Column(String(16), nullable=False, default="viewer")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

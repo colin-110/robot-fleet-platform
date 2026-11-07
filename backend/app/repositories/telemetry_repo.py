@@ -1,5 +1,5 @@
 """
-Telemetry repository — all database queries in one place.
+Telemetry repository - all database queries in one place.
 
 This replaces the pattern of loading the *entire* telemetry table into
 memory on every request.  Every method here uses targeted SQL queries
@@ -61,7 +61,7 @@ class TelemetryRepository:
         The direct (non-buffered) ingest path already pays one HTTP round
         trip per request; committing once per row inside a batch turned a
         single simulator POST into up to 50 sequential DB round trips to a
-        remote Postgres instance — slow enough to blow past the simulator's
+        remote Postgres instance - slow enough to blow past the simulator's
         own POST timeout and silently drop the whole batch. One INSERT, one
         commit, for the whole list.
 

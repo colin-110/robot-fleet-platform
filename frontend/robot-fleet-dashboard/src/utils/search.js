@@ -1,14 +1,14 @@
 /**
  * Fleet search matching.
  *
- * Lives outside App.jsx so that file exports only components — React Fast
+ * Lives outside App.jsx so that file exports only components - React Fast
  * Refresh cannot preserve state across edits in a module that mixes
  * components with other exports.
  */
 
 // Cards label robots "R1", "R7", so that is what an operator types. Matching
-// only the bare numeric id meant the single most obvious search — typing the
-// identifier printed on the card — returned nothing at all.
+// only the bare numeric id meant the single most obvious search - typing the
+// identifier printed on the card - returned nothing at all.
 const ROBOT_ID_QUERY = /^r?\s*(\d+)$/i;
 
 /**

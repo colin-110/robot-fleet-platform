@@ -1,5 +1,5 @@
 """
-Robot repository — the roster of units that should exist.
+Robot repository - the roster of units that should exist.
 
 Separating "which robots exist" from "which robots recently sent telemetry" is
 what makes absence detectable. A fleet list derived only from recent telemetry
@@ -32,8 +32,8 @@ class RobotRepository:
         """Register robots and advance their ``last_seen`` in one statement.
 
         Called by the worker as it persists each telemetry batch, not from the
-        request path — the whole point of the Redis buffer is that an ingest
-        request does no database work, and a per-request roster upsert would
+        request path: with the Redis buffer, an ingest request does no
+        database work, and a per-request roster upsert would
         put it straight back.
 
         ``last_seen`` only moves forward. A worker restart replays its pending

@@ -2,7 +2,7 @@
 Tests for fleet analytics generation.
 
 These exercise Postgres-specific SQL (``date_trunc``, ``INTERVAL`` arithmetic)
-that SQLite cannot run — which is why the suite targets a real Postgres test
+that SQLite cannot run - which is why the suite targets a real Postgres test
 database. See ``conftest.py``.
 """
 

@@ -1,5 +1,5 @@
 """
-API v1 routes — Telemetry ingestion and retrieval.
+API v1 routes - Telemetry ingestion and retrieval.
 """
 
 import logging

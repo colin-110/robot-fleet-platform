@@ -1,12 +1,12 @@
 """
-API v1 routes — sign-in, identity, and short-lived console tickets.
+API v1 routes - sign-in, identity, and short-lived console tickets.
 
 Two layers, deliberately separate:
 
 * **JWT** answers *who you are*. Only meaningful when ``AUTH_MODE=required``.
 * **Console tickets** answer *may this browser tab open a socket*. They exist
   in both modes because a WebSocket handshake cannot carry an ``Authorization``
-  header, so the credential has to ride in the URL — and a five-minute scoped
+  header, so the credential has to ride in the URL - and a five-minute scoped
   ticket is a very different thing to leak into a proxy log than either the
   master API key or a one-hour identity token.
 
@@ -47,7 +47,7 @@ _DUMMY_HASH = hash_password("timing-equalizer-not-a-real-password")
 
 @router.get("/auth/config", response_model=AuthConfigResponse)
 async def auth_config():
-    """Whether this deployment expects a login. Public by necessity — the
+    """Whether this deployment expects a login. Public by necessity - the
     dashboard has to ask before it can know what to render."""
     return AuthConfigResponse(
         auth_mode=settings.resolved_auth_mode,
@@ -122,7 +122,7 @@ async def create_console_ticket(
     without a valid token, so a ticket cannot be minted anonymously. In
     ``open`` mode it is public, matching the read endpoints beside it.
 
-    A ticket authorizes the live feed and command dispatch — never telemetry
+    A ticket authorizes the live feed and command dispatch - never telemetry
     ingest, which still requires the master key.
     """
     ticket, expires_at = issue_ticket(SCOPE_CONSOLE)
@@ -133,7 +133,7 @@ async def bootstrap_admin_user() -> None:
     """Create the initial admin account if the users table is empty.
 
     Runs at startup. Without it a fresh deployment in ``required`` mode has no
-    way in — the first account has to come from somewhere, and a migration that
+    way in - the first account has to come from somewhere, and a migration that
     hardcodes a password is worse than an env var the operator sets once.
 
     Only ever creates the *first* account, so restarting the app cannot

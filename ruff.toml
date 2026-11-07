@@ -17,8 +17,7 @@ select = [
 ]
 ignore = [
     "E501",  # line length is handled by the formatter
-    # The load-test harness and simulator deliberately catch broad exceptions:
-    # a failed request is a data point to record, not a reason to abort a
-    # benchmark run or kill a simulated robot mid-mission.
+    # The simulator deliberately catches broad exceptions: a failed request
+    # should not kill a simulated robot mid-mission.
     "BLE001",
 ]

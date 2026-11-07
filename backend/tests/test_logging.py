@@ -185,7 +185,7 @@ def test_production_defaults_to_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_request_id_is_returned_and_logged(client, caplog):
-    """The whole point: the id the caller is given is the id in the logs."""
+    """The id returned to the caller is the id in the logs."""
     with caplog.at_level(logging.INFO, logger="app.middleware"):
         response = await client.get("/api/v1/robots/status")
 
@@ -224,8 +224,8 @@ async def test_an_inbound_request_id_is_honoured(client, caplog):
 
 
 @pytest.mark.asyncio
-async def test_health_and_metrics_are_not_access_logged(client, caplog):
-    """Scraped every few seconds; logging them buries real traffic."""
+async def test_health_checks_are_not_access_logged(client, caplog):
+    """Polled every few seconds; logging them buries real traffic."""
     with caplog.at_level(logging.INFO, logger="app.middleware"):
         await client.get("/health")
 

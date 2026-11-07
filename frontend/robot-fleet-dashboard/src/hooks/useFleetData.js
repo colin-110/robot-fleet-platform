@@ -72,7 +72,7 @@ export default function useFleetData() {
   // the exhaustive-deps check without making them any more reusable.
   const refreshAll = useCallback(async () => {
     const fetchRobots = async () => {
-      // Ask for the whole fleet — the default page size used to clip it to 50.
+      // Ask for the whole fleet - the default page size used to clip it to 50.
       const response = await axios.get(`${API_PREFIX}/robots/status`, {
         params: { limit: 1000 },
       });
@@ -87,7 +87,7 @@ export default function useFleetData() {
     };
 
     // Robots gate the first paint, so fetch them first and reveal the UI as
-    // soon as they land. Analytics is heavier and must NOT block rendering —
+    // soon as they land. Analytics is heavier and must NOT block rendering -
     // fire it independently.
     try {
       await fetchRobots();
@@ -104,7 +104,7 @@ export default function useFleetData() {
    * Seed the event log with what happened before this tab existed.
    *
    * The feed is otherwise WebSocket-only, so the log started empty on every
-   * load and filled from zero — a reload looked like the fleet had gone quiet.
+   * load and filled from zero - a reload looked like the fleet had gone quiet.
    * The backend already persists events; this reads the same history the
    * socket will continue.
    */
@@ -115,7 +115,7 @@ export default function useFleetData() {
     const history = Array.isArray(response.data) ? response.data : [];
 
     // Newest first, matching the socket path, and tagged with the type the
-    // renderer expects — the REST payload has no `type` field of its own.
+    // renderer expects - the REST payload has no `type` field of its own.
     const normalized = history.map((event) => ({ ...event, type: "EVENT" }));
 
     setEvents((live) => dedupeEvents([...live, ...normalized]));
@@ -195,7 +195,7 @@ export default function useFleetData() {
     setTimeout(() => refreshAllEvent(), 0);
     // One shot, on mount only: from here the socket keeps the log current, and
     // re-reading history every poll would fight the live feed for the buffer.
-    // Deferred a tick for the same reason the snapshot above is — resolving it
+    // Deferred a tick for the same reason the snapshot above is - resolving it
     // inside the effect body would set state during the mount render.
     setTimeout(() => backfillEventsEvent().catch(console.error), 0);
     // Always re-sync the authoritative snapshot, even while the WebSocket is

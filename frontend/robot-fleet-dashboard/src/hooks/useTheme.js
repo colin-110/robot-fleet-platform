@@ -8,7 +8,7 @@ const STORAGE_KEY = "fleetops.theme";
  * An explicit choice always wins; without one the OS preference decides, and
  * dark is the fallback because that is what the console was designed against.
  * index.html runs the same resolution inline before React mounts, so the page
- * never flashes the wrong palette — keep the two in step.
+ * never flashes the wrong palette - keep the two in step.
  */
 export function resolveInitialTheme() {
   try {

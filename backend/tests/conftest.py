@@ -7,7 +7,7 @@ Postgres-specific SQL (``date_trunc``, ``INTERVAL`` arithmetic, and atomic
 CI provisions a dedicated ``fleet_test_db`` Postgres service and points
 ``DATABASE_URL`` at it (see ``.github/workflows/ci.yml``). To run locally,
 export ``DATABASE_URL`` to a throwaway Postgres database whose name contains
-``test`` — for example::
+``test`` - for example::
 
     createdb fleet_test_db
     DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fleet_test_db \
@@ -51,7 +51,7 @@ TEST_DATABASE_URL = _RAW_URL.replace("postgresql://", "postgresql+asyncpg://", 1
 # ── Resolve the Redis test instance ─────────────────────────────────
 
 # The same guard, for the same reason. ``setup_database`` calls ``cache.clear()``,
-# which is ``FLUSHDB`` — it does not remove only cache keys. Pointed at a real
+# which is ``FLUSHDB`` - it does not remove only cache keys. Pointed at a real
 # instance it would drop the telemetry stream, unacknowledged entries included,
 # along with every rate-limit bucket. Without this, the Postgres guard above
 # would refuse to touch a production schema while the Redis flush went ahead

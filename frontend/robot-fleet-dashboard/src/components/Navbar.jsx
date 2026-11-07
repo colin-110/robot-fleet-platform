@@ -34,7 +34,7 @@ const MoonIcon = () => (
  * Top bar: identity, search, and the controls that act on the whole console.
  *
  * The connection state is deliberately one chip. It used to be three separate
- * readouts — a Live/count pill plus "WS <age>" and "REST <age>" — which put
+ * readouts - a Live/count pill plus "WS <age>" and "REST <age>" - which put
  * four numbers in the corner of every screen to answer one question: is this
  * data current? The detail is still there, in the chip's tooltip, for the times
  * that question turns into "why not?".

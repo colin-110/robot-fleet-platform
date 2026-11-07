@@ -43,11 +43,11 @@ function EventRow({ event }) {
  *
  * Two shapes, one component:
  *
- * - `variant="panel"` — the dashboard sidebar. Shows only the newest handful
+ * - `variant="panel"` - the dashboard sidebar. Shows only the newest handful
  *   inside a fixed-height scroller. It previously rendered the whole buffer in
  *   a track that grew with its content, so a busy fleet stretched the right
  *   column far past the map next to it and dragged the page down with it.
- * - `variant="page"` — the Event Log tab. Same feed, full buffer, with a
+ * - `variant="page"` - the Event Log tab. Same feed, full buffer, with a
  *   filter box, still scrolling inside its own box rather than the document.
  *
  * Either way the surrounding layout owns the height and the list scrolls

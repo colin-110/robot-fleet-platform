@@ -39,11 +39,10 @@ The ingest API acknowledges telemetry after placing it on the Redis stream. A wo
 - **Atomic command state transitions:** prevent duplicate or conflicting robot commands under concurrent requests.
 - **Short-lived WebSocket tickets:** avoid putting long-lived access tokens directly into the WebSocket connection flow.
 - **Structured logging + correlation IDs:** make asynchronous request/worker behavior traceable.
-- **Prometheus/Grafana:** expose operational behavior rather than relying only on application logs.
 
 ## Measured performance
 
-Benchmarks isolate individual optimizations and are documented in [the performance methodology](docs/performance.md).
+Each optimization was A/B-benchmarked on its own during development. The harness and results were later removed to keep the repo lean; they're still in the git history before the commit "Remove benchmarks, Prometheus/Grafana and the AWS compose file".
 
 | Workload | Baseline | Optimized |
 |---|---:|---:|
@@ -95,12 +94,13 @@ The stack starts the API, worker, dashboard, simulator, PostgreSQL, and Redis.
 
 ## Repository structure
 
-- \`backend/app/\` — API routes, services, repositories, authentication, metrics, and worker
-- \`backend/tests/\` — backend test suite
-- \`frontend/robot-fleet-dashboard/\` — React dashboard
-- \`simulator/\` — asynchronous robot simulator
-- \`scripts/\` — benchmark and load-test tooling
-- \`docs/\` — architecture, performance, and operations documentation
+- `backend/app/` - API routes, services, repositories, authentication, and worker
+- `backend/tests/` - backend test suite
+- `frontend/robot-fleet-dashboard/` - React dashboard
+- `simulator/` - asynchronous robot simulator
+- `scripts/` - EC2 provisioning and CI deploy-role setup
+- `docs/` - architecture and operations documentation
+- `docker-compose.yml` - full local stack; `docker-compose.ec2.yml` - production
 
 ## Limitations
 

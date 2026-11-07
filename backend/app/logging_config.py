@@ -9,8 +9,8 @@ that appeared nowhere in the logs, so correlation meant guessing from
 timestamps.
 
 **Two divergent configurations.** ``main.py`` and ``worker.py`` each called
-``logging.basicConfig`` with a different format, so the API and the worker —
-which ship in the same image and write to the same place — produced lines that
+``logging.basicConfig`` with a different format, so the API and the worker -
+which ship in the same image and write to the same place - produced lines that
 could not be parsed by one rule.
 
 **Nothing was machine-readable.** Plain text is right at a terminal and wrong in

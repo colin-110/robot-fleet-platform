@@ -4,12 +4,9 @@ Centralized application configuration using pydantic-settings.
 All settings are loaded from environment variables (or .env file).
 The app will fail fast at startup if required settings are missing.
 
-Optimization flags
-------------------
-The ``opt_*`` settings each gate one performance optimization. They all default
-to ``True`` (optimized). Turning one off restores the naive implementation it
-replaced, which is what ``scripts/benchmark_matrix.py`` uses to measure the
-before/after delta for that single change in isolation.
+The two ``opt_*`` flags pick between deployment shapes: the full stack (Redis
+Stream buffer + worker + read cache) and the single-instance free-tier stack
+(direct writes, no worker, no cache) that production runs.
 """
 
 import logging
@@ -46,8 +43,8 @@ class Settings(BaseSettings):
     ticket_ttl_seconds: int = 300
 
     # ── Authentication ──────────────────────────────────────────────
-    # "open"     — no accounts; the console is public (the hosted demo).
-    # "required" — every console action needs a JWT from /api/v1/auth/login.
+    # "open"     - no accounts; the console is public (the hosted demo).
+    # "required" - every console action needs a JWT from /api/v1/auth/login.
     # Left unset, production defaults to "required"; see the validator below.
     auth_mode: str | None = None
 
@@ -67,50 +64,33 @@ class Settings(BaseSettings):
     # sub-day window is a real deployment need, not just a testing knob.
     retention_days: float = 1
 
-    # Direct-write path only (no effect under OPT_REDIS_BUFFER). Off by
-    # default so every existing test and deployment keeps writing immediately
-    # on every request, exactly as before. A deployment on serverless Postgres
-    # that suspends on idle (Neon) opts in explicitly: with this on, a request
-    # is only written straight to the database while a dashboard viewer is
-    # connected; otherwise it's buffered in memory and flushed on a timer by
-    # telemetry_buffer.py, so the database gets long enough idle gaps to
-    # actually suspend instead of being kept awake by continuous ingestion.
+    # Direct-write path only. When on, telemetry is written immediately only
+    # while a dashboard is connected; otherwise telemetry_buffer.py batches it
+    # in memory so a serverless Postgres (Neon) gets idle time to suspend.
     defer_writes_without_viewers: bool = False
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"
     # "text" for a terminal, "json" for a log aggregator. Unset means text in
-    # development and json in production — see resolved_log_format.
+    # development and json in production - see resolved_log_format.
     log_format_setting: str | None = Field(default=None, alias="LOG_FORMAT")
-    # Emit one structured line per HTTP request. Uvicorn's own access log is
-    # disabled in production, so without this a deployed request leaves no
-    # trace at all — which is how a command dispatch became unverifiable.
+    # One structured log line per HTTP request. Uvicorn's access log is off in
+    # production, so this is the only request trace there.
     access_log: bool = True
 
     # ── CORS ────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     # ── Realtime fan-out ────────────────────────────────────────────
-    # "redis" publishes every broadcast via XADD and a background XREAD loop
-    # consumes it — correct when multiple API instances each need every
-    # message, which is the whole point of Redis Streams here. A single
-    # instance (Render's free tier) has no other instance to synchronize
-    # with, and broadcasting on every telemetry reading from a continuously
-    # ingesting fleet turns into real, metered Redis command volume for no
-    # benefit. "direct" calls the same in-process fan-out immediately instead
-    # of round-tripping through Redis — same real-time behavior for exactly
-    # one instance, lower latency, and it's the other half (with
-    # rate_limit_backend) of what actually exhausted a free Upstash budget.
+    # "redis" relays broadcasts through a Redis Stream so every API instance
+    # sees every message. "direct" fans out in-process: correct for a single
+    # instance, lower latency, and no Redis commands per reading.
     websocket_backend: str = "redis"
 
     # ── Rate Limiting ───────────────────────────────────────────────
-    # Same one-instance-vs-many reasoning as websocket_backend above: "redis"
-    # shares one counter across instances via a per-request pipeline (3
-    # writes + 1 read); "memory" is a plain in-process sliding window,
-    # correct for exactly one instance and free. The per-IP keyspace this app
-    # ever sees (a fleet's own IP, a handful of browsers) is small enough
-    # that it never needs pruning.
+    # "redis" shares one sliding-window counter across instances; "memory"
+    # keeps it in-process, which is enough for a single instance.
     rate_limit_backend: str = "redis"
     rate_limit_per_minute: int = 600
     # Separate, tighter budget for what a browser can reach without the master
@@ -137,8 +117,8 @@ class Settings(BaseSettings):
     offline_after_seconds: int = 60
 
     # How far back the fleet-status query scans for telemetry. Robots with no
-    # reading inside this window still appear — sourced from the robot registry
-    # and rendered OFFLINE — rather than disappearing from the fleet entirely.
+    # reading inside this window still appear - sourced from the robot registry
+    # and rendered OFFLINE - rather than disappearing from the fleet entirely.
     fleet_window_minutes: int = 15
 
     # Rows of history per robot used to derive status and extrapolate battery
@@ -155,10 +135,9 @@ class Settings(BaseSettings):
     max_clock_skew_seconds: int = 300
 
     # Max entries retained in the telemetry Redis Stream. Redis trims the
-    # oldest beyond this — including entries a consumer group has not yet
-    # acknowledged — so this is the worker's catch-up headroom, not an
-    # unbounded durable log. The worker exports stream length and pending
-    # count as metrics so falling behind is visible rather than silent.
+    # oldest beyond this - including entries a consumer group has not yet
+    # acknowledged - so this is the worker's catch-up headroom, not an
+    # unbounded durable log. The worker logs a warning as it nears the cap.
     telemetry_stream_maxlen: int = 100_000
 
     # ── Access control ──────────────────────────────────────────────
@@ -168,26 +147,17 @@ class Settings(BaseSettings):
     # a key to every browser; set true for any deployment with real data.
     require_auth_for_reads: bool = False
 
-    # ── Optimization flags (all default ON; flip OFF to benchmark) ──
+    # ── Deployment-shape flags ──────────────────────────────────────
 
-    # Ingest path: XADD to a Redis Stream and return immediately, versus a
-    # synchronous INSERT + COMMIT on the request path.
+    # Ingest path: XADD to a Redis Stream and return immediately (needs the
+    # worker running to persist it), versus INSERT + COMMIT on the request
+    # path. Production on EC2 runs with this off and no worker.
     opt_redis_buffer: bool = True
 
     # Read path: Redis read-through cache in front of fleet-status and
-    # analytics aggregation, versus recomputing on every request.
+    # analytics aggregation, versus recomputing on every request. Off in
+    # production to keep Upstash command volume down.
     opt_read_cache: bool = True
-
-    # Middleware: pure ASGI middleware versus Starlette BaseHTTPMiddleware
-    # (which wraps every request in an extra task + anyio memory streams).
-    opt_asgi_middleware: bool = True
-
-    # WebSocket fan-out: bounded per-client queue drained by one dedicated
-    # sender task, versus spawning a send task per message per client.
-    opt_bounded_fanout: bool = True
-
-    # Worker: single multi-row INSERT per batch, versus one INSERT per row.
-    opt_batch_insert: bool = True
 
     # ── Derived / validated ─────────────────────────────────────────
 
@@ -203,7 +173,7 @@ class Settings(BaseSettings):
         """Credentials cannot be combined with a wildcard origin.
 
         The CORS spec forbids ``Access-Control-Allow-Origin: *`` together with
-        ``Access-Control-Allow-Credentials: true`` — browsers reject the
+        ``Access-Control-Allow-Credentials: true`` - browsers reject the
         response. Rather than emit an invalid header pair we drop credentials
         whenever the origin list is a wildcard.
         """
@@ -226,8 +196,7 @@ class Settings(BaseSettings):
 
         Unset means "use the safe default for this environment" rather than
         "open": a production deployment carries real fleet positions, and
-        defaulting those to a public console is exactly the mistake this
-        setting exists to prevent. The demo sets it explicitly.
+        should not default to a public console. The demo sets it explicitly.
         """
         if self.auth_mode:
             return self.auth_mode.lower()
@@ -257,7 +226,7 @@ class Settings(BaseSettings):
                 raise ValueError("TELEMETRY_API_KEY must be at least 16 characters in production.")
             if not self.auth_required:
                 # Explicitly opting a production deployment into a public
-                # console is allowed — it is how the hosted demo runs — but it
+                # console is allowed - it is how the hosted demo runs - but it
                 # must be a decision someone typed, not a default they inherited.
                 logger.warning(
                     "APP_ENV=production with AUTH_MODE=open: the operator console "
@@ -271,7 +240,7 @@ class Settings(BaseSettings):
         return self
 
     def optimization_flags(self) -> dict[str, bool]:
-        """Current state of every ``opt_*`` flag, for /health and benchmarks."""
+        """Current state of every ``opt_*`` flag, for /health and startup logs."""
         # type(self).model_fields, not self.model_fields: Pydantic 2.11
         # deprecated instance access, and this runs on every /health scrape.
         return {

@@ -1,13 +1,9 @@
 """
-Pre-start hook: run migrations and prepare the metrics directory.
-
-Runs once in the parent process before uvicorn forks its workers.
+Pre-start hook: run database migrations before uvicorn starts.
 """
 
 import logging
 import subprocess
-
-from app import metrics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("prestart")
@@ -24,9 +20,6 @@ def init_db() -> None:
 
 
 def main() -> None:
-    # Must happen before workers fork: clears samples left by dead PIDs from a
-    # previous run, which would otherwise be summed into the live numbers.
-    metrics.init_multiproc_dir()
     init_db()
 
 

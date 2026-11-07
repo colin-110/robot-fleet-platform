@@ -1,7 +1,7 @@
 """Add the users table for JWT authentication
 
 Only populated when AUTH_MODE=required. The hosted demo runs in open mode with
-no accounts at all, so this table is empty there — see app/security.py for why
+no accounts at all, so this table is empty there - see app/security.py for why
 authentication is a mode rather than a hard requirement.
 
 The table is created unconditionally rather than behind a flag: a schema that

@@ -72,7 +72,7 @@ describe("getTicket", () => {
 
     await expect(getTicket()).resolves.toBe("t-1");
 
-    // 20s later the first ticket has 20s left — inside the 30s margin.
+    // 20s later the first ticket has 20s left - inside the 30s margin.
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 20_000);
 

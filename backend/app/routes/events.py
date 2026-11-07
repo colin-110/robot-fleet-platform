@@ -1,5 +1,5 @@
 """
-API v1 routes — Robot events.
+API v1 routes - Robot events.
 """
 
 import logging

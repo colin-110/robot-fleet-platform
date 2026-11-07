@@ -83,7 +83,7 @@ if ($LASTEXITCODE -ne 0) {
     $null = aws iam update-assume-role-policy --role-name $RoleName --policy-document "file://$trust_path"
 }
 
-# 3. Exactly the permissions the rollout step uses, and nothing else.
+# 3. Only the permissions the rollout step uses.
 $policy = @{
     Version = "2012-10-17"
     Statement = @(

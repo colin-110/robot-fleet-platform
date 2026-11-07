@@ -1,5 +1,5 @@
 """
-FleetOps — FastAPI application entry point.
+FleetOps - FastAPI application entry point.
 
 Features:
   - Versioned API routes under /api/v1/
@@ -14,23 +14,17 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Query, Response, WebSocket
+from fastapi import Depends, FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import metrics, telemetry_buffer
+from app import telemetry_buffer
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
-from app.middleware import (
-    LegacyRateLimitMiddleware,
-    LegacyRequestIDMiddleware,
-    RateLimitMiddleware,
-    RequestIDMiddleware,
-)
+from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
@@ -73,22 +67,11 @@ async def lifespan(app: FastAPI):
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
-    # The worker also runs this loop (worker.py's db_pruner_task), but the
-    # worker is an optional, separately-deployed process. A deployment that
-    # skips it entirely - this app's free-tier Render path - previously
-    # never pruned anything: telemetry grew unbounded until it exhausted
-    # Neon's storage quota, at which point every INSERT started failing and
-    # ingestion silently stopped for hours before anyone noticed. The backend
-    # always runs, so the backend always prunes now too. Redis-locked only
-    # when Redis is actually meaningful here (multi-instance/AWS path) - a
-    # single instance with websocket_backend=direct has nothing to
-    # coordinate with.
-    # A 6-hour interval was sized for the old viewer-gated ingest rate. Run
-    # continuously (no gating) with settings.retention_days under a day, the
-    # worst-case unpruned peak is retention_days *plus* this interval — a
-    # long interval on a short retention window can itself blow the storage
-    # budget it's meant to protect. 30 minutes keeps that peak close to the
-    # configured retention window regardless of retention_days.
+    # Retention pruning runs here as well as in the worker, because a
+    # deployment without a worker would otherwise never prune. The Redis lock
+    # only matters when several instances share the work. A 30-minute
+    # interval keeps peak storage close to retention_days even when that
+    # window is under a day.
     pruner_task = asyncio.create_task(
         prune_loop(
             use_redis_lock=settings.websocket_backend == "redis",
@@ -97,11 +80,8 @@ async def lifespan(app: FastAPI):
         )
     )
 
-    # Only meaningful on the direct-ingest path — the Redis-buffered path
-    # already batches writes through its own worker. 600s (10 min) is
-    # comfortably past Neon's fixed 5-minute suspend timeout, so compute gets
-    # a real idle window between flushes instead of being nudged awake just
-    # often enough that it never actually suspends.
+    # Direct-ingest path only. 10 minutes is well past Neon's 5-minute
+    # suspend timeout, so the database can sleep between flushes.
     buffer_flush_task = (
         asyncio.create_task(telemetry_buffer.flush_loop(interval_seconds=600))
         if not settings.opt_redis_buffer and settings.defer_writes_without_viewers
@@ -116,9 +96,6 @@ async def lifespan(app: FastAPI):
     if buffer_flush_task:
         buffer_flush_task.cancel()
 
-    # Drop this worker's gauge samples so a restart doesn't leave phantom
-    # connections summed into the multiprocess registry.
-    metrics.mark_worker_exit()
     logger.info("FleetOps shutting down")
 
 
@@ -129,36 +106,20 @@ app = FastAPI(
     description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
-    # No custom response class. orjson was benchmarked here and did help — but
-    # only on the handful of routes without a `response_model`, because FastAPI
-    # serializes through Pydantic directly whenever one is declared, bypassing
-    # the class entirely. FastAPI has since deprecated ORJSONResponse for that
-    # exact reason, so the code is gone; the measurement and what it taught us
-    # are kept in docs/performance.md.
 )
 
 # ── Middleware (order matters: outermost first) ─────────────────────
 
-if settings.opt_asgi_middleware:
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(
-        RateLimitMiddleware,
-        max_requests=settings.rate_limit_per_minute,
-        console_max_requests=settings.console_rate_limit_per_minute,
-        window_seconds=60,
-        trusted_proxy_count=settings.trusted_proxy_count,
-    )
-else:
-    app.add_middleware(LegacyRequestIDMiddleware)
-    app.add_middleware(
-        LegacyRateLimitMiddleware,
-        max_requests=settings.rate_limit_per_minute,
-        console_max_requests=settings.console_rate_limit_per_minute,
-        window_seconds=60,
-        trusted_proxy_count=settings.trusted_proxy_count,
-    )
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    max_requests=settings.rate_limit_per_minute,
+    console_max_requests=settings.console_rate_limit_per_minute,
+    window_seconds=60,
+    trusted_proxy_count=settings.trusted_proxy_count,
+)
 
-# A wildcard origin cannot be combined with credentials — the spec forbids it
+# A wildcard origin cannot be combined with credentials - the spec forbids it
 # and browsers reject the response. cors_allow_credentials drops credentials
 # automatically when the origin list is "*". APP_ENV=production rejects the
 # wildcard outright at config load.
@@ -182,7 +143,7 @@ app.include_router(auth_router)
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["root"])
 def root():
-    """Root endpoint — confirms the API is running."""
+    """Root endpoint - confirms the API is running."""
     return {"message": "FleetOps API running", "version": "1.0.0"}
 
 
@@ -198,14 +159,14 @@ def liveness():
 
 # GET and HEAD: uptime monitors (UptimeRobot, Render's own probes, load
 # balancers) commonly poll health endpoints with HEAD to skip the response
-# body. FastAPI's @app.get() only registers GET, so HEAD came back 405 —
+# body. FastAPI's @app.get() only registers GET, so HEAD came back 405 -
 # which read as "service down" to monitors even though it was healthy.
 @app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["health"])
 async def health_check():
-    """Health check — verifies database connectivity and reports active flags.
+    """Health check - verifies database connectivity and reports active flags.
 
-    The optimization flags are exposed so the benchmark harness can assert the
-    stack actually came up in the configuration it intended to measure.
+    Unlike /health/live this queries the database, so don't point a frequent
+    poller at it on a serverless Postgres that bills for awake time.
     """
     db_status = "healthy"
     try:
@@ -222,19 +183,13 @@ async def health_check():
     )
 
 
-@app.get("/metrics", tags=["observability"])
-async def prometheus_metrics():
-    """Prometheus metrics endpoint (multiprocess-aware)."""
-    return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
-
-
 @app.get("/api/v1/viewers", tags=["observability"])
 async def viewer_count(_=Depends(verify_api_key)):
     """How many WebSocket clients are currently connected.
 
     Lets a telemetry source (the simulator) decide whether anyone is actually
     watching before spending bandwidth generating and posting data nobody
-    sees — see simulator/robot_sim.py's viewer_watch_loop. API-key gated,
+    sees - see simulator/robot_sim.py's viewer_watch_loop. API-key gated,
     not console-ticket: this is a fleet-side operational signal, not
     something the dashboard itself needs to read.
     """
@@ -252,12 +207,12 @@ async def websocket_endpoint(
 ):
     """WebSocket endpoint for real-time telemetry broadcast.
 
-    Authenticates with either ``?ticket=<ticket>`` (browsers — short-lived and
+    Authenticates with either ``?ticket=<ticket>`` (browsers - short-lived and
     scoped, see ``app/tickets.py``) or ``?api_key=<key>`` (server-side clients
     such as the load harnesses, which legitimately hold the master key).
 
     Browsers use the ticket because a WebSocket handshake cannot carry a custom
-    header, so the credential has to travel in the URL — where it lands in proxy
+    header, so the credential has to travel in the URL - where it lands in proxy
     and access logs. A five-minute scoped ticket is a very different thing to
     leak there than the fleet's ingest key.
     """

@@ -43,7 +43,7 @@ async def test_process_batch_inserts_telemetry():
     # Every message id is returned so the caller can XACK the whole batch.
     assert message_ids == ["12345-0", "12345-1"]
     # One multi-row INSERT for the telemetry, plus one roster upsert marking
-    # both robots seen — committed together so a robot can never be registered
+    # both robots seen - committed together so a robot can never be registered
     # without the reading that registered it.
     assert session.execute.await_count == 2
     session.commit.assert_awaited_once()

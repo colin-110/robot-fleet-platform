@@ -4,22 +4,13 @@ Uses Redis Streams to sync across multiple API instances.
 
 Fan-out model
 -------------
-Two strategies, selected by the ``OPT_BOUNDED_FANOUT`` setting.
-
-**Bounded queue (default).** Each connected client gets its own bounded
-outbound queue and a single long-lived sender task. Broadcasting is a
-non-blocking ``put`` onto every client's queue — it never awaits a slow socket
-and never spawns a task per message. When a client can't keep up its queue
-overflows and we drop the *oldest* buffered frame: stale telemetry is worthless
-(a robot's position from three seconds ago is noise), so the freshest data
-wins. This caps memory per connection and stops one stalled client from
-back-pressuring the whole fleet.
-
-**Naive (baseline).** ``asyncio.create_task(ws.send_json(...))`` per client per
-message — the obvious implementation. Unbounded: a slow client accumulates
-pending send tasks without limit, and at high fan-out the scheduler spends more
-time on task churn than on I/O. Retained so the benchmark can quantify what the
-bounded design actually buys.
+Each connected client gets its own bounded outbound queue and a single
+long-lived sender task. Broadcasting is a non-blocking ``put`` onto every
+client's queue - it never awaits a slow socket and never spawns a task per
+message. When a client can't keep up its queue overflows and we drop the
+*oldest* buffered frame: stale telemetry is worthless (a robot's position from
+three seconds ago is noise), so the freshest data wins. This caps memory per
+connection and stops one stalled client from back-pressuring the whole fleet.
 """
 
 import asyncio
@@ -30,7 +21,6 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.metrics import websocket_connections_active, websocket_frames_dropped_total
 from app.redis_pool import get_redis
 
 logger = logging.getLogger(__name__)
@@ -51,20 +41,13 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self.active_connections: list[WebSocket] = []
-        # Per-connection outbound queue + dedicated sender task (bounded mode).
+        # Per-connection outbound queue + dedicated sender task.
         self._queues: dict[WebSocket, asyncio.Queue] = {}
         self._senders: dict[WebSocket, asyncio.Task] = {}
-        # Pending send tasks (naive mode) — kept referenced so they aren't
-        # garbage collected mid-flight.
-        self._pending_sends: set[asyncio.Task] = set()
         self.redis = get_redis()
         self.telemetry_stream = "telemetry_stream"
         self.event_stream = "event_stream"
         self._listener_task: asyncio.Task | None = None
-
-    @property
-    def bounded_fanout(self) -> bool:
-        return settings.opt_bounded_fanout
 
     @property
     def connection_count(self) -> int:
@@ -76,19 +59,16 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.append(websocket)
 
-        if self.bounded_fanout:
-            queue: asyncio.Queue = asyncio.Queue(maxsize=CLIENT_QUEUE_MAXSIZE)
-            self._queues[websocket] = queue
-            self._senders[websocket] = asyncio.create_task(self._sender_loop(websocket, queue))
+        queue: asyncio.Queue = asyncio.Queue(maxsize=CLIENT_QUEUE_MAXSIZE)
+        self._queues[websocket] = queue
+        self._senders[websocket] = asyncio.create_task(self._sender_loop(websocket, queue))
 
-        websocket_connections_active.inc()
         logger.info("WebSocket connected (total: %d)", self.connection_count)
 
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a WebSocket connection and tear down its sender."""
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            websocket_connections_active.dec()
             logger.info("WebSocket disconnected (total: %d)", self.connection_count)
 
         self._queues.pop(websocket, None)
@@ -114,12 +94,12 @@ class ConnectionManager:
             pass
 
     async def broadcast(self, data: dict, stream: str = None) -> None:
-        """Fan out data to connected clients — directly, or via Redis Streams.
+        """Fan out data to connected clients - directly, or via Redis Streams.
 
         ``websocket_backend=direct`` calls ``_fan_out`` immediately; there's
         no other instance that needs this message relayed to it. The default
         publishes to Redis instead, for the listener task (``listen_to_redis``)
-        on every instance — including this one — to pick up and fan out.
+        on every instance - including this one - to pick up and fan out.
         """
         if settings.websocket_backend == "direct":
             self._fan_out(data)
@@ -136,7 +116,7 @@ class ConnectionManager:
             logger.exception("Failed to publish to Redis Stream")
 
     async def broadcast_batch(self, data_list: list[dict], stream: str = None) -> None:
-        """Fan out multiple messages — directly, or via one Redis pipeline."""
+        """Fan out multiple messages - directly, or via one Redis pipeline."""
         if not data_list:
             return
 
@@ -200,13 +180,6 @@ class ConnectionManager:
                 retry_delay = min(max_retry_delay, retry_delay * 2.0)
 
     def _fan_out(self, data: dict) -> None:
-        """Deliver a message to every connected client."""
-        if self.bounded_fanout:
-            self._enqueue_to_all_clients(data)
-        else:
-            self._spawn_send_tasks(data)
-
-    def _enqueue_to_all_clients(self, data: dict) -> None:
         """Fan a message onto every client queue without blocking or spawning tasks.
 
         On overflow we drop the oldest buffered frame for that client and
@@ -222,27 +195,12 @@ class ConnectionManager:
             except asyncio.QueueFull:
                 try:
                     queue.get_nowait()  # drop oldest
-                    websocket_frames_dropped_total.inc()
                 except asyncio.QueueEmpty:
                     pass
                 try:
                     queue.put_nowait(data)
                 except asyncio.QueueFull:
-                    websocket_frames_dropped_total.inc()
-
-    def _spawn_send_tasks(self, data: dict) -> None:
-        """Baseline fan-out: one task per client per message, unbounded."""
-
-        async def _send(websocket: WebSocket) -> None:
-            try:
-                await websocket.send_json(data)
-            except Exception:
-                self.disconnect(websocket)
-
-        for websocket in list(self.active_connections):
-            task = asyncio.create_task(_send(websocket))
-            self._pending_sends.add(task)
-            task.add_done_callback(self._pending_sends.discard)
+                    logger.debug("Dropped frame for a slow WebSocket client")
 
 
 manager = ConnectionManager()

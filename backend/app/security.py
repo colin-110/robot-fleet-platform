@@ -11,7 +11,7 @@ deliberate split, not a shortcut:
   flips the default to ``required`` unless explicitly overridden.
 
 The difference is one setting, and every route that needs identity asks for it
-the same way in both modes — ``open`` simply resolves to an anonymous operator
+the same way in both modes - ``open`` simply resolves to an anonymous operator
 rather than skipping the dependency. Keeping one code path means the
 authenticated path is exercised by the demo's own traffic shape, instead of
 being a branch that only runs in an environment nobody tests.
@@ -19,7 +19,7 @@ being a branch that only runs in an environment nobody tests.
 Token design
 ------------
 HS256, signed with ``JWT_SECRET`` if set and otherwise derived from
-``TELEMETRY_API_KEY`` — same reasoning as ``app/tickets.py``: no second secret
+``TELEMETRY_API_KEY`` - same reasoning as ``app/tickets.py``: no second secret
 to configure, and rotating the master key invalidates outstanding tokens.
 
 Claims are the registered ones plus ``role``. Tokens are short-lived and there
@@ -122,7 +122,7 @@ def decode_access_token(token: str) -> dict | None:
 
     if not claims.get("sub") or claims.get("role") not in _RANK:
         # A structurally valid token carrying a role we retired should not be
-        # treated as if it were the lowest privilege — reject it.
+        # treated as if it were the lowest privilege - reject it.
         return None
     return claims
 

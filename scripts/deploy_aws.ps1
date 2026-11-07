@@ -76,9 +76,9 @@ if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
     $sg_id = aws ec2 create-security-group --group-name $SecurityGroupName --description "Security group for FleetOps" --query "GroupId" --output text
     if ($sg_id) {
         Write-Host "Security Group created: $sg_id" -ForegroundColor Green
-        # 22 for the SSH tunnel the Prometheus UI is reached through, 80 for
-        # nginx. Not 8000: docker-compose.aws.yml never publishes the backend
-        # port -- nginx proxies to it over the internal network -- so opening
+        # 22 for SSH, 80 for
+        # nginx. Not 8000: docker-compose.ec2.yml binds the backend
+        # port to 127.0.0.1 only -- nginx on the host proxies to it -- so opening
         # it exposed nothing but an unauthenticated API if anyone ever did.
         Write-Host "Configuring firewall rules (ports 22, 80)..."
         aws ec2 authorize-security-group-ingress --group-id $sg_id --protocol tcp --port 22 --cidr 0.0.0.0/0
@@ -98,8 +98,8 @@ if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
     $port_8000 = aws ec2 describe-security-groups --group-ids $sg_id --query "SecurityGroups[0].IpPermissions[?FromPort==``8000``] | length(@)" --output text 2>$null
     if ($port_8000 -and $port_8000 -ne "0") {
         Write-Host "WARNING: this group still opens port 8000 to the internet." -ForegroundColor Red
-        Write-Host "  docker-compose.aws.yml never publishes that port -- nginx reaches the" -ForegroundColor Red
-        Write-Host "  backend over the internal network -- so it is very likely unused. Close it:" -ForegroundColor Red
+        Write-Host "  docker-compose.ec2.yml binds that port to 127.0.0.1 -- nginx reaches the" -ForegroundColor Red
+        Write-Host "  backend locally -- so it is very likely unused. Close it:" -ForegroundColor Red
         Write-Host "  aws ec2 revoke-security-group-ingress --group-id $sg_id --protocol tcp --port 8000 --cidr 0.0.0.0/0" -ForegroundColor Yellow
     }
 }
