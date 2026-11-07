@@ -67,14 +67,6 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
 
-    # Direct-write path only. When on, telemetry is written immediately only
-    # while a dashboard is connected; otherwise telemetry_buffer.py batches it
-    # in memory so a serverless Postgres (Neon) gets idle time to suspend.
-    defer_writes_without_viewers: bool = False
-    # How often deferred writes are flushed. Longer than Neon's 5-minute
-    # suspend timeout so the database can sleep between flushes.
-    deferred_flush_seconds: int = 600
-
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"
     log_level: str = "INFO"

@@ -4,8 +4,7 @@ Covers the three pieces that make that true together:
 
 - every reading carries its device timestamp, which identifies it;
 - the Redis-stream path skips readings already queued;
-- every response tells the robot which readings are stored (``ack``), so it
-  can keep and resend anything a crashed server lost.
+- every response tells the robot which readings are stored (``ack``).
 """
 
 import os
@@ -16,10 +15,10 @@ import pytest_asyncio
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
 
-from app import durability, telemetry_buffer, telemetry_stream
+from app import durability, telemetry_stream
 from app.config import get_settings
 from app.models import Telemetry
-from app.websocket_manager import ConnectionManager, manager
+from app.websocket_manager import manager
 from tests.conftest import TestSessionLocal
 
 settings = get_settings()
@@ -47,18 +46,7 @@ async def row_count(db) -> int:
 @pytest.fixture
 def test_sessions(monkeypatch):
     """Point background writers at the per-test session factory."""
-    monkeypatch.setattr(telemetry_buffer, "AsyncSessionLocal", TestSessionLocal)
     monkeypatch.setattr(durability, "AsyncSessionLocal", TestSessionLocal)
-
-
-@pytest.fixture
-def viewers(monkeypatch):
-    """Control how many dashboards appear to be connected."""
-
-    def set_count(count: int):
-        monkeypatch.setattr(ConnectionManager, "connection_count", property(lambda _: count))
-
-    return set_count
 
 
 # ── Identity ────────────────────────────────────────────────────────
@@ -169,70 +157,6 @@ async def test_a_duplicate_is_acked_as_stored(client):
     retry = await client.post("/api/v1/telemetry", json=reading())
 
     assert retry.json()["ack"]["durable_until"] == {"1": iso(T0)}
-
-
-@pytest.mark.asyncio
-async def test_buffered_reading_is_not_acked_until_flushed(
-    client, db, viewers, test_sessions, monkeypatch
-):
-    monkeypatch.setattr(settings, "defer_writes_without_viewers", True)
-    viewers(0)
-
-    response = await client.post("/api/v1/telemetry", json=reading())
-    assert response.json()["ack"]["durable_until"] == {"1": None}
-
-    await telemetry_buffer.flush()
-
-    after = await client.post("/api/v1/telemetry", json=reading(robot_id=1, offset_s=1))
-    assert after.json()["ack"]["durable_until"]["1"] == iso(T0)
-    assert await row_count(db) == 1
-
-
-@pytest.mark.asyncio
-async def test_watermark_stops_short_of_an_older_buffered_reading(client, viewers, monkeypatch):
-    """A resent old reading sitting in memory must not be covered by a newer stored one."""
-    durability.mark_stored([(1, T0 + timedelta(seconds=10))])
-    monkeypatch.setattr(settings, "defer_writes_without_viewers", True)
-    viewers(0)
-
-    response = await client.post("/api/v1/telemetry", json=reading(offset_s=5))
-
-    expected = T0 + timedelta(seconds=5) - timedelta(microseconds=1)
-    assert response.json()["ack"]["durable_until"] == {"1": iso(expected)}
-
-
-@pytest.mark.asyncio
-async def test_direct_write_also_stores_what_was_buffered(client, db, viewers, monkeypatch):
-    """When a viewer connects, older buffered readings go out in the same transaction."""
-    monkeypatch.setattr(settings, "defer_writes_without_viewers", True)
-    viewers(0)
-    await client.post("/api/v1/telemetry/batch", json=[reading(offset_s=0), reading(offset_s=1)])
-
-    viewers(1)
-    response = await client.post("/api/v1/telemetry", json=reading(offset_s=2))
-
-    assert await row_count(db) == 3
-    assert telemetry_buffer._pending == []
-    assert response.json()["ack"]["durable_until"] == {"1": iso(T0 + timedelta(seconds=2))}
-
-
-@pytest.mark.asyncio
-async def test_buffered_rows_survive_a_failed_direct_write(client, viewers, monkeypatch):
-    monkeypatch.setattr(settings, "defer_writes_without_viewers", True)
-    viewers(0)
-    await client.post("/api/v1/telemetry", json=reading(offset_s=0))
-
-    async def broken(*_args, **_kwargs):
-        raise ConnectionError("database unavailable")
-
-    from app.services import telemetry_service
-
-    monkeypatch.setattr(telemetry_service, "persist", broken)
-    viewers(1)
-    with pytest.raises(ConnectionError):
-        await client.post("/api/v1/telemetry", json=reading(offset_s=1))
-
-    assert len(telemetry_buffer._pending) == 1
 
 
 @pytest.mark.asyncio

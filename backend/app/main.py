@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import device_keys, durability, telemetry_buffer
+from app import device_keys, durability
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
@@ -87,21 +87,10 @@ async def lifespan(app: FastAPI):
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
-    # Direct-ingest path only.
-    buffer_flush_task = (
-        asyncio.create_task(
-            telemetry_buffer.flush_loop(interval_seconds=settings.deferred_flush_seconds)
-        )
-        if not settings.opt_redis_buffer and settings.defer_writes_without_viewers
-        else None
-    )
-
     yield
 
     if manager._listener_task:
         manager._listener_task.cancel()
-    if buffer_flush_task:
-        buffer_flush_task.cancel()
     if key_refresh_task:
         key_refresh_task.cancel()
 

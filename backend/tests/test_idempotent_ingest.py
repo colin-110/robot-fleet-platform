@@ -11,7 +11,6 @@ import orjson
 import pytest
 from sqlalchemy import func, select
 
-from app import telemetry_buffer
 from app.models import Robot, Telemetry
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
@@ -138,65 +137,3 @@ async def test_write_registers_the_robot_in_the_same_transaction(client, db):
 
     robot = (await db.execute(select(Robot).where(Robot.id == 1))).scalar_one()
     assert robot.last_seen == T0 + timedelta(seconds=30)
-
-
-# ── Deferred-write buffer ───────────────────────────────────────────
-
-
-@pytest.fixture
-def empty_buffer(monkeypatch):
-    # Keep the flush off the app's own session pool, which outlives test loops.
-    monkeypatch.setattr(telemetry_buffer, "AsyncSessionLocal", TestSessionLocal)
-    telemetry_buffer._pending.clear()
-    yield
-    telemetry_buffer._pending.clear()
-
-
-def buffered_rows(count: int):
-    return [
-        (TelemetryCreate(**reading(offset_s=i)), T0 + timedelta(seconds=i)) for i in range(count)
-    ]
-
-
-@pytest.mark.asyncio
-async def test_failed_flush_keeps_the_rows_for_the_next_one(empty_buffer, monkeypatch):
-    await telemetry_buffer.buffer(buffered_rows(3))
-
-    async def broken(*_args, **_kwargs):
-        raise ConnectionError("database unavailable")
-
-    monkeypatch.setattr(telemetry_buffer, "persist", broken)
-
-    with pytest.raises(ConnectionError):
-        await telemetry_buffer.flush()
-
-    assert len(telemetry_buffer._pending) == 3
-
-
-@pytest.mark.asyncio
-async def test_flush_writes_buffered_rows_once(empty_buffer, db):
-    rows = buffered_rows(3)
-    await telemetry_buffer.buffer(rows)
-    await telemetry_buffer.flush()
-    await telemetry_buffer.buffer(rows)  # the same readings arrive again
-    await telemetry_buffer.flush()
-
-    assert await row_count(db) == 3
-    assert telemetry_buffer._pending == []
-
-
-@pytest.mark.asyncio
-async def test_rows_buffered_during_a_failed_flush_are_kept_in_order(empty_buffer, monkeypatch):
-    first, second = buffered_rows(2)
-    await telemetry_buffer.buffer([first])
-
-    async def broken(*_args, **_kwargs):
-        await telemetry_buffer.buffer([second])  # arrives mid-flush
-        raise ConnectionError("database unavailable")
-
-    monkeypatch.setattr(telemetry_buffer, "persist", broken)
-
-    with pytest.raises(ConnectionError):
-        await telemetry_buffer.flush()
-
-    assert telemetry_buffer._pending == [first, second]

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app import device_keys, durability, telemetry_buffer
+from app import device_keys, durability
 from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.config import get_settings
 from app.database import Base, get_db
@@ -114,7 +114,6 @@ def setup_database():
             await conn.run_sync(Base.metadata.create_all)
         device_keys.reset()
         durability.reset()
-        telemetry_buffer._pending.clear()
 
     async def drop_db():
         async with test_engine.begin() as conn:

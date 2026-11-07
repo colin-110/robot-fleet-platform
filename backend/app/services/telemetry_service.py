@@ -9,9 +9,7 @@ PostgreSQL. Request latency is decoupled from database I/O, so an ingest spike
 queues in Redis instead of blocking on disk.
 
 **Direct.** ``INSERT`` + ``COMMIT`` inline on the request path, no worker
-needed. This is what the single-instance EC2 deployment runs; with
-``DEFER_WRITES_WITHOUT_VIEWERS`` it batches writes in memory while nobody is
-watching (see ``app/telemetry_buffer.py``).
+needed.
 """
 
 import logging
@@ -20,7 +18,7 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import durability, telemetry_buffer, telemetry_stream
+from app import durability, telemetry_stream
 from app.config import get_settings
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository, persist
@@ -114,8 +112,6 @@ class TelemetryService:
         ack = durability.ack([data.robot_id])
         if mode == "queued":
             return {"message": "Telemetry queued in Redis", "ack": ack}
-        if mode == "buffered":
-            return {"message": "Telemetry buffered", "ack": ack}
         if not stored:
             return {"message": "Telemetry already received", "ack": ack}
         return {"message": "Telemetry received", "ack": ack}
@@ -128,11 +124,9 @@ class TelemetryService:
         ack = durability.ack(d.robot_id for d in data)
         if mode == "queued":
             message = f"{len(stored)} telemetry readings queued in Redis"
-        elif mode == "buffered":
-            message = f"{len(data)} telemetry readings buffered"
         else:
             message = f"{len(stored)} telemetry readings received"
-        duplicates = len(data) - len(stored) if mode != "buffered" else 0
+        duplicates = len(data) - len(stored)
         if duplicates:
             message += f", {duplicates} already stored"
         return {"message": message, "ack": ack}
@@ -140,12 +134,10 @@ class TelemetryService:
     async def _ingest(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks | None
     ) -> tuple[str, list]:
-        """Route readings to one of three paths and broadcast the new ones.
+        """Route readings to one of two paths and broadcast the new ones.
 
         - ``queued``: added to the Redis stream; the worker persists them.
         - ``direct``: written now, in one transaction.
-        - ``buffered``: held in memory and flushed later, because nobody is
-          watching (DEFER_WRITES_WITHOUT_VIEWERS, see telemetry_buffer.py).
 
         Returns the path taken and the readings that were new (queued
         payloads or inserted rows). Readings already stored are skipped.
@@ -165,28 +157,13 @@ class TelemetryService:
                 await self._broadcast(queued, background_tasks)
             return "queued", queued
 
-        if settings.defer_writes_without_viewers and manager.connection_count == 0:
-            await telemetry_buffer.buffer(rows)
-            await self._broadcast([_reading_to_dict(d, ts) for d, ts in rows], background_tasks)
-            return "buffered", []
+        inserted = await persist(self.repo.db, rows)
+        await self.repo.db.commit()
+        durability.mark_stored((d.robot_id, ts) for d, ts in rows)
 
-        # Anything still buffered from before a viewer connected is written in
-        # the same transaction, so nothing older is left only in memory once
-        # these rows are reported as stored.
-        pending = await telemetry_buffer.take()
-        try:
-            inserted = await persist(self.repo.db, pending + rows)
-            await self.repo.db.commit()
-        except Exception:
-            await telemetry_buffer.restore(pending)
-            raise
-        durability.mark_stored((d.robot_id, ts) for d, ts in pending + rows)
-
-        requested = {(d.robot_id, ts) for d, ts in rows}
-        new_rows = [t for t in inserted if (t.robot_id, t.timestamp) in requested]
         # Only new rows are broadcast, so a retried upload is not shown twice.
-        await self._broadcast([_telemetry_to_broadcast_dict(t) for t in new_rows], background_tasks)
-        return "direct", new_rows
+        await self._broadcast([_telemetry_to_broadcast_dict(t) for t in inserted], background_tasks)
+        return "direct", inserted
 
     @staticmethod
     async def _broadcast(payloads: list[dict], background_tasks: BackgroundTasks | None) -> None:

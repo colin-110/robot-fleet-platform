@@ -18,7 +18,6 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
 | `TELEMETRY_API_KEY` | *required* | Master key for the `X-API-Key` header (ingest, robot-facing command polling) and the signing key that console tickets are derived from |
 | `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
-| `DEFERRED_FLUSH_SECONDS` | `600` | How often deferred writes are flushed. Deferred writes assume a single API process, since the buffer and acknowledgements are per process |
 | `ALLOW_SHARED_INGEST_KEY` | `true` | Whether the master key still works on robot endpoints. Set `false` once every robot has a device key |
 | `DEVICE_KEY_REFRESH_SECONDS` | `60` | How often each instance reloads device keys (multi-instance only), which bounds how long a revoked key keeps working on other instances |
 | `AUTH_MODE` | `open` (`required` in production) | `open` = public console, no accounts; `required` = every console action needs a JWT |
@@ -37,7 +36,6 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `TELEMETRY_STREAM_MAXLEN` | `100000` | Entries retained in the ingest stream; the worker's catch-up headroom |
 | `LOG_FORMAT` | `text` (`json` in production) | `json` emits one object per line with the request id and structured fields, for a log aggregator |
 | `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/health/live` are excluded so health polls do not bury real traffic |
-| `DEFER_WRITES_WITHOUT_VIEWERS` | `false` | Direct-write path only: while no dashboard is connected, buffer telemetry in memory and flush every 10 minutes so serverless Postgres (Neon) can suspend |
 | `WEBSOCKET_BACKEND` | `redis` | `direct` fans out in-process - correct for exactly one API instance, and saves Redis commands |
 | `RATE_LIMIT_BACKEND` | `redis` | `memory` keeps the sliding window in-process - same one-instance reasoning |
 
@@ -63,7 +61,7 @@ Viewer --HTTPS--> Vercel (static dashboard)
                                    '--> Upstash (Redis)
 ```
 
-There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false`, plus `DEFER_WRITES_WITHOUT_VIEWERS=true` so Neon gets idle windows long enough to suspend. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
+There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false`. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
 
 The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
 

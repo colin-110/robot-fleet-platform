@@ -4,35 +4,28 @@ Every ingest response carries an ``ack``::
 
     {"server": "<boot id>", "durable_until": {"7": "2026-11-07T12:00:05Z"}}
 
-``durable_until`` is, per robot, the newest timestamp such that every reading
-this server accepted from that robot up to that time is stored in Postgres (or
-in the Redis stream, when OPT_REDIS_BUFFER is on). A robot keeps each reading
-it has sent until it is covered by ``durable_until``.
+``durable_until`` is, per robot, the newest timestamp this server has stored
+(in Postgres, or in the Redis stream when OPT_REDIS_BUFFER is on). A robot
+keeps each reading it has sent until it is covered by ``durable_until``.
 
-``server`` changes whenever the process restarts. Readings the old process
-had accepted but not yet stored (the deferred-write buffer) are gone at that
-point, so a robot that sees a new id resends everything not yet covered.
-Writes skip readings already stored, so resending is always safe.
-
-Assumes one process per deployment when DEFER_WRITES_WITHOUT_VIEWERS is on,
-since the buffer and these watermarks are per process.
+``server`` changes whenever the process restarts, so a robot that sees a new id
+resends everything not yet covered. Writes skip readings already stored, so
+resending is always safe.
 """
 
 from __future__ import annotations
 
 import secrets
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy import select
 
-from app import telemetry_buffer
 from app.database import AsyncSessionLocal
 from app.models import Robot
 
 BOOT_ID = secrets.token_hex(8)
 
-_ONE_MICROSECOND = timedelta(microseconds=1)
 _stored: dict[int, datetime] = {}
 
 
@@ -44,15 +37,7 @@ def mark_stored(readings: Iterable[tuple[int, datetime]]) -> None:
 
 
 def durable_until(robot_id: int) -> datetime | None:
-    stored = _stored.get(robot_id)
-    if stored is None:
-        return None
-    pending = telemetry_buffer.oldest_pending(robot_id)
-    if pending is not None and pending <= stored:
-        # A reading at or before ``stored`` is still only in memory, so the
-        # watermark has to stop just short of it.
-        return pending - _ONE_MICROSECOND
-    return stored
+    return _stored.get(robot_id)
 
 
 def ack(robot_ids: Iterable[int]) -> dict:
