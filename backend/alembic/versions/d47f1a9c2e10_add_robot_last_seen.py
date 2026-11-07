@@ -3,7 +3,7 @@
 Fleet status previously derived the robot list purely from telemetry inside a
 15-minute window, so a robot that stopped reporting fell out of the query and
 vanished from the dashboard. The roster is now the source of truth for which
-robots exist, and last_seen carries how long each has been silent — including
+robots exist, and last_seen carries how long each has been silent - including
 units well outside the telemetry window.
 
 Revision ID: d47f1a9c2e10

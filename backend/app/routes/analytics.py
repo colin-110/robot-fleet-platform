@@ -1,5 +1,5 @@
 """
-API v1 routes — Fleet analytics.
+API v1 routes - Fleet analytics.
 """
 
 import logging

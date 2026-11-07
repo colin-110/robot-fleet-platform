@@ -1,7 +1,7 @@
 """Component health must survive the trip from telemetry to the API.
 
 Regression tests for a truthiness check that rendered a completely failed
-component (0.0) as perfect health (100.0) — inverting the most urgent reading
+component (0.0) as perfect health (100.0) - inverting the most urgent reading
 the system can receive.
 """
 

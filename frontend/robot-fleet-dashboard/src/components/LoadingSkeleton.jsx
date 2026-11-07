@@ -1,10 +1,10 @@
 /**
- * LoadingSkeleton — pulse-animated placeholders shown while data is loading.
+ * LoadingSkeleton - pulse-animated placeholders shown while data is loading.
  *
  * Usage:
- *   <LoadingSkeleton type="stats" />   — 8 stat cards
- *   <LoadingSkeleton type="cards" />   — 6 robot cards
- *   <LoadingSkeleton type="panel" />   — single panel placeholder
+ *   <LoadingSkeleton type="stats" />   - 8 stat cards
+ *   <LoadingSkeleton type="cards" />   - 6 robot cards
+ *   <LoadingSkeleton type="panel" />   - single panel placeholder
  */
 
 // Tokenised: the old white-on-white gradient was invisible against the light

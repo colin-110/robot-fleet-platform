@@ -1,5 +1,5 @@
 """
-API v1 routes — Robot status and fleet overview.
+API v1 routes - Robot status and fleet overview.
 """
 
 import logging

@@ -6,7 +6,7 @@ Fan-out model
 -------------
 Each connected client gets its own bounded outbound queue and a single
 long-lived sender task. Broadcasting is a non-blocking ``put`` onto every
-client's queue — it never awaits a slow socket and never spawns a task per
+client's queue - it never awaits a slow socket and never spawns a task per
 message. When a client can't keep up its queue overflows and we drop the
 *oldest* buffered frame: stale telemetry is worthless (a robot's position from
 three seconds ago is noise), so the freshest data wins. This caps memory per
@@ -94,12 +94,12 @@ class ConnectionManager:
             pass
 
     async def broadcast(self, data: dict, stream: str = None) -> None:
-        """Fan out data to connected clients — directly, or via Redis Streams.
+        """Fan out data to connected clients - directly, or via Redis Streams.
 
         ``websocket_backend=direct`` calls ``_fan_out`` immediately; there's
         no other instance that needs this message relayed to it. The default
         publishes to Redis instead, for the listener task (``listen_to_redis``)
-        on every instance — including this one — to pick up and fan out.
+        on every instance - including this one - to pick up and fan out.
         """
         if settings.websocket_backend == "direct":
             self._fan_out(data)
@@ -116,7 +116,7 @@ class ConnectionManager:
             logger.exception("Failed to publish to Redis Stream")
 
     async def broadcast_batch(self, data_list: list[dict], stream: str = None) -> None:
-        """Fan out multiple messages — directly, or via one Redis pipeline."""
+        """Fan out multiple messages - directly, or via one Redis pipeline."""
         if not data_list:
             return
 

@@ -3,7 +3,7 @@ import { FLEET_STATUSES, statusBreakdown } from "../utils/constants";
 /**
  * The KPI row: fleet size, then a breakdown that always adds up to it.
  *
- * Empty buckets are still rendered — an operator reading "Overheating 0" is
+ * Empty buckets are still rendered - an operator reading "Overheating 0" is
  * being told something, and cards that appear and vanish as the fleet changes
  * make the row jump. The one conditional card is "Other", which only appears
  * when a robot reports a status this build has no bucket for; that is the case

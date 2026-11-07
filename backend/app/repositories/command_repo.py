@@ -1,5 +1,5 @@
 """
-Command repository — all database queries for robot commands.
+Command repository - all database queries for robot commands.
 
 Encapsulates all command-table database operations, following the
 same pattern as TelemetryRepository.

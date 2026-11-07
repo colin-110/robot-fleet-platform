@@ -97,7 +97,7 @@ out/
 coverage/
 
 # ==============================================================================
-# Terraform (state files can contain plaintext secrets — never commit)
+# Terraform (state files can contain plaintext secrets - never commit)
 # ==============================================================================
 .terraform/
 **/.terraform/*

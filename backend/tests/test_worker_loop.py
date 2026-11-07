@@ -1,6 +1,6 @@
 """Tests for the worker's long-running loops.
 
-``test_worker.py`` covers ``process_batch`` — the pure parsing and persistence
+``test_worker.py`` covers ``process_batch`` - the pure parsing and persistence
 logic. What was untested is the machinery around it: consumer-group setup, the
 drain/ack cycle, backoff on failure, clean cancellation, and the stream-depth
 reporter that turns silent telemetry loss into an alertable metric. Each test

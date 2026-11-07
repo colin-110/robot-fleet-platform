@@ -51,7 +51,7 @@ async def test_registered_robot_with_no_telemetry_still_appears(client: AsyncCli
 
     This is the core regression. Previously the fleet list came from a query
     over recent telemetry, so a robot that stopped reporting produced no rows,
-    dropped out of the result, and disappeared from the dashboard — the one
+    dropped out of the result, and disappeared from the dashboard - the one
     failure a monitoring system must not have.
     """
     db.add(Robot(id=7, is_active=True, last_seen=None))
@@ -70,7 +70,7 @@ async def test_robot_silent_beyond_window_reports_last_seen(client: AsyncClient,
     """A long-silent robot keeps its last-seen time from the roster.
 
     Its telemetry is outside the query window, so ``last_seen`` cannot come
-    from the telemetry table — the roster is the only remaining record of when
+    from the telemetry table - the roster is the only remaining record of when
     the unit was last heard from.
     """
     long_ago = datetime.now(timezone.utc) - timedelta(days=3)

@@ -1,12 +1,12 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800&display=swap');
 
 /* ============================================================
-   FleetOps — Mission Control design system
+   FleetOps - Mission Control design system
    Flat, grounded, enterprise. No glow, no glass blur.
 
    Every colour is a token, and every token is defined twice:
    once on :root (dark, the default) and once on
-   [data-theme="light"]. Components must never hardcode a hex —
+   [data-theme="light"]. Components must never hardcode a hex -
    that is what made the previous revision impossible to theme.
    ============================================================ */
 
@@ -46,7 +46,7 @@
   --accent-line: rgba(79, 140, 255, 0.5);
   --accent-text: #cfe0ff;
 
-  /* Semantic status — HSL triplets for hsl(var(--x)) */
+  /* Semantic status - HSL triplets for hsl(var(--x)) */
   --brand: 218 100% 66%;
   --good: 137 52% 47%;
   --warn: 39 70% 48%;
@@ -221,7 +221,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Faint grid texture — barely there, adds depth without glow */
+/* Faint grid texture - barely there, adds depth without glow */
 body::before {
   content: "";
   position: fixed;
@@ -320,7 +320,7 @@ a { color: inherit; }
 }
 .btnPrimary:hover { background: var(--accent-2); border-color: transparent; }
 
-/* Square icon-only button — theme toggle, mobile menu, panel actions. */
+/* Square icon-only button - theme toggle, mobile menu, panel actions. */
 .iconBtn {
   appearance: none;
   display: inline-grid;

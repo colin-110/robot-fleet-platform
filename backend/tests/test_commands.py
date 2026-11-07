@@ -104,8 +104,8 @@ async def test_same_idempotency_key_on_two_robots(client: AsyncClient):
 
     The key used to be the command's primary key, which is global, so the same
     key sent to two robots collided on the PK. Recovery then searched for
-    ``(robot_id, idempotency_key)``, found nothing — the winner belonged to the
-    *other* robot — and surfaced a 500 on a completely legitimate request. Two
+    ``(robot_id, idempotency_key)``, found nothing - the winner belonged to the
+    *other* robot - and surfaced a 500 on a completely legitimate request. Two
     operators issuing "return-to-base-now" against different units is normal.
     """
     payload = {"command_type": "RETURN_TO_BASE", "idempotency_key": "shared-key"}
@@ -190,7 +190,7 @@ async def test_concurrent_status_updates_apply_once(client: AsyncClient, db: Asy
     """Racing PATCHes on one command must not both succeed.
 
     Regression test for a read-modify-write race: the old implementation read
-    the row, validated the transition in Python, then wrote — so two requests
+    the row, validated the transition in Python, then wrote - so two requests
     could both observe DISPATCHED, both judge their transition legal, and both
     commit. The transition is now a conditional UPDATE guarded by
     ``WHERE status = :expected``, so exactly one writer matches a row.
@@ -199,9 +199,9 @@ async def test_concurrent_status_updates_apply_once(client: AsyncClient, db: Asy
     loser can lose at either of two points, and which one depends on scheduling:
 
     * it reads before the winner commits, then its guarded UPDATE matches no
-      row — 409;
+      row - 409;
     * it reads after the winner commits, sees a state its transition is not
-      legal from, and is rejected at validation — 400.
+      legal from, and is rejected at validation - 400.
 
     Both uphold the invariant. Asserting ``[200, 409]`` pinned one interleaving
     and failed roughly a third of runs on unchanged code.

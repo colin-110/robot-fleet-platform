@@ -1,5 +1,5 @@
 #!/bin/bash
-# EC2 user-data — runs once, as root, on first boot of the app host.
+# EC2 user-data - runs once, as root, on first boot of the app host.
 #
 # Brings a bare Ubuntu 22.04 instance to the state the CD pipeline assumes:
 # Docker with the Compose plugin, and the repository checked out at

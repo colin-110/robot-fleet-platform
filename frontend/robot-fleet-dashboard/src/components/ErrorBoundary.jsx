@@ -1,7 +1,7 @@
 import { Component } from "react";
 
 /**
- * React error boundary — catches rendering crashes and shows a
+ * React error boundary - catches rendering crashes and shows a
  * user-friendly fallback instead of a blank white screen.
  */
 export default class ErrorBoundary extends Component {

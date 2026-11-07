@@ -8,7 +8,7 @@
  *
  * The token lives in `sessionStorage`, not `localStorage`: it is scoped to the
  * tab and cleared when the tab closes, so a shared machine does not leave an
- * operator signed in indefinitely. Neither survives XSS — the real mitigation
+ * operator signed in indefinitely. Neither survives XSS - the real mitigation
  * for that is the short token lifetime and the fact that the master API key is
  * no longer in the bundle at all.
  */

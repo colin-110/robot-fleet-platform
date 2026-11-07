@@ -1,8 +1,8 @@
 """Tests for short-lived console tickets.
 
 The property under test is that a ticket cannot be forged, widened, or extended
-by whoever holds it — the whole point of moving the browser off the master API
-key is defeated if any of those are possible.
+by whoever holds it. Otherwise moving the browser off the master API key would
+gain nothing.
 """
 
 import time
@@ -102,13 +102,13 @@ def test_unknown_version_is_rejected():
 
 def test_non_numeric_expiry_is_rejected():
     """Signature is checked first, so this only matters for a valid-looking
-    payload — but a crash here would be a denial of service on the handshake."""
+    payload - but a crash here would be a denial of service on the handshake."""
     assert verify_ticket("v1.console.not-a-number.nonce.deadbeef", SCOPE_CONSOLE) is False
 
 
 def test_rotating_the_api_key_invalidates_outstanding_tickets():
     """The signing key is derived from the master key, so a rotation revokes
-    every ticket already in the wild — the behaviour you want from a rotation."""
+    every ticket already in the wild - the behaviour you want from a rotation."""
     from app import tickets
 
     ticket, _ = issue_ticket(SCOPE_CONSOLE)

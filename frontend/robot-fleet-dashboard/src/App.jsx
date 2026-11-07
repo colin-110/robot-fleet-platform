@@ -17,7 +17,7 @@ import { fetchAuthConfig, getSession, restoreSession } from "./utils/auth";
 
 // Leaflet (map) and Recharts (both chart components) are the two heaviest
 // dependencies in the bundle. Splitting them into their own chunks keeps the
-// initial script small — the shell (navbar, sidebar, robot grid) is
+// initial script small - the shell (navbar, sidebar, robot grid) is
 // interactive before these chunks even finish fetching.
 const FleetMap = lazy(() => import("./components/FleetMap"));
 const FleetStatusChart = lazy(() => import("./components/FleetStatusChart"));
@@ -86,7 +86,7 @@ function useAuthGate() {
       })
       .catch(() => {
         // The backend is unreachable. Fall through to the dashboard, which has
-        // its own "Backend is unreachable" banner — a login screen here would
+        // its own "Backend is unreachable" banner - a login screen here would
         // blame the operator for an outage.
         if (!cancelled) setState({ status: "ready", loginRequired: false });
       });

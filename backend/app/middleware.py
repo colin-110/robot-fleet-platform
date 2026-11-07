@@ -24,15 +24,9 @@ logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "x-request-id"
 
-# Two budgets, because the two classes of write have very different shapes.
-#
-# "ingest" is the fleet reporting telemetry: high volume by design, so the
-# budget is generous. "console" is what a browser can reach without holding the
-# master key — minting tickets and dispatching commands. Those are public on
-# the hosted demo, so an unlimited budget would let anyone mint tickets forever
-# and drive the fleet as fast as they can send requests.
-#
-# Dashboard reads stay unlimited: cheap, cached, and read-only.
+# Two budgets: "ingest" (fleet telemetry, high volume) and "console" (ticket
+# minting and command dispatch, which a browser can reach without the master
+# key). Dashboard reads are not rate limited.
 _INGEST_SUFFIXES = ("/telemetry", "/telemetry/batch")
 _CONSOLE_SUFFIXES = ("/auth/ticket",)
 _COMMANDS_SEGMENT = "/commands/"
@@ -50,7 +44,7 @@ def _rate_limit_bucket(method: str, path: str) -> str | None:
     if path.endswith(_CONSOLE_SUFFIXES):
         return CONSOLE_BUCKET
     # Operator dispatch: POST /api/v1/commands/{robot_id}. The robot-facing
-    # /claim sub-path is excluded deliberately — robots poll it continuously and
+    # /claim sub-path is excluded deliberately - robots poll it continuously and
     # a console-sized budget would throttle the fleet itself.
     if _COMMANDS_SEGMENT in path and not path.endswith("/claim"):
         return CONSOLE_BUCKET
@@ -98,7 +92,7 @@ class RequestIDMiddleware:
 
     Also emits one structured access line per request. Production runs uvicorn
     with ``--no-access-log``, so without this a deployed request leaves no trace
-    at all — which is exactly how a dispatched command became unverifiable after
+    at all - which is exactly how a dispatched command became unverifiable after
     the fact.
     """
 
@@ -211,10 +205,9 @@ def _log_access(scope: Scope, status_code: int, elapsed_seconds: float) -> None:
 
 # ── Shared limiter logic ────────────────────────────────────────────
 
-# In-memory backend's state. Module-level, not per-request: the whole point
-# is one process's counters, shared across requests within that process.
-# Unbounded by client IP, deliberately — see rate_limit_backend's docstring
-# in config.py for why that's fine at this app's actual keyspace size.
+# In-memory backend's state: one process's counters, shared across requests.
+# Keys are never pruned; the set of client IPs this app sees (the fleet plus a
+# few browsers) stays small.
 _memory_windows: dict[str, list[float]] = {}
 
 
@@ -250,9 +243,9 @@ async def _check_rate_limit(
     client gets exactly ``max_requests`` per window rather than one fewer.
     Backed by Redis (default, correct across multiple instances) or an
     in-process dict (``RATE_LIMIT_BACKEND=memory``, correct for exactly one
-    instance and free) — see config.py.
+    instance and free) - see config.py.
 
-    The Redis path fails open — if Redis is unavailable we serve the request
+    The Redis path fails open - if Redis is unavailable we serve the request
     rather than hard-failing ingestion on a cache outage.
     """
     from app.config import get_settings

@@ -27,7 +27,7 @@ export function useWebSocket(url, onMessage) {
 
       // A handshake cannot carry a custom header, so the credential has to ride
       // in the query string. That is why it is a short-lived scoped ticket and
-      // not the master API key — see src/utils/ticket.js.
+      // not the master API key - see src/utils/ticket.js.
       let ticket;
       try {
         ticket = await getTicket();

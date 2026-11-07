@@ -1,5 +1,5 @@
 /* ============================================================
-   FleetOps — layout & components (loads after global.css)
+   FleetOps - layout & components (loads after global.css)
    ============================================================ */
 
 /* ── App shell ────────────────────────────────────────────────────── */
@@ -131,7 +131,7 @@
 
 /* The row has a definite height on purpose. With an auto height, the aside's
    `fr` tracks size to their content, so every event that arrived made the
-   column taller — stretching the page and stranding the map beside a run of
+   column taller - stretching the page and stranding the map beside a run of
    empty space. A fixed row height turns the log back into a scroller. */
 .dash__main {
   display: grid;

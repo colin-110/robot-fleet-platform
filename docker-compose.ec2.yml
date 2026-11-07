@@ -1,17 +1,13 @@
-# Actual production topology for the single free-tier EC2 instance.
+# Production: one EC2 instance running the backend and simulator.
 #
-# Deliberately minimal: no worker, no frontend container (Vercel serves that). Just backend + simulator,
-# fronted by nginx + Let's Encrypt running directly on the host (not in
-# Compose) for HTTPS. Postgres and Redis are external managed free tiers
-# (Neon, Upstash) - their URLs come from .env on the host, not in this repo.
+# No worker and no frontend container (Vercel serves the dashboard). nginx and
+# Let's Encrypt run on the host. Postgres (Neon) and Redis (Upstash) are
+# external; their URLs come from .env on the host.
 #
-# Deploy:
-#   docker compose -f docker-compose.ec2.yml -p fleetops pull
-#   docker compose -f docker-compose.ec2.yml -p fleetops up -d
-#
-# IMAGE_TAG defaults to `latest`. Pin it to a commit SHA for a deploy you can
-# name and roll back to:
+#   IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops pull
 #   IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
+#
+# IMAGE_TAG defaults to `latest`.
 
 x-logging: &default-logging
   driver: json-file

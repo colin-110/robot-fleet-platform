@@ -106,7 +106,7 @@ def lerp(a: float, b: float, t: float):
 
 
 # Multiplies the per-tick component wear rates. Wear is slow in absolute terms
-# — a real robot degrades over months — but a demo that has to be left running
+# - a real robot degrades over months - but a demo that has to be left running
 # for twenty hours before anything moves off 100% is not demonstrating anything.
 WEAR_ACCELERATION = 6.0
 
@@ -266,7 +266,7 @@ async def post_telemetry(
 
 
 # Consecutive zero-viewer polls required before actually going idle. At
-# POLL_INTERVAL_S apart, this is ~60s of confirmed silence — long enough that
+# POLL_INTERVAL_S apart, this is ~60s of confirmed silence - long enough that
 # a page reload or a brief disconnect doesn't flap the fleet in and out of
 # reporting. Going *active* has no such delay: the very next poll that sees
 # a viewer flips it back on immediately.
@@ -280,8 +280,7 @@ async def viewer_watch_loop(
     """Poll the backend's viewer count and gate the fleet's own activity on it.
 
     Runs once per worker process, independent of how many robots that worker
-    owns — the whole point is replacing N robots' worth of bandwidth with one
-    small GET every 15s. Fails open on a check failure (leaves state.active
+    owns, so one small GET every 15s replaces N robots' worth of traffic. Fails open on a check failure (leaves state.active
     untouched): a transient problem with this specific request is not
     evidence that viewers went away, and flipping the fleet dark because a
     health check hiccuped would be a worse failure mode than the bandwidth
@@ -301,13 +300,13 @@ async def viewer_watch_loop(
             if count > 0:
                 consecutive_zero = 0
                 if not state.active:
-                    safe_print("[VIEWER] Viewer detected — resuming telemetry and command polling.")
+                    safe_print("[VIEWER] Viewer detected - resuming telemetry and command polling.")
                 state.active = True
             else:
                 consecutive_zero += 1
                 if state.active and consecutive_zero >= IDLE_AFTER_CONSECUTIVE_ZERO_POLLS:
                     safe_print(
-                        f"[VIEWER] No viewers for ~{POLL_INTERVAL_S * consecutive_zero:.0f}s — "
+                        f"[VIEWER] No viewers for ~{POLL_INTERVAL_S * consecutive_zero:.0f}s - "
                         "pausing telemetry and command polling to save bandwidth."
                     )
                     state.active = False
@@ -352,7 +351,7 @@ async def dispatcher_loop(
                 robot
                 for robot in robots
                 if robot.online
-                # STOPPED robots stay parked until an explicit RESUME command —
+                # STOPPED robots stay parked until an explicit RESUME command -
                 # the dispatcher must not re-task an emergency-stopped unit.
                 and robot.status not in {"DEAD", "CHARGING", "OVERHEATING", "STOPPED"}
                 and robot.mission is None
@@ -415,18 +414,9 @@ async def robot_loop(
                         f"[R{robot.robot_id:02d}] Telemetry drop: Network blackout started for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)"
                     )
 
-            # Commands still poll during a blackout — a blackout drops this
-            # robot's telemetry uplink, not its ability to receive control
-            # commands. Gating RETURN_TO_BASE/EMERGENCY_STOP on the same flag
-            # meant an operator's Stop could sit unapplied for up to 90s,
-            # which reads as a stuck button rather than realistic degraded
-            # comms.
-            #
-            # Gated on viewer_state instead: with nobody watching, polling a
-            # command queue that only an operator's own dashboard click could
-            # ever populate is pure bandwidth spent on nothing. The one-tick
-            # (2-5s) delay before this resumes after a viewer reconnects is
-            # the same latency a real device's poll cycle would have anyway.
+            # Command polling continues during a telemetry blackout so an
+            # operator's Stop still lands. It pauses when nobody is viewing,
+            # since only a dashboard can create commands.
             if viewer_state.active:
                 try:
                     # POST /claim, not GET: claiming transitions commands to
@@ -824,7 +814,7 @@ async def emit_telemetry(
         "robot_id": robot.robot_id,
         # The robot stamps its own reading. Readings sit in an outbound queue
         # and are posted in batches, so a server-side timestamp would record
-        # when the batch was uploaded rather than when each was measured —
+        # when the batch was uploaded rather than when each was measured -
         # collapsing readings taken seconds apart onto one instant.
         "timestamp": iso_utc_now(),
         "battery": round(
@@ -877,13 +867,9 @@ async def emit_telemetry(
 async def telemetry_batcher(
     client: aiohttp.ClientSession, api_url: str, post_timeout_s: float, queue: asyncio.Queue
 ):
-    # Flush on whichever comes first: 50 queued readings, or 1s since the
-    # oldest unflushed reading arrived. The old version reset its 1s wait on
-    # every new item, so with ~40 robots emitting every ~3.5s the queue almost
-    # never sat idle for a full second — the size trigger became the only one
-    # that ever fired, which at that arrival rate took 4-5s on its own. A
-    # STOPPED/RTB status could sit queued that whole time after the command
-    # already landed on the robot, which read as the dashboard being stuck.
+    # Flush at 50 queued readings or 1s after the oldest unflushed one,
+    # whichever comes first. Measuring from the oldest item (not the newest)
+    # keeps status changes from waiting several seconds behind a busy queue.
     MAX_BATCH = 50
     MAX_WAIT_S = 1.0
 

@@ -35,8 +35,8 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `LOG_FORMAT` | `text` (`json` in production) | `json` emits one object per line with the request id and structured fields, for a log aggregator |
 | `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/health/live` are excluded so health polls do not bury real traffic |
 | `DEFER_WRITES_WITHOUT_VIEWERS` | `false` | Direct-write path only: while no dashboard is connected, buffer telemetry in memory and flush every 10 minutes so serverless Postgres (Neon) can suspend |
-| `WEBSOCKET_BACKEND` | `redis` | `direct` fans out in-process — correct for exactly one API instance, and saves Redis commands |
-| `RATE_LIMIT_BACKEND` | `redis` | `memory` keeps the sliding window in-process — same one-instance reasoning |
+| `WEBSOCKET_BACKEND` | `redis` | `direct` fans out in-process - correct for exactly one API instance, and saves Redis commands |
+| `RATE_LIMIT_BACKEND` | `redis` | `memory` keeps the sliding window in-process - same one-instance reasoning |
 
 ### Deployment-shape flags
 
@@ -51,7 +51,7 @@ These two pick between the full stack and the single-instance stack production r
 
 ## Deployment
 
-Production is one free-tier EC2 instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): just the backend and the simulator. Everything else is a managed free tier — **Neon** (Postgres), **Upstash** (Redis), **Vercel** (the static frontend build). nginx and Let's Encrypt run directly on the host, not in Compose, and proxy HTTPS to the backend on `127.0.0.1:8000`.
+Production is one free-tier EC2 instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): just the backend and the simulator. Everything else is a managed free tier - **Neon** (Postgres), **Upstash** (Redis), **Vercel** (the static frontend build). nginx and Let's Encrypt run directly on the host, not in Compose, and proxy HTTPS to the backend on `127.0.0.1:8000`.
 
 ```
 Viewer --HTTPS--> Vercel (static dashboard)
@@ -61,7 +61,7 @@ Viewer --HTTPS--> Vercel (static dashboard)
                                    '--> Upstash (Redis)
 ```
 
-There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false` and `OPT_READ_CACHE=false`, plus `DEFER_WRITES_WITHOUT_VIEWERS=true` so Neon gets idle windows long enough to suspend. The Docker healthcheck polls `/health/live`, which does not touch the database — `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
+There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false` and `OPT_READ_CACHE=false`, plus `DEFER_WRITES_WITHOUT_VIEWERS=true` so Neon gets idle windows long enough to suspend. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
 
 The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
 
@@ -75,7 +75,7 @@ Every container caps its logs at 30 MB (`10m` × 3 files); the json-file driver 
 
 ### Provisioning the host
 
-[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap, and clones the repo to `/opt/fleetops`. Two details are load-bearing:
+[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap, and clones the repo to `/opt/fleetops`. Two details matter:
 
 - **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. `send-command` treats a target that matches nothing as success, so an untagged host is a silent non-deploy.
 - **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the SSM agent never registers and the host is invisible to the pipeline.
@@ -86,7 +86,7 @@ Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env`
 
 - **`DATABASE_URL` needs the `sslmode`/`channel_binding` query params stripped.** Neon hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs. Drop both; asyncpg negotiates TLS with Neon automatically.
 - **Health routes must answer `HEAD`.** Uptime monitors and load balancers default to `HEAD`; `@app.get` only registers `GET`, so they read a healthy service as down. Health/root routes use `@app.api_route(path, methods=["GET", "HEAD"])`.
-- **`CORS_ORIGINS` must match the browser's `Origin` exactly — no trailing slash.** `https://your-app.vercel.app/` never matches.
+- **`CORS_ORIGINS` must match the browser's `Origin` exactly - no trailing slash.** `https://your-app.vercel.app/` never matches.
 - **The direct ingest path registers robots itself.** Fleet status is the roster `LEFT JOIN`ed onto telemetry; with no worker, `TelemetryService` must call `RobotRepository.mark_seen()` or robots never appear.
 - **Direct batch ingest commits once per batch.** Per-row commits to a remote Postgres were slow enough to exceed the simulator's POST timeout and silently drop whole batches.
 - **Upstash URLs use `rediss://`.** `redis-py` picks TLS from the URL scheme alone.
@@ -96,10 +96,10 @@ Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env`
 
 On every push and pull request to `main`:
 
-1. **`backend-test`** — `ruff check` across `backend/` and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against real PostgreSQL and Redis service containers.
-2. **`frontend-test`** — ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
-3. **`publish-images`** — builds and pushes the `backend` and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance. The frontend is deployed by Vercel, not from an image.
-4. **`deploy-aws`** — gated SSM-based rollout, opt-in via a repository variable. The AWS identity it assumes is created by [`scripts/setup_oidc_role.ps1`](../scripts/setup_oidc_role.ps1): a GitHub OIDC provider and a role trusted only by this repository on `main`, so the pipeline holds no long-lived key. Its one permission is `ssm:SendCommand`, conditioned on `ssm:resourceTag/role = fleet-app` — without that condition the role could run shell on every instance in the account. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget against a target that need not exist, which is how a deploy that ran nowhere could report success. The host is reset to the deployed SHA rather than to `origin/main`, then runs `docker-compose.ec2.yml`, so the compose file on the box comes from the same commit as the images `IMAGE_TAG` pins.
+1. **`backend-test`** - `ruff check` across `backend/` and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against real PostgreSQL and Redis service containers.
+2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
+3. **`publish-images`** - builds and pushes the `backend` and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance. The frontend is deployed by Vercel, not from an image.
+4. **`deploy-aws`** - gated SSM-based rollout, opt-in via a repository variable. The AWS identity it assumes is created by [`scripts/setup_oidc_role.ps1`](../scripts/setup_oidc_role.ps1): a GitHub OIDC provider and a role trusted only by this repository on `main`, so the pipeline holds no long-lived key. Its one permission is `ssm:SendCommand`, conditioned on `ssm:resourceTag/role = fleet-app` - without that condition the role could run shell on every instance in the account. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget, so without this a deploy that ran nowhere would still report success. The host is reset to the deployed SHA rather than to `origin/main`, then runs `docker-compose.ec2.yml`, so the compose file on the box comes from the same commit as the images `IMAGE_TAG` pins.
 
 ---
 
@@ -107,7 +107,7 @@ On every push and pull request to `main`:
 
 One configuration for the API and the worker (`app/logging_config.py`), replacing two `basicConfig` calls that used different formats despite shipping in the same image.
 
-Every line carries the `request_id` that `RequestIDMiddleware` returns as `X-Request-ID`, propagated through a `ContextVar` rather than threaded through call signatures — under asyncio that is per-task, so concurrent requests cannot see each other's value and a service function five frames deep gets correlation for free. An inbound `X-Request-ID` is honoured rather than replaced, so a trace started by nginx survives into the service.
+Every line carries the `request_id` that `RequestIDMiddleware` returns as `X-Request-ID`, propagated through a `ContextVar` rather than threaded through call signatures - under asyncio that is per-task, so concurrent requests cannot see each other's value and a service function five frames deep gets correlation for free. An inbound `X-Request-ID` is honoured rather than replaced, so a trace started by nginx survives into the service.
 
 `LOG_FORMAT=json` emits one JSON object per line; fields passed via `extra=` become queryable keys instead of text a dashboard has to regex. Production defaults to it.
 
@@ -119,12 +119,12 @@ Each request also produces a structured access line (`http_method`, `http_path`,
 
 There is no metrics stack. The signals that exist are:
 
-- `GET /health/live` — process liveness, no database round trip. This is what Docker polls.
-- `GET /health` — checks the database and reports the active `opt_*` flags. Use it by hand; don't poll it against Neon.
-- `GET /api/v1/viewers` (API key) — connected WebSocket clients.
+- `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
+- `GET /health` - checks the database and reports the active `opt_*` flags. Use it by hand; don't poll it against Neon.
+- `GET /api/v1/viewers` (API key) - connected WebSocket clients.
 - Structured logs (above). The worker, when it runs, logs a warning when the telemetry stream nears `TELEMETRY_STREAM_MAXLEN`, past which Redis trims unacknowledged entries.
 
-Alerting is absent — see [Scaling roadmap](#scaling-roadmap).
+Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
 
 ---
 
@@ -132,8 +132,8 @@ Alerting is absent — see [Scaling roadmap](#scaling-roadmap).
 
 | Control | Implementation |
 | :--- | :--- |
-| Operator identity | `AUTH_MODE=required` puts every console action behind a bcrypt-verified sign-in and an HS256 JWT carrying a signed role. Three roles, ranked: `viewer` reads, `operator` dispatches commands, `admin` covers both. Production defaults to required; the public demo sets `open` explicitly, which resolves every caller to an anonymous operator through the *same* dependency rather than skipping it — so the authenticated path is one code path, not a branch nobody runs. Login returns one message and one timing profile for both "no such user" and "wrong password", so it cannot enumerate accounts. |
-| Browser credentials | The dashboard is never built with the master key. It requests a short-lived console ticket at runtime (`POST /api/v1/auth/ticket`) — HMAC-signed over its own scope and expiry, so a holder can neither widen its permissions nor extend its life. Ingest still requires the master key, which now stays server-side, so reading the bundle no longer yields a credential that can forge telemetry for the fleet. Rotating the API key revokes every outstanding ticket, since the signing key is derived from it. |
+| Operator identity | `AUTH_MODE=required` puts every console action behind a bcrypt-verified sign-in and an HS256 JWT carrying a signed role. Three roles, ranked: `viewer` reads, `operator` dispatches commands, `admin` covers both. Production defaults to required; the public demo sets `open` explicitly, which resolves every caller to an anonymous operator through the *same* dependency rather than skipping it - so the authenticated path is one code path, not a branch nobody runs. Login returns one message and one timing profile for both "no such user" and "wrong password", so it cannot enumerate accounts. |
+| Browser credentials | The dashboard is never built with the master key. It requests a short-lived console ticket at runtime (`POST /api/v1/auth/ticket`) - HMAC-signed over its own scope and expiry, so a holder can neither widen its permissions nor extend its life. Ingest still requires the master key, which now stays server-side, so reading the bundle no longer yields a credential that can forge telemetry for the fleet. Rotating the API key revokes every outstanding ticket, since the signing key is derived from it. |
 | API key comparison | `secrets.compare_digest`. A plain `!=` short-circuits at the first differing byte, leaking key prefixes through response timing. |
 | Secret defaults | None. `TELEMETRY_API_KEY` has no fallback value; the application fails at startup if it is missing. |
 | Production guards | `APP_ENV=production` rejects wildcard CORS origins and API keys shorter than 16 characters at configuration load. |

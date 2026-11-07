@@ -1,5 +1,5 @@
 """
-Analytics service — optimized fleet-wide metrics with caching.
+Analytics service - optimized fleet-wide metrics with caching.
 """
 
 import logging
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 CACHE_KEY = "fleet_analytics"
-CACHE_TTL = 10.0  # seconds — analytics don't need sub-second freshness
+CACHE_TTL = 10.0  # seconds - analytics don't need sub-second freshness
 
 
 class AnalyticsService:

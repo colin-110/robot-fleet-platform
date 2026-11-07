@@ -179,7 +179,7 @@ describe("useFleetData", () => {
   });
 
   // The feed is otherwise socket-only, so every reload started the log empty
-  // and it filled from nothing — a fleet that had been running for hours
+  // and it filled from nothing - a fleet that had been running for hours
   // looked idle until the next event happened to fire.
   it("seeds the log with persisted history on mount", async () => {
     mockEndpoints({

@@ -4,7 +4,7 @@ Telemetry retention pruning.
 Shared between the worker's loop (``worker.py``'s ``db_pruner_task``) and a
 loop the backend runs on its own (``main.py``'s lifespan). The backend needs
 its own copy of this because the worker is an optional, separately-deployed
-process — a deployment that skips it (this app's free-tier Render path, which
+process - a deployment that skips it (this app's free-tier Render path, which
 has no worker at all) would otherwise never prune anything. Telemetry grew
 unbounded until it hit Neon's free-tier storage quota, at which point every
 INSERT started failing with ``DiskFullError`` and ingestion silently stopped
@@ -58,7 +58,7 @@ async def prune_loop(
     """Run ``prune_old_telemetry`` on a fixed interval, forever.
 
     ``use_redis_lock`` guards against two processes pruning at the same
-    moment — meaningful when a worker and this loop might both be running
+    moment - meaningful when a worker and this loop might both be running
     (the multi-instance/AWS path). A single-instance deployment with no
     coordination to do (``websocket_backend=direct``, no worker) skips the
     lock entirely rather than depending on Redis for something that doesn't

@@ -185,7 +185,7 @@ def test_production_defaults_to_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_request_id_is_returned_and_logged(client, caplog):
-    """The whole point: the id the caller is given is the id in the logs."""
+    """The id returned to the caller is the id in the logs."""
     with caplog.at_level(logging.INFO, logger="app.middleware"):
         response = await client.get("/api/v1/robots/status")
 

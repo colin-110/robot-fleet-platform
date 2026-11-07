@@ -22,7 +22,7 @@ const CENTER_LAT = 37.7749;
 const CENTER_LNG = -122.4194;
 
 // CartoDB's free anonymous basemap CDN (dark_all/light_all) was
-// discontinued — every tile now comes back as an "API KEY REQUIRED"
+// discontinued - every tile now comes back as an "API KEY REQUIRED"
 // placeholder regardless of referrer or request pattern. OpenStreetMap's
 // standard tiles are free with no key and no signup, but ship only one
 // (light) style; the dark theme is approximated with a CSS filter on the

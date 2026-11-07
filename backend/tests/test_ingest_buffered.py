@@ -2,8 +2,8 @@
 
 ``conftest.py`` pins ``opt_redis_buffer = False`` for the whole suite so that
 route tests can assert on synchronous database writes, and CI sets the same
-flag. Without this file the buffered branch — the default for the full
-stack — would never be executed at all.
+flag. Without this file the buffered branch - the default for the full
+stack - would never be executed at all.
 
 These tests flip the flag and assert the property that makes the design worth
 having: the request performs no database work, it only hands the reading to
@@ -57,7 +57,7 @@ async def _row_count(db) -> int:
 async def test_buffered_ingest_writes_nothing_to_the_database(
     client, db, sample_telemetry, buffered, captured_broadcasts
 ):
-    """The whole point of the buffer: no DB round trip on the request path."""
+    """The buffer's purpose: no DB round trip on the request path."""
     response = await client.post("/api/v1/telemetry", json=sample_telemetry)
 
     assert response.status_code == 200

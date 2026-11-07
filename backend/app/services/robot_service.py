@@ -1,5 +1,5 @@
 """
-Robot service — fleet status derivation.
+Robot service - fleet status derivation.
 
 Fleet status is the roster LEFT JOINed onto recent telemetry, not a GROUP BY
 over recent telemetry. The distinction matters: deriving the fleet from
@@ -48,8 +48,8 @@ def _derive_status(latest, age_seconds: float) -> str:
     """Report the robot's own status, unless it has gone quiet.
 
     One threshold, from configuration. This previously checked three different
-    values in two places — ``>300`` and ``>60`` here and ``>180`` in the
-    caller — of which ``>300`` was unreachable and ``>180`` was dead for any
+    values in two places - ``>300`` and ``>60`` here and ``>180`` in the
+    caller - of which ``>300`` was unreachable and ``>180`` was dead for any
     robot that reported a status.
     """
     if age_seconds > settings.offline_after_seconds:
@@ -61,8 +61,8 @@ def _health(value: float | None) -> float:
     """Component health, defaulting only when the device reported nothing.
 
     The distinction is null versus zero, and a truthiness check collapses them:
-    ``value if value else 100.0`` renders a completely failed component — 0.0,
-    the single most urgent reading the system can receive — as perfect health.
+    ``value if value else 100.0`` renders a completely failed component - 0.0,
+    the single most urgent reading the system can receive - as perfect health.
     That inverts the signal rather than losing it, which is the one failure mode
     a monitoring system must not have.
 
@@ -76,7 +76,7 @@ def _estimate_runtime_minutes(rows, latest_ts: datetime) -> float | None:
     """Extrapolate remaining runtime from the observed battery drain rate.
 
     Returns ``None`` when the history spans no time or the battery is not
-    falling — a flat or charging battery has no meaningful time-to-empty, and
+    falling - a flat or charging battery has no meaningful time-to-empty, and
     dividing by a zero span would raise.
     """
     if len(rows) < 2:

@@ -410,7 +410,7 @@ async def test_bootstrap_warns_when_required_mode_has_no_credentials(
     db, auth_required, monkeypatch, caplog
 ):
     """A required-mode deployment with an empty users table and no bootstrap
-    credentials is unreachable — that has to be loud, not silent."""
+    credentials is unreachable - that has to be loud, not silent."""
     from app.routes.auth import bootstrap_admin_user
 
     monkeypatch.setattr(settings, "bootstrap_admin_username", None)

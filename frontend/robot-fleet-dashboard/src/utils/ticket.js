@@ -4,7 +4,7 @@
  * The dashboard used to be built with the master API key inlined
  * (`VITE_WS_API_KEY`), which put a credential that authorizes fleet-wide
  * telemetry ingest into the JavaScript bundle. It now asks the backend for a
- * short-lived, console-scoped ticket instead — see `backend/app/tickets.py`.
+ * short-lived, console-scoped ticket instead - see `backend/app/tickets.py`.
  *
  * The cache is module-level on purpose: the socket hook and command dispatch
  * both need a ticket, and without sharing one they would each mint their own
@@ -15,7 +15,7 @@ import { authHeaders } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
-// Refresh this many seconds before expiry rather than waiting to be rejected —
+// Refresh this many seconds before expiry rather than waiting to be rejected -
 // a request that races the expiry boundary would otherwise fail for no reason
 // the operator could act on.
 const REFRESH_MARGIN_SECONDS = 30;

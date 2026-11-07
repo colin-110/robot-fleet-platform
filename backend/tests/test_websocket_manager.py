@@ -1,7 +1,7 @@
 """Tests for the WebSocket fan-out tier.
 
 The manager's pure helpers were already reachable from the API tests, but its
-long-running pieces — the per-client sender loop and the Redis listener — were
+long-running pieces - the per-client sender loop and the Redis listener - were
 not, which is why the module sat at 26 percent. These drive those paths
 directly: a fake socket, a fake Redis, and a single iteration of each loop
 before cancellation.
@@ -140,7 +140,7 @@ async def test_fan_out_reaches_every_connected_client(manager):
 async def test_overflow_drops_the_oldest_frame_not_the_newest(manager):
     """The design claim: a slow consumer sheds stale telemetry, keeping the
     freshest. Position data from three seconds ago is noise, so dropping the
-    newest frame would be exactly the wrong trade."""
+    newest frame would be the wrong trade."""
     ws = FakeWebSocket()
     await manager.connect(ws)
     # Stop the sender draining so the queue can actually fill.

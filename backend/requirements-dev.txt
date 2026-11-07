@@ -1,4 +1,4 @@
-# Test-only. Not installed in the runtime image — the Dockerfile builds
+# Test-only. Not installed in the runtime image - the Dockerfile builds
 # from requirements.txt alone, since none of this is imported by app/.
 -r requirements.txt
 

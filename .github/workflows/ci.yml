@@ -92,7 +92,7 @@ jobs:
 
   # ── CD: Build & publish images to GitHub Container Registry ─────────
   # Runs only on pushes to main, after tests pass. Produces deployable,
-  # versioned images that any host (EC2, ECS, k8s) can pull — no building
+  # versioned images that any host (EC2, ECS, k8s) can pull - no building
   # on the target box required.
   publish-images:
     name: Build & Publish Images
@@ -192,9 +192,8 @@ jobs:
           cid=$(aws ssm send-command --instance-ids $ids --document-name AWS-RunShellScript --comment "Deploy ${SHA:0:7}" --parameters "$params" --query "Command.CommandId" --output text)
           echo "SSM command: $cid"
 
-          # send-command only queues the work. Without waiting on the result the
-          # job goes green while the rollout fails on the box, which is how a
-          # broken deploy stays invisible until someone loads the site.
+          # send-command only queues the work, so wait for the result; otherwise
+          # the job passes even when the rollout fails on the host.
           inv() { aws ssm get-command-invocation --command-id "$cid" --instance-id "$1" --query "$2" --output text; }
 
           failed=0

@@ -1,5 +1,5 @@
 """
-Command service — creation, idempotency, and the status state machine.
+Command service - creation, idempotency, and the status state machine.
 """
 
 import datetime as dt
@@ -38,7 +38,7 @@ class CommandService:
         """Create a command with idempotency and state machine initialization."""
         # A fresh id every time. Using the idempotency key as the primary key
         # conflated two scopes: the key is unique per (robot_id, key) via its
-        # own constraint, but the PK is global — so the same key sent to two
+        # own constraint, but the PK is global - so the same key sent to two
         # different robots collided on the PK. Recovery then looked up
         # (robot_id, idempotency_key), found nothing (the winner belonged to
         # the other robot), and raised a 500 on a legitimate request.
@@ -66,7 +66,7 @@ class CommandService:
             await self.db.commit()
         except IntegrityError as exc:
             await self.db.rollback()
-            # Idempotency key collision — return the command that won the race.
+            # Idempotency key collision - return the command that won the race.
             stmt = select(RobotCommand).where(
                 RobotCommand.robot_id == robot_id,
                 RobotCommand.idempotency_key == command.idempotency_key,
@@ -98,7 +98,7 @@ class CommandService:
         ``WHERE status = :expected``. Reading the row, validating in Python,
         then writing would be a read-modify-write race: two concurrent PATCHes
         can both read ``ACKNOWLEDGED``, both decide their transition is legal,
-        and both commit — losing one update and letting a command reach a
+        and both commit - losing one update and letting a command reach a
         terminal state twice. Letting the database do the compare-and-set means
         exactly one of the two writers matches a row; the loser re-reads and
         gets a 409.
@@ -111,7 +111,7 @@ class CommandService:
         new_status = update_data.status
         now = datetime.now(timezone.utc)
 
-        # Replaying the same status is a no-op, not an error — makes retries safe.
+        # Replaying the same status is a no-op, not an error - makes retries safe.
         if current_status == new_status:
             return self._to_dict(record)
 
@@ -148,7 +148,7 @@ class CommandService:
             # Another writer moved the command between our read and our write.
             current = await self._get_or_404(command_id)
             if current.status == new_status:
-                # They applied the same transition we wanted — treat as success.
+                # They applied the same transition we wanted - treat as success.
                 return self._to_dict(current)
             raise HTTPException(
                 status_code=409,

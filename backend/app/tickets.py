@@ -8,9 +8,9 @@ robot forever.
 
 A ticket replaces it. The browser requests one per page load and it:
 
-* **expires** — minutes, not forever, so a scraped ticket is worthless shortly
+* **expires** - minutes, not forever, so a scraped ticket is worthless shortly
   after it is taken;
-* **cannot ingest** — the ingest routes still require the master key, which now
+* **cannot ingest** - the ingest routes still require the master key, which now
   never leaves the server and the simulator;
 * **carries an explicit scope**, signed alongside the expiry, so a client cannot
   widen its own permissions or extend its own lifetime.
@@ -21,7 +21,7 @@ Format::
 
 Signed with HMAC-SHA256 keyed on the master API key. Deriving the signing key
 rather than adding a second secret means there is nothing extra to configure or
-rotate, and rotating the API key invalidates every outstanding ticket — which
+rotate, and rotating the API key invalidates every outstanding ticket - which
 is the behaviour you want from a rotation.
 
 This is a blast-radius reduction, not user authentication. The demo has no

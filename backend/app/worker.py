@@ -94,7 +94,7 @@ async def process_batch(session: AsyncSession, stream_messages: list) -> list:
 
     ``stream_messages`` is a list of ``(msg_id, fields)`` tuples as returned by
     ``XREADGROUP``, where ``fields`` carries a JSON ``"payload"``. Non-telemetry
-    payloads (events/commands — anything without a ``battery`` field) and
+    payloads (events/commands - anything without a ``battery`` field) and
     undecodable payloads are skipped, but every message id seen is returned so
     the caller can ``XACK`` the whole batch and avoid reprocessing.
 
@@ -148,7 +148,7 @@ async def report_stream_depth():
             length = await manager.redis.xlen(STREAM_KEY)
             if length >= settings.telemetry_stream_maxlen * 0.9:
                 logger.warning(
-                    "Telemetry stream at %d/%d entries — Redis will trim "
+                    "Telemetry stream at %d/%d entries - Redis will trim "
                     "unacknowledged telemetry if the worker falls further behind.",
                     length,
                     settings.telemetry_stream_maxlen,
@@ -257,8 +257,8 @@ async def db_pruner_task():
 async def scan_for_timeouts(session: AsyncSession):
     """Expire commands that ran past their deadline.
 
-    The selection and the write are separated by real time — the loop awaits a
-    Redis round trip per command — so a robot can acknowledge completion after
+    The selection and the write are separated by real time - the loop awaits a
+    Redis round trip per command - so a robot can acknowledge completion after
     a command is picked up here but before it is written. An unguarded
     ``UPDATE ... WHERE id = :id`` would then overwrite a genuinely COMPLETED
     command with TIMEOUT and broadcast that lie to every dashboard.
@@ -298,7 +298,7 @@ async def scan_for_timeouts(session: AsyncSession):
         update_result = await session.execute(update_stmt)
 
         if update_result.rowcount == 0:
-            # Finished while the scan was in flight. Not an error — the robot
+            # Finished while the scan was in flight. Not an error - the robot
             # won the race, which is the outcome we want.
             logger.debug("Command %s reached a terminal state during the scan.", cmd.id)
             continue

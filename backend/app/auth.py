@@ -14,7 +14,7 @@ def is_valid_api_key(candidate: str | None) -> bool:
     """Constant-time API key comparison.
 
     ``==`` on strings short-circuits at the first differing byte, so response
-    time leaks how many leading characters a guess got right — enough to
+    time leaks how many leading characters a guess got right - enough to
     recover a key byte by byte over many requests. ``compare_digest`` always
     scans the full length.
     """
@@ -37,7 +37,7 @@ async def verify_console_access(
 
     Accepts the master key (server-side callers: the simulator, load harnesses)
     or a short-lived console ticket (the dashboard). The browser therefore never
-    needs the key that authorizes telemetry ingest — see ``app/tickets.py``.
+    needs the key that authorizes telemetry ingest - see ``app/tickets.py``.
     """
     if is_valid_api_key(x_api_key):
         return
@@ -51,7 +51,7 @@ async def verify_read_access(x_api_key: str = Header(None)):
 
     The hosted demo serves fleet status and analytics publicly so the dashboard
     works without shipping a key to every browser. That is a deliberate choice
-    for a demo with synthetic data, not an oversight — but it is the wrong
+    for a demo with synthetic data, not an oversight - but it is the wrong
     default for real fleet positions, so it is a setting rather than a
     hardcoded exemption.
     """
@@ -69,7 +69,7 @@ class Principal:
 
     In ``open`` mode there are no accounts, so every caller resolves to an
     anonymous operator. Routes therefore express their requirement the same way
-    in both modes and there is no ``if auth_enabled`` scattered through them —
+    in both modes and there is no ``if auth_enabled`` scattered through them -
     the mode is decided in one place, here.
     """
 
@@ -104,7 +104,7 @@ async def current_principal(authorization: str = Header(None)) -> Principal:
 
     Open mode short-circuits to an anonymous operator. A token that *is*
     presented is still validated even in open mode, so a client cannot get a
-    weaker check by sending a bad token than by sending none — and so the
+    weaker check by sending a bad token than by sending none - and so the
     authenticated path is exercised by ordinary traffic.
     """
     from app.security import decode_access_token

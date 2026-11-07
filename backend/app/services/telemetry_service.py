@@ -1,5 +1,5 @@
 """
-Telemetry service — ingest + broadcast + read.
+Telemetry service - ingest + broadcast + read.
 
 Two ingest paths, selected by ``OPT_REDIS_BUFFER``:
 
@@ -45,7 +45,7 @@ def resolve_timestamp(reported: datetime | None, received_at: datetime) -> datet
     """Decide the authoritative time for a reading.
 
     Device time is preferred, because only the device knows when it actually
-    took the measurement — and a batch uploaded after a network outage would
+    took the measurement - and a batch uploaded after a network outage would
     otherwise collapse onto its upload time, destroying the timeline.
 
     Two guards. A reading dated far in the future is clamped to server time: a
@@ -111,7 +111,7 @@ class TelemetryService:
             payload["timestamp"] = _to_iso(resolve_timestamp(data.timestamp, received_at))
 
             # XADD both publishes to dashboards and queues the row for the
-            # worker that writes it to PostgreSQL — one hop, not two.
+            # worker that writes it to PostgreSQL - one hop, not two.
             if background_tasks:
                 background_tasks.add_task(manager.broadcast, payload)
             else:
@@ -124,7 +124,7 @@ class TelemetryService:
             )
             # The buffered path's roster upsert lives in the worker
             # (app/worker.py's _register_robots) because there's a worker
-            # to do it later. The direct path has no later — skip this and
+            # to do it later. The direct path has no later - skip this and
             # the robot never appears in the roster, so it never shows up
             # in fleet status no matter how much telemetry it sends.
             await self.robot_repo.mark_seen({telemetry.robot_id: telemetry.timestamp})
@@ -140,7 +140,7 @@ class TelemetryService:
         else:
             # Nobody is watching, so nobody needs this row in Postgres
             # this instant. Buffer it and let telemetry_buffer.flush_loop
-            # write it later in a batch — see that module for why.
+            # write it later in a batch - see that module for why.
             resolved_ts = resolve_timestamp(data.timestamp, datetime.now(timezone.utc))
             await telemetry_buffer.buffer([(data, resolved_ts)])
 
@@ -187,7 +187,7 @@ class TelemetryService:
             for t in telemetries:
                 if t.robot_id not in latest_by_robot or t.timestamp > latest_by_robot[t.robot_id]:
                     latest_by_robot[t.robot_id] = t.timestamp
-            # See the comment in ingest() — the direct path has no worker
+            # See the comment in ingest() - the direct path has no worker
             # to register robots later, so it has to happen here.
             await self.robot_repo.mark_seen(latest_by_robot)
             await self.repo.db.commit()
@@ -199,7 +199,7 @@ class TelemetryService:
 
             result = {"message": f"{len(data)} telemetry readings received"}
         else:
-            # Nobody watching — see the comment in ingest()'s buffered
+            # Nobody watching - see the comment in ingest()'s buffered
             # branch. Same trade: batched to Postgres later, broadcast now.
             rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
             await telemetry_buffer.buffer(rows)

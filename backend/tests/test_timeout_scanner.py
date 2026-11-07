@@ -7,7 +7,7 @@ selection saw.
 
 The race tests below drive that window deliberately: a *second* database
 session commits the completion after the scanner's SELECT has returned but
-before its UPDATE runs. A single session cannot express this — the write would
+before its UPDATE runs. A single session cannot express this - the write would
 be part of the same transaction and there would be no race to lose.
 """
 

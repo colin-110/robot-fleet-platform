@@ -1,5 +1,5 @@
 /**
- * Shared constants — single source of truth for status colors
+ * Shared constants - single source of truth for status colors
  * and configuration values.
  *
  * Colors are CSS custom properties rather than literals so the light and dark
@@ -74,7 +74,7 @@ export function getStatusMeta(status) {
  *
  * This list has to stay exhaustive. The KPI row used to hardcode six of these
  * and omit STOPPED, so an emergency-stopped robot counted toward the total and
- * toward nothing else — the breakdown quietly failed to add up to the fleet
+ * toward nothing else - the breakdown quietly failed to add up to the fleet
  * size. `FLEET_STATUSES` is now the one list, and anything not in it is rolled
  * into an explicit "Other" bucket rather than disappearing.
  */

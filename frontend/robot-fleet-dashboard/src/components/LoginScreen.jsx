@@ -3,7 +3,7 @@ import { login } from "../utils/auth";
 
 /**
  * Sign-in gate. Rendered only when the backend reports
- * `login_required` — the hosted demo never sees this.
+ * `login_required` - the hosted demo never sees this.
  */
 export default function LoginScreen({ onSignedIn }) {
   const [username, setUsername] = useState("");
