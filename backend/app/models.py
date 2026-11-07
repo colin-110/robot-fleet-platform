@@ -52,6 +52,9 @@ class Robot(Base):
     # say "silent for 3 days" for a unit long outside the telemetry window.
     last_seen = Column(DateTime(timezone=True), nullable=True, index=True)
     decommissioned_at = Column(DateTime(timezone=True), nullable=True)
+    # SHA-256 of this robot's current device key (app/device_keys.py), or
+    # NULL if it has none. The key itself is never stored.
+    key_hash = Column(String(64), nullable=True)
 
     def __repr__(self) -> str:
         return f"<Robot id={self.id} name={self.name!r} active={self.is_active}>"

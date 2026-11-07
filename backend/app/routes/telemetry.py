@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import verify_api_key
+from app.auth import FleetCaller, verify_api_key, verify_fleet_key
 from app.config import get_settings
 from app.database import get_db
 from app.schemas import TelemetryCreate, TelemetryResponse
@@ -24,9 +24,10 @@ async def create_telemetry(
     data: TelemetryCreate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Ingest a telemetry reading from the simulator."""
+    caller.ensure_robot(data.robot_id)
     service = TelemetryService(db)
     return await service.ingest(data, background_tasks)
 
@@ -36,9 +37,11 @@ async def create_telemetry_batch(
     data: list[TelemetryCreate],
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Ingest a batch of telemetry readings."""
+    for reading in data:
+        caller.ensure_robot(reading.robot_id)
     service = TelemetryService(db)
     return await service.ingest_batch(data, background_tasks)
 

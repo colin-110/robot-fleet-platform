@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import telemetry_buffer
+from app import device_keys, telemetry_buffer
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
@@ -62,6 +62,20 @@ async def lifespan(app: FastAPI):
 
     await bootstrap_admin_user()
 
+    try:
+        loaded = await device_keys.load_hashes()
+        logger.info("Loaded device keys for %d robots", loaded)
+    except Exception:
+        logger.exception("Could not load device keys at startup")
+
+    # A single instance updates its own cache when keys change. Several
+    # instances need a periodic reload so a revocation reaches all of them.
+    key_refresh_task = (
+        asyncio.create_task(device_keys.refresh_loop(settings.device_key_refresh_seconds))
+        if settings.websocket_backend == "redis"
+        else None
+    )
+
     # Nothing to consume in direct mode: broadcast() already fanned out
     # in-process, so a Redis listener here would just poll an empty stream.
     if settings.websocket_backend == "redis":
@@ -95,6 +109,8 @@ async def lifespan(app: FastAPI):
     pruner_task.cancel()
     if buffer_flush_task:
         buffer_flush_task.cancel()
+    if key_refresh_task:
+        key_refresh_task.cancel()
 
     logger.info("FleetOps shutting down")
 

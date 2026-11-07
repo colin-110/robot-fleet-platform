@@ -251,12 +251,51 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
+# Per-robot device keys, filled at startup when --device-keys is set. Empty
+# means every request uses the shared key from the session headers.
+_device_keys: dict[int, str] = {}
+
+
+def key_headers(robot_id: int) -> dict | None:
+    """Headers that authenticate as ``robot_id``, or None to use the shared key."""
+    key = _device_keys.get(robot_id)
+    return {"X-API-Key": key} if key else None
+
+
+async def provision_device_keys(
+    client: aiohttp.ClientSession, base_api: str, robot_ids: list[int], timeout_s: float
+) -> None:
+    """Issue a device key for each robot using the shared (admin) key.
+
+    Issuing rotates the key, so a restarted simulator invalidates the keys of
+    its previous run.
+    """
+    for robot_id in robot_ids:
+        for attempt in range(5):
+            try:
+                async with client.post(
+                    f"{base_api}/robots/{robot_id}/key", timeout=timeout_s
+                ) as response:
+                    response.raise_for_status()
+                    _device_keys[robot_id] = (await response.json())["key"]
+                    break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if attempt == 4:
+                    raise RuntimeError(f"Could not issue a key for robot {robot_id}") from exc
+                await asyncio.sleep(2**attempt)
+    safe_print(f"[KEYS] Issued device keys for {len(robot_ids)} robots.")
+
+
 async def post_telemetry(
-    client: aiohttp.ClientSession, api_url: str, payload: dict, timeout_s: float
+    client: aiohttp.ClientSession,
+    api_url: str,
+    payload: dict | list,
+    timeout_s: float,
+    headers: dict | None = None,
 ):
     for attempt in range(3):
         try:
-            response = await client.post(api_url, json=payload, timeout=timeout_s)
+            response = await client.post(api_url, json=payload, timeout=timeout_s, headers=headers)
             response.raise_for_status()
             return
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -319,7 +358,12 @@ async def viewer_watch_loop(
 
 
 async def patch_command_status(
-    client: aiohttp.ClientSession, base_api: str, cmd_id: str, status: str, **extra
+    client: aiohttp.ClientSession,
+    base_api: str,
+    robot_id: int,
+    cmd_id: str,
+    status: str,
+    **extra,
 ) -> None:
     """Best-effort command status transition.
 
@@ -329,7 +373,9 @@ async def patch_command_status(
     """
     payload = {"status": status, **extra}
     try:
-        async with client.patch(f"{base_api}/commands/{cmd_id}/status", json=payload) as response:
+        async with client.patch(
+            f"{base_api}/commands/{cmd_id}/status", json=payload, headers=key_headers(robot_id)
+        ) as response:
             await response.read()
     except Exception as exc:
         logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
@@ -422,7 +468,9 @@ async def robot_loop(
                     # POST /claim, not GET: claiming transitions commands to
                     # DISPATCHED, so it is not a safe method.
                     cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
-                    async with client.post(cmd_url, timeout=10.0) as cmd_resp:
+                    async with client.post(
+                        cmd_url, timeout=10.0, headers=key_headers(robot.robot_id)
+                    ) as cmd_resp:
                         if cmd_resp.status == 200:
                             data = await cmd_resp.json()
                             for cmd_obj in data:
@@ -435,6 +483,7 @@ async def robot_loop(
                                     await patch_command_status(
                                         client,
                                         base_api,
+                                        robot.robot_id,
                                         cmd_id,
                                         "COMPLETED",
                                         result={"message": "Already processed"},
@@ -445,8 +494,12 @@ async def robot_loop(
                                 if len(robot.processed_command_ids) > 100:
                                     robot.processed_command_ids.pop(0)
 
-                                await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
-                                await patch_command_status(client, base_api, cmd_id, "EXECUTING")
+                                await patch_command_status(
+                                    client, base_api, robot.robot_id, cmd_id, "ACKNOWLEDGED"
+                                )
+                                await patch_command_status(
+                                    client, base_api, robot.robot_id, cmd_id, "EXECUTING"
+                                )
 
                                 status_to_patch = "COMPLETED"
 
@@ -474,7 +527,7 @@ async def robot_loop(
                                     status_to_patch = "FAILED"
 
                                 await patch_command_status(
-                                    client, base_api, cmd_id, status_to_patch
+                                    client, base_api, robot.robot_id, cmd_id, status_to_patch
                                 )
                 except Exception as e:
                     logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
@@ -707,6 +760,7 @@ async def robot_loop(
                                             "message": f"Completed {mission.mission_type} mission {mission.mission_id}",
                                         },
                                         timeout=10.0,
+                                        headers=key_headers(robot.robot_id),
                                     ) as _r:
                                         await _r.read()
                                 except Exception:
@@ -780,6 +834,7 @@ async def robot_loop(
                                 "message": "Entered Restricted Zone!",
                             },
                             timeout=10.0,
+                            headers=key_headers(robot.robot_id),
                         ) as _r:
                             await _r.read()
                     except Exception:
@@ -880,10 +935,20 @@ async def telemetry_batcher(
 
     async def flush():
         nonlocal deadline
-        try:
-            await post_telemetry(client, batch_url, batch, post_timeout_s)
-        except Exception as exc:
-            safe_print(f"[BATCHER] POST failed: {exc}")
+        # A device key only covers its own robot, so with device keys the
+        # batch goes out as one request per robot.
+        if _device_keys:
+            groups: dict[int, list] = {}
+            for item in batch:
+                groups.setdefault(item["robot_id"], []).append(item)
+            requests = [(items, key_headers(rid)) for rid, items in groups.items()]
+        else:
+            requests = [(list(batch), None)]
+        for items, headers in requests:
+            try:
+                await post_telemetry(client, batch_url, items, post_timeout_s, headers=headers)
+            except Exception as exc:
+                safe_print(f"[BATCHER] POST failed: {exc}")
         batch.clear()
         deadline = None
 
@@ -962,6 +1027,11 @@ async def main_async(args, worker_index=0, total_workers=1):
     async with aiohttp.ClientSession(
         headers=headers, connector=connector, timeout=timeout_obj
     ) as client:
+        if args.device_keys:
+            await provision_device_keys(
+                client, get_base_api(args.api_url), [r.robot_id for r in robots], args.timeout
+            )
+
         # Start batcher
         batcher_task = asyncio.create_task(
             telemetry_batcher(client, args.api_url, args.timeout, telemetry_queue)
@@ -1036,6 +1106,11 @@ def main():
     parser.add_argument("--tick-max", type=float, default=5.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--device-keys",
+        action="store_true",
+        help="Issue each robot its own device key at startup and send as that robot.",
+    )
     parser.add_argument(
         "--always-active",
         action="store_true",

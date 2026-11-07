@@ -23,7 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.auth import verify_api_key, verify_console_access
+from app import device_keys
+from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.cache import cache
 from app.config import get_settings
 from app.database import Base, get_db
@@ -103,6 +104,9 @@ app.dependency_overrides[verify_api_key] = lambda: None
 # test for route behaviour. ``test_ticket_auth.py`` exercises it without the
 # override, so the real dependency is still covered.
 app.dependency_overrides[verify_console_access] = lambda: None
+# Robot-facing routes resolve to the master-key caller, which may act for any
+# robot. ``test_device_keys.py`` removes this override to test real keys.
+app.dependency_overrides[verify_fleet_key] = lambda: FleetCaller()
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +118,7 @@ def setup_database():
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         await cache.clear()
+        device_keys.reset()
 
     async def drop_db():
         async with test_engine.begin() as conn:

@@ -9,7 +9,7 @@ produce the same thing: no rows.
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,3 +61,15 @@ class RobotRepository:
             },
         )
         await self.db.execute(stmt)
+
+    async def set_key_hash(self, robot_id: int, key_hash: str) -> None:
+        """Store a new device key hash, registering the robot if needed."""
+        stmt = pg_insert(Robot).values(id=robot_id, is_active=True, key_hash=key_hash)
+        stmt = stmt.on_conflict_do_update(index_elements=[Robot.id], set_={"key_hash": key_hash})
+        await self.db.execute(stmt)
+
+    async def revoke_key(self, robot_id: int) -> bool:
+        """Clear the device key hash. Returns False if the robot is unknown."""
+        stmt = update(Robot).where(Robot.id == robot_id).values(key_hash=None).returning(Robot.id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none() is not None

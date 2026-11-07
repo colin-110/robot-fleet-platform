@@ -224,3 +224,10 @@ class HealthResponse(BaseModel):
     version: str = "1.0.0"
     # Active opt_* flags, so you can see which deployment shape is running.
     optimizations: dict[str, bool] = {}
+
+
+class DeviceKeyResponse(BaseModel):
+    """A newly issued device key. Shown once; the server does not store it."""
+
+    robot_id: int
+    key: str

@@ -195,6 +195,10 @@ class CommandService:
 
         return values
 
+    async def get_robot_id(self, command_id: str) -> int:
+        """Robot the command is addressed to; 404 if it does not exist."""
+        return (await self._get_or_404(command_id)).robot_id
+
     async def _get_or_404(self, command_id: str) -> RobotCommand:
         stmt = select(RobotCommand).where(RobotCommand.id == command_id)
         result = await self.db.execute(stmt)

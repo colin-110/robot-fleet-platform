@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # silently falling back to a value that is public in this repo.
     telemetry_api_key: str
 
+    # Per-robot device keys (app/device_keys.py). While this is true the
+    # master key still works on robot endpoints; set it false once every
+    # robot has its own key.
+    allow_shared_ingest_key: bool = True
+    # How often each instance reloads key hashes so revocations propagate.
+    # Only runs with websocket_backend=redis (multiple instances).
+    device_key_refresh_seconds: int = 60
+
     # Lifetime of a browser ticket (app/tickets.py). Long enough to survive a
     # reconnect storm, short enough that a scraped ticket is quickly worthless.
     # The dashboard fetches a fresh one whenever its socket reconnects.

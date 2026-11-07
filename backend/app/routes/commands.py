@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_role, verify_api_key, verify_console_access
+from app.auth import FleetCaller, require_role, verify_console_access, verify_fleet_key
 from app.database import get_db
 from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
@@ -38,10 +38,6 @@ async def send_command(
     required mode a viewer is not. Dropping either one would let a valid
     ticket act on behalf of a read-only account, or a signed-in operator act
     without a ticket.
-
-    Console-scoped: the dashboard authenticates with a short-lived ticket, so
-    dispatching a command no longer requires shipping the ingest key to the
-    browser. ``verify_api_key`` still guards ingest.
     """
     service = CommandService(db)
     payload = await service.create_command(robot_id, command)
@@ -94,7 +90,7 @@ async def _claim_pending_commands(robot_id: int, db: AsyncSession) -> list[dict]
 async def claim_commands(
     robot_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Claim pending commands for a robot, transitioning them to DISPATCHED.
 
@@ -102,6 +98,7 @@ async def claim_commands(
     breaks the safe-method contract - any crawler, prefetcher, or retrying
     proxy would silently consume the robot's command queue.
     """
+    caller.ensure_robot(robot_id)
     return await _claim_pending_commands(robot_id, db)
 
 
@@ -109,13 +106,14 @@ async def claim_commands(
 async def get_commands(
     robot_id: int,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Deprecated alias for ``POST /commands/{robot_id}/claim``.
 
     Kept so already-deployed simulators keep working through a rollout; new
     clients should use the POST endpoint.
     """
+    caller.ensure_robot(robot_id)
     return await _claim_pending_commands(robot_id, db)
 
 
@@ -124,9 +122,11 @@ async def update_command_status(
     command_id: str,
     update_data: CommandStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Update the status of an existing command."""
     service = CommandService(db)
+    if caller.robot_id is not None:
+        caller.ensure_robot(await service.get_robot_id(command_id))
     payload = await service.update_status(command_id, update_data)
     return {"message": "Command status updated", "payload": payload}

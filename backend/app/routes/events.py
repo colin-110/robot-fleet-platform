@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.auth import verify_api_key, verify_read_access
+from app.auth import FleetCaller, verify_fleet_key, verify_read_access
 from app.database import get_db
 from app.models import Event
 from app.schemas import EventCreate, EventResponse
@@ -24,9 +24,10 @@ router = APIRouter(prefix="/api/v1", tags=["events"])
 async def create_event(
     event: EventCreate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Ingest a generic event from a robot, persist it, and broadcast it."""
+    caller.ensure_robot(event.robot_id)
     new_event = Event(
         robot_id=event.robot_id, message=event.message, timestamp=datetime.now(timezone.utc)
     )
