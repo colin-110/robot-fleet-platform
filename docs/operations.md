@@ -113,7 +113,6 @@ There is no metrics stack. The signals that exist are:
 
 - `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
 - `GET /health` - checks the database and reports the active `opt_*` flags. Use it by hand; don't poll it against Neon.
-- `GET /api/v1/viewers` (API key) - connected WebSocket clients.
 - Structured logs (above).
 
 Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
