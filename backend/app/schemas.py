@@ -48,19 +48,17 @@ class EventResponse(BaseModel):
 class TelemetryCreate(BaseModel):
     """Incoming telemetry payload from a robot.
 
-    ``timestamp`` is optional and is when the *device* took the reading. It
-    matters for store-and-forward: a robot that buffers readings through a
-    network outage and uploads them on reconnect must be able to report when
-    each was actually measured, otherwise a batch collapses onto its upload
-    time and the whole outage looks like one instant. When omitted, the server
-    stamps the reading on arrival.
+    ``timestamp`` is when the *device* took the reading, and is required. It
+    identifies the reading (together with ``robot_id``), which is what lets a
+    robot resend readings safely after a failed or unconfirmed upload, and it
+    keeps store-and-forward uploads on their real timeline.
     """
 
     robot_id: int
     battery: float
     temperature: float
     speed: float
-    timestamp: datetime | None = None
+    timestamp: datetime
     status: str | None = None
     mission_id: str | None = None
     mission_type: str | None = None
@@ -77,7 +75,6 @@ class TelemetryCreate(BaseModel):
 class TelemetryResponse(BaseModel):
     """Telemetry response payload."""
 
-    id: int
     robot_id: int
     battery: float
     temperature: float
@@ -222,5 +219,10 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     version: str = "1.0.0"
-    # Active opt_* flags, so you can see which deployment shape is running.
-    optimizations: dict[str, bool] = {}
+
+
+class DeviceKeyResponse(BaseModel):
+    """A newly issued device key. Shown once; the server does not store it."""
+
+    robot_id: int
+    key: str

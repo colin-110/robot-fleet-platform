@@ -52,9 +52,44 @@ class Robot(Base):
     # say "silent for 3 days" for a unit long outside the telemetry window.
     last_seen = Column(DateTime(timezone=True), nullable=True, index=True)
     decommissioned_at = Column(DateTime(timezone=True), nullable=True)
+    # SHA-256 of this robot's current device key (app/device_keys.py), or
+    # NULL if it has none. The key itself is never stored.
+    key_hash = Column(String(64), nullable=True)
 
     def __repr__(self) -> str:
         return f"<Robot id={self.id} name={self.name!r} active={self.is_active}>"
+
+
+class RobotState(Base):
+    """The latest reading per robot, kept current on every write.
+
+    Fleet status and analytics read this (one row per robot) instead of
+    recomputing state from telemetry history on each request. Only a newer
+    reading replaces the row, so late or resent readings never move a robot
+    backwards.
+    """
+
+    __tablename__ = "robot_state"
+
+    robot_id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    battery = Column(Float, nullable=False)
+    temperature = Column(Float, nullable=False)
+    speed = Column(Float, nullable=False)
+    status = Column(String(32), nullable=True)
+    mission_id = Column(String(64), nullable=True)
+    mission_type = Column(String(32), nullable=True)
+    mission_progress = Column(Float, nullable=True)
+    mission_start_time = Column(DateTime(timezone=True), nullable=True)
+    battery_health = Column(Float, nullable=True)
+    motor_health = Column(Float, nullable=True)
+    sensor_health = Column(Float, nullable=True)
+    network_health = Column(Float, nullable=True)
+    x = Column(Float, nullable=True)
+    y = Column(Float, nullable=True)
+    # Smoothed battery drain in percent per minute; NULL until two readings
+    # have been seen or after the battery starts charging.
+    battery_drain_per_min = Column(Float, nullable=True)
 
 
 class RobotCommand(Base):
@@ -95,12 +130,14 @@ class RobotCommand(Base):
 class Telemetry(Base):
     __tablename__ = "telemetry"
 
-    id = Column(Integer, primary_key=True)
-    robot_id = Column(Integer, index=True, nullable=False)
+    # A reading is identified by its robot and device timestamp. That pair is
+    # the primary key, which makes retried uploads idempotent and is what
+    # TimescaleDB requires of a hypertable's unique keys.
+    robot_id = Column(Integer, primary_key=True)
     battery = Column(Float, nullable=False)
     temperature = Column(Float, nullable=False)
     speed = Column(Float, nullable=False)
-    status = Column(String(32), nullable=True, index=True)
+    status = Column(String(32), nullable=True)
     mission_id = Column(String(64), nullable=True)
     mission_type = Column(String(32), nullable=True)
     mission_progress = Column(Float, nullable=True)
@@ -111,19 +148,11 @@ class Telemetry(Base):
     network_health = Column(Float, nullable=True)
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
-    timestamp = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        index=True,
-        default=lambda: datetime.now(timezone.utc),
-        server_default=func.now(),
-    )
-
-    __table_args__ = (Index("ix_telemetry_robot_timestamp", "robot_id", "timestamp"),)
+    timestamp = Column(DateTime(timezone=True), primary_key=True)
 
     def __repr__(self) -> str:
         return (
-            f"<Telemetry id={self.id} robot_id={self.robot_id} "
+            f"<Telemetry robot_id={self.robot_id} timestamp={self.timestamp} "
             f"status={self.status!r} battery={self.battery}>"
         )
 

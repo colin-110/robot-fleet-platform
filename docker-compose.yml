@@ -11,10 +11,6 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       - PYTHONPATH=.
-      # Full local stack: Redis Stream buffer + worker + read cache. Set both
-      # to false to mimic the production (EC2, no worker) shape.
-      - OPT_REDIS_BUFFER=${OPT_REDIS_BUFFER:-true}
-      - OPT_READ_CACHE=${OPT_READ_CACHE:-true}
     restart: unless-stopped
     depends_on:
       db:
@@ -24,31 +20,6 @@ services:
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - fleet_net
-
-  worker:
-    # Same image as the backend, different entrypoint - one build instead of
-    # two, and the two can't drift apart the way separate images could.
-    build: ./backend
-    image: robot-fleet-platform-backend:latest
-    command: python -m app.worker
-    env_file:
-      - ./backend/.env
-    environment:
-      - PYTHONPATH=.
-      - OPT_REDIS_BUFFER=${OPT_REDIS_BUFFER:-true}
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "python", "-c", "import os, time; assert time.time() - os.path.getmtime('/tmp/worker_healthy') < 30" ]
-      interval: 15s
       timeout: 5s
       retries: 3
     networks:
@@ -70,7 +41,7 @@ services:
     # No --api-key: a command-line secret is visible in `ps aux` and
     # `docker inspect`. The simulator reads TELEMETRY_API_KEY from the
     # environment, which env_file already provides.
-    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "4", "--robots", "40" ]
+    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "4", "--robots", "40", "--device-keys" ]
     env_file:
       - ./backend/.env
     restart: unless-stopped
@@ -81,13 +52,14 @@ services:
       - fleet_net
 
   db:
-    image: postgres:15-alpine
+    # TimescaleDB: telemetry is a hypertable with compression and retention.
+    image: timescale/timescaledb:2.17.2-pg16
     command: postgres -c synchronous_commit=off -c max_connections=200 -c shared_buffers=256MB
     restart: unless-stopped
     env_file:
       - ./backend/.env
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - timescale_data:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
       interval: 5s
@@ -109,7 +81,7 @@ services:
       - fleet_net
 
 volumes:
-  postgres_data:
+  timescale_data:
 
 networks:
   fleet_net:

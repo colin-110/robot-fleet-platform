@@ -1,9 +1,11 @@
 """API key authentication."""
 
 import secrets
+from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException
 
+from app import device_keys
 from app.config import get_settings
 from app.tickets import SCOPE_CONSOLE, verify_ticket
 
@@ -27,6 +29,45 @@ async def verify_api_key(x_api_key: str = Header(None)):
     """FastAPI dependency: reject requests without a valid API key."""
     if not is_valid_api_key(x_api_key):
         raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
+@dataclass(frozen=True)
+class FleetCaller:
+    """Who is calling a robot-facing endpoint.
+
+    ``robot_id`` is set for a device key and None for the master key, which
+    may act for any robot.
+    """
+
+    robot_id: int | None = None
+
+    def ensure_robot(self, robot_id: int) -> None:
+        """403 unless this caller may act as ``robot_id``."""
+        if self.robot_id is not None and self.robot_id != robot_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This key belongs to robot {self.robot_id}",
+            )
+
+
+async def verify_fleet_key(x_api_key: str = Header(None)) -> FleetCaller:
+    """Auth for endpoints robots call: telemetry, events, command polling.
+
+    Accepts a device key, or the master key while ``ALLOW_SHARED_INGEST_KEY``
+    is on. Routes then call ``ensure_robot`` with the robot id in the request.
+    """
+    if device_keys.looks_like_device_key(x_api_key):
+        robot_id = await device_keys.verify(x_api_key)
+        if robot_id is None:
+            raise HTTPException(status_code=401, detail="Invalid or revoked device key")
+        return FleetCaller(robot_id=robot_id)
+
+    if is_valid_api_key(x_api_key):
+        if not settings.allow_shared_ingest_key:
+            raise HTTPException(status_code=401, detail="A per-robot device key is required")
+        return FleetCaller()
+
+    raise HTTPException(status_code=401, detail="Invalid API Key")
 
 
 async def verify_console_access(
@@ -143,3 +184,19 @@ def require_role(required: str):
         return principal
 
     return _dependency
+
+
+async def verify_key_admin(
+    x_api_key: str = Header(None),
+    authorization: str = Header(None),
+) -> None:
+    """Issuing and revoking device keys: the master key or a signed-in admin."""
+    if is_valid_api_key(x_api_key):
+        return
+
+    from app.security import ADMIN, role_satisfies
+
+    principal = await current_principal(authorization)
+    if principal.authenticated and role_satisfies(principal.role, ADMIN):
+        return
+    raise HTTPException(status_code=403, detail="Requires the master key or an admin account")

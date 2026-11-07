@@ -1,6 +1,6 @@
 # Production: one EC2 instance running the backend and simulator.
 #
-# No worker and no frontend container (Vercel serves the dashboard). nginx and
+# No frontend container (Vercel serves the dashboard). nginx and
 # Let's Encrypt run on the host. Postgres (Neon) and Redis (Upstash) are
 # external; their URLs come from .env on the host.
 #
@@ -26,11 +26,8 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      # /health/live, not /health: the latter runs `SELECT 1` against Neon,
-      # which only accrues free-tier compute-hours while a query is actually
-      # running and suspends after 5 idle minutes. A DB-querying healthcheck
-      # every 15s is by itself enough to keep Neon's compute permanently
-      # awake - see app/telemetry_buffer.py for the other half of this fix.
+      # /health/live, not /health: the latter queries the database, and a
+      # query every 15s would keep a serverless database from ever suspending.
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 15s
       timeout: 5s
@@ -41,11 +38,7 @@ services:
 
   simulator:
     image: ghcr.io/colin-110/robot-fleet-simulator:${IMAGE_TAG:-latest}
-    # --always-active: this deployment has no viewer-gating pause on the
-    # simulator itself. Telemetry stays continuous; what's gated on viewer
-    # presence instead is the *database write cadence* (telemetry_buffer.py),
-    # since that's the layer with an actual metered cost on this deployment.
-    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24", "--always-active"]
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24"]
     env_file: [./.env]
     restart: unless-stopped
     depends_on:

@@ -19,13 +19,6 @@ services:
       - CORS_ORIGINS=*
       - RATE_LIMIT_PER_MINUTE=10000000
 
-  worker:
-    command: python -m app.worker
-    volumes:
-      - ./backend:/app
-    environment:
-      - LOG_LEVEL=DEBUG
-
   # robot_sim.py has no file-watcher of its own (unlike uvicorn --reload
   # above), so a code edit here still needs `docker compose restart
   # simulator` to pick it up - but that's a process restart against this

@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app.auth import verify_api_key, verify_console_access
-from app.cache import cache
+from app import device_keys
+from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.config import get_settings
 from app.database import Base, get_db
 from app.main import app
@@ -79,14 +79,6 @@ TestSessionLocal = sessionmaker(
     class_=AsyncSession,
 )
 
-# Telemetry ingestion has two code paths; tests assert on synchronous DB writes,
-# so pin the buffer off regardless of the ambient environment.
-get_settings().opt_redis_buffer = False
-
-# The read-through cache is mocked with an in-memory dict below, but several
-# tests assert on freshly computed values, so keep it off by default.
-get_settings().opt_read_cache = False
-
 
 async def override_get_db():
     """Dependency override that yields a test database session."""
@@ -103,6 +95,9 @@ app.dependency_overrides[verify_api_key] = lambda: None
 # test for route behaviour. ``test_ticket_auth.py`` exercises it without the
 # override, so the real dependency is still covered.
 app.dependency_overrides[verify_console_access] = lambda: None
+# Robot-facing routes resolve to the master-key caller, which may act for any
+# robot. ``test_device_keys.py`` removes this override to test real keys.
+app.dependency_overrides[verify_fleet_key] = lambda: FleetCaller()
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +108,7 @@ def setup_database():
         async with test_engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
-        await cache.clear()
+        device_keys.reset()
 
     async def drop_db():
         async with test_engine.begin() as conn:
@@ -126,9 +121,8 @@ def setup_database():
 
 @pytest.fixture(autouse=True)
 def mock_redis(monkeypatch):
-    """Mock Redis so tests don't need a live broadcast/cache backend."""
+    """Mock Redis so tests don't need a live broadcast backend."""
     from app import middleware
-    from app.cache import cache
     from app.websocket_manager import manager
 
     async def mock_broadcast(*args, **kwargs):
@@ -136,22 +130,6 @@ def mock_redis(monkeypatch):
 
     monkeypatch.setattr(manager, "broadcast", mock_broadcast)
     monkeypatch.setattr(middleware, "get_redis", lambda: None)
-
-    # In-memory mock for cache
-    _store = {}
-
-    async def mock_get(key):
-        return _store.get(key)
-
-    async def mock_set(key, value, ttl_seconds=5.0):
-        _store[key] = value
-
-    async def mock_clear():
-        _store.clear()
-
-    monkeypatch.setattr(cache, "get", mock_get)
-    monkeypatch.setattr(cache, "set", mock_set)
-    monkeypatch.setattr(cache, "clear", mock_clear)
 
 
 @pytest_asyncio.fixture
@@ -176,11 +154,18 @@ async def db():
         yield session
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 @pytest.fixture
 def sample_telemetry():
     """Sample telemetry payload for POST requests."""
     return {
         "robot_id": 1,
+        "timestamp": _now_iso(),
         "battery": 85.5,
         "temperature": 38.2,
         "speed": 1.1,
@@ -202,6 +187,7 @@ def sample_telemetry_low_battery():
     """Telemetry payload with critically low battery."""
     return {
         "robot_id": 2,
+        "timestamp": _now_iso(),
         "battery": 8.0,
         "temperature": 42.5,
         "speed": 0.0,
@@ -220,6 +206,7 @@ def sample_telemetry_overheating():
     """Telemetry payload with dangerous temperature."""
     return {
         "robot_id": 3,
+        "timestamp": _now_iso(),
         "battery": 60.0,
         "temperature": 105.0,
         "speed": 0.5,

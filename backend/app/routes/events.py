@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.auth import verify_api_key, verify_read_access
+from app.auth import FleetCaller, verify_fleet_key, verify_read_access
 from app.database import get_db
 from app.models import Event
 from app.schemas import EventCreate, EventResponse
@@ -24,9 +24,10 @@ router = APIRouter(prefix="/api/v1", tags=["events"])
 async def create_event(
     event: EventCreate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(verify_api_key),
+    caller: FleetCaller = Depends(verify_fleet_key),
 ):
     """Ingest a generic event from a robot, persist it, and broadcast it."""
+    caller.ensure_robot(event.robot_id)
     new_event = Event(
         robot_id=event.robot_id, message=event.message, timestamp=datetime.now(timezone.utc)
     )
@@ -42,9 +43,8 @@ async def create_event(
         if new_event.timestamp
         else None,
     }
-    # event_stream, not the default telemetry_stream: that stream is a bounded
-    # ingest buffer whose overflow drops unacknowledged telemetry, so events
-    # sharing it would consume the worker's catch-up headroom.
+    # Events get their own stream so a burst of telemetry cannot push them
+    # out of the capped telemetry stream before listeners read them.
     await manager.broadcast(payload, stream=manager.event_stream)
     return {"message": "Event logged", "id": new_event.id}
 

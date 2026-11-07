@@ -9,11 +9,39 @@ that leverage the composite indexes defined in ``models.py``.
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.models import Telemetry
+from app.repositories.robot_repo import RobotRepository, latest_seen
 from app.schemas import TelemetryCreate
+
+
+async def persist(
+    db: AsyncSession, rows: list[tuple[TelemetryCreate, datetime]]
+) -> list[Telemetry]:
+    """The one write path for telemetry: insert, register robots, update state.
+
+    Used by direct ingest, the deferred-write flush and the worker, so all
+    three skip duplicates and register robots the same way. Both statements
+    run in the caller's transaction; the caller commits.
+    """
+    inserted = await TelemetryRepository(db).insert_many(rows)
+    robots = RobotRepository(db)
+    await robots.mark_seen(latest_seen((d.robot_id, ts) for d, ts in rows))
+    await robots.upsert_state(_latest_readings(rows))
+    return inserted
+
+
+def _latest_readings(rows: list[tuple[TelemetryCreate, datetime]]) -> list[dict]:
+    """The newest reading per robot, as robot_state values."""
+    newest: dict[int, tuple[TelemetryCreate, datetime]] = {}
+    for data, ts in rows:
+        if data.robot_id not in newest or ts > newest[data.robot_id][1]:
+            newest[data.robot_id] = (data, ts)
+    return [
+        {**data.model_dump(exclude={"timestamp"}), "timestamp": ts} for data, ts in newest.values()
+    ]
 
 
 class TelemetryRepository:
@@ -24,133 +52,33 @@ class TelemetryRepository:
 
     # ── Write ───────────────────────────────────────────────────────
 
-    async def insert(self, data: TelemetryCreate, timestamp: datetime | None = None) -> Telemetry:
-        """Persist a single telemetry reading and return the ORM row.
-
-        ``timestamp`` is the already-resolved measurement time (device time
-        where reported, server time otherwise). The caller resolves it so that
-        clock-skew handling lives in one place rather than being duplicated
-        across the buffered and direct write paths.
-        """
-        telemetry = Telemetry(
-            robot_id=data.robot_id,
-            battery=data.battery,
-            temperature=data.temperature,
-            speed=data.speed,
-            status=data.status,
-            mission_id=data.mission_id,
-            mission_type=data.mission_type,
-            mission_progress=data.mission_progress,
-            mission_start_time=data.mission_start_time,
-            battery_health=data.battery_health,
-            motor_health=data.motor_health,
-            sensor_health=data.sensor_health,
-            network_health=data.network_health,
-            x=data.x,
-            y=data.y,
-            timestamp=timestamp or datetime.now(timezone.utc),
-        )
-        self.db.add(telemetry)
-        await self.db.commit()
-        await self.db.refresh(telemetry)
-        return telemetry
-
     async def insert_many(self, rows: list[tuple[TelemetryCreate, datetime]]) -> list[Telemetry]:
-        """Persist many telemetry readings in a single transaction.
+        """Insert readings in one statement, skipping ones already stored.
 
-        The direct (non-buffered) ingest path already pays one HTTP round
-        trip per request; committing once per row inside a batch turned a
-        single simulator POST into up to 50 sequential DB round trips to a
-        remote Postgres instance - slow enough to blow past the simulator's
-        own POST timeout and silently drop the whole batch. One INSERT, one
-        commit, for the whole list.
-
-        No per-row ``refresh()``: the session is ``expire_on_commit=False``
-        (see database.py), and SQLAlchemy's Postgres dialect already
-        populates autoincrement ``id`` via ``RETURNING`` on flush, so the ORM
-        objects are already fully populated once ``commit()`` returns.
+        A reading is identified by (robot_id, timestamp), enforced by the
+        unique ix_telemetry_robot_timestamp index, so a retried upload or a
+        replayed worker batch cannot create duplicate rows. Returns only the
+        rows that were actually inserted. Does not commit.
         """
-        telemetries = [
-            Telemetry(
-                robot_id=data.robot_id,
-                battery=data.battery,
-                temperature=data.temperature,
-                speed=data.speed,
-                status=data.status,
-                mission_id=data.mission_id,
-                mission_type=data.mission_type,
-                mission_progress=data.mission_progress,
-                mission_start_time=data.mission_start_time,
-                battery_health=data.battery_health,
-                motor_health=data.motor_health,
-                sensor_health=data.sensor_health,
-                network_health=data.network_health,
-                x=data.x,
-                y=data.y,
-                timestamp=timestamp,
-            )
-            for data, timestamp in rows
-        ]
-        self.db.add_all(telemetries)
-        await self.db.commit()
-        return telemetries
+        if not rows:
+            return []
+        values = [{**data.model_dump(exclude={"timestamp"}), "timestamp": ts} for data, ts in rows]
+        stmt = (
+            pg_insert(Telemetry)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["robot_id", "timestamp"])
+            .returning(Telemetry)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
 
     # ── Read ────────────────────────────────────────────────────────
 
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the *limit* most recent telemetry rows (all robots)."""
-        stmt = select(Telemetry).order_by(Telemetry.id.desc()).offset(skip).limit(limit)
+        stmt = select(Telemetry).order_by(Telemetry.timestamp.desc()).offset(skip).limit(limit)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
-
-    async def get_recent_per_robot(
-        self, per_robot_limit: int = 30, window_minutes: int = 15
-    ) -> dict[int, list[Telemetry]]:
-        """
-        Return the most recent *per_robot_limit* rows **per robot**.
-
-        Only rows within the last *window_minutes* are considered.  This keeps
-        the query bounded to a small, index-friendly tail of the table instead
-        of scanning/sorting the entire telemetry history, which grows without
-        bound while the fleet is running.  Robots that have not reported within
-        the window are treated as gone from the current fleet.
-        """
-        # Use a window function to avoid N+1 queries.  The WHERE clause limits
-        # the scan to the recent tail of the table (uses the timestamp index),
-        # so the query cost stays flat as history grows.
-        subq = (
-            select(
-                Telemetry,
-                func.row_number()
-                .over(partition_by=Telemetry.robot_id, order_by=Telemetry.timestamp.desc())
-                .label("rn"),
-            )
-            .where(
-                Telemetry.timestamp > func.now() - text(f"INTERVAL '{int(window_minutes)} minutes'")
-            )
-            .subquery()
-        )
-
-        telemetry_alias = aliased(Telemetry, subq)
-        stmt = (
-            select(telemetry_alias)
-            .where(subq.c.rn <= per_robot_limit)
-            .order_by(telemetry_alias.robot_id, telemetry_alias.timestamp.desc())
-        )
-
-        result = await self.db.execute(stmt)
-        rows = result.scalars().all()
-
-        grouped: dict[int, list[Telemetry]] = {}
-        for row in rows:
-            grouped.setdefault(row.robot_id, []).append(row)
-
-        for rid in grouped:
-            grouped[rid] = list(reversed(grouped[rid]))  # oldest first
-
-        return grouped
-
-    # ── Analytics ───────────────────────────────────────────────────
 
     async def get_fleet_health_trend(self, limit_minutes: int = 20) -> list[dict]:
         """Calculates fleet health trend over the last limit_minutes by grouping by minute."""

@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useState, useCallback, useRef } from "react"
 import axios from "axios";
 import { useWebSocket } from "./useWebSocket";
 import { EVENT_BUFFER_LIMIT } from "../utils/constants";
+import { isNewerReading } from "../utils/telemetry";
 
 /**
  * Merge event lists into one newest-first buffer of bounded length.
@@ -149,8 +150,11 @@ export default function useFleetData() {
             pendingUpdates.current.events.unshift(lastMessage);
           }
         } else if (lastMessage.robot_id && lastMessage.battery !== undefined) {
-          // Buffer the live telemetry update
-          pendingUpdates.current.robots[lastMessage.robot_id] = lastMessage;
+          // Buffer the live telemetry update, keeping the newest per robot.
+          const queued = pendingUpdates.current.robots[lastMessage.robot_id];
+          if (isNewerReading(lastMessage, queued)) {
+            pendingUpdates.current.robots[lastMessage.robot_id] = lastMessage;
+          }
         }
       } catch {
         // ignore parse errors
@@ -170,7 +174,10 @@ export default function useFleetData() {
                 const msg = updates.robots[id];
                 const index = newRobots.findIndex(r => String(r.robot_id) === String(msg.robot_id));
                 if (index >= 0) {
-                  newRobots[index] = { ...newRobots[index], ...msg };
+                  // A resent older reading must not move the robot back.
+                  if (isNewerReading(msg, newRobots[index])) {
+                    newRobots[index] = { ...newRobots[index], ...msg };
+                  }
                 } else {
                   newRobots.push(msg);
                 }

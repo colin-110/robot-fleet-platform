@@ -14,18 +14,18 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Query, WebSocket
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import telemetry_buffer
-from app.auth import is_valid_api_key, verify_api_key
+from app import device_keys
+from app.auth import is_valid_api_key
+from app.command_timeouts import timeout_loop
 from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, RequestIDMiddleware
-from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
@@ -53,48 +53,42 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown hooks."""
     # Database schema is created by prestart.py before workers start.
     logger.info(
-        "FleetOps started  env=%s  auth=%s  cors=%s  optimizations=%s",
+        "FleetOps started  env=%s  auth=%s  cors=%s",
         settings.app_env,
         settings.resolved_auth_mode,
         settings.cors_origin_list,
-        settings.optimization_flags(),
     )
 
     await bootstrap_admin_user()
+
+    try:
+        loaded = await device_keys.load_hashes()
+        logger.info("Loaded device keys for %d robots", loaded)
+    except Exception:
+        logger.exception("Could not load device keys at startup")
+
+    # A single instance updates its own cache when keys change. Several
+    # instances need a periodic reload so a revocation reaches all of them.
+    key_refresh_task = (
+        asyncio.create_task(device_keys.refresh_loop(settings.device_key_refresh_seconds))
+        if settings.websocket_backend == "redis"
+        else None
+    )
 
     # Nothing to consume in direct mode: broadcast() already fanned out
     # in-process, so a Redis listener here would just poll an empty stream.
     if settings.websocket_backend == "redis":
         manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
-    # Retention pruning runs here as well as in the worker, because a
-    # deployment without a worker would otherwise never prune. The Redis lock
-    # only matters when several instances share the work. A 30-minute
-    # interval keeps peak storage close to retention_days even when that
-    # window is under a day.
-    pruner_task = asyncio.create_task(
-        prune_loop(
-            use_redis_lock=settings.websocket_backend == "redis",
-            initial_delay_seconds=300,
-            interval_seconds=1800,
-        )
-    )
-
-    # Direct-ingest path only. 10 minutes is well past Neon's 5-minute
-    # suspend timeout, so the database can sleep between flushes.
-    buffer_flush_task = (
-        asyncio.create_task(telemetry_buffer.flush_loop(interval_seconds=600))
-        if not settings.opt_redis_buffer and settings.defer_writes_without_viewers
-        else None
-    )
+    timeout_task = asyncio.create_task(timeout_loop())
 
     yield
 
+    timeout_task.cancel()
     if manager._listener_task:
         manager._listener_task.cancel()
-    pruner_task.cancel()
-    if buffer_flush_task:
-        buffer_flush_task.cancel()
+    if key_refresh_task:
+        key_refresh_task.cancel()
 
     logger.info("FleetOps shutting down")
 
@@ -163,10 +157,10 @@ def liveness():
 # which read as "service down" to monitors even though it was healthy.
 @app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["health"])
 async def health_check():
-    """Health check - verifies database connectivity and reports active flags.
+    """Health check - verifies database connectivity.
 
-    Unlike /health/live this queries the database, so don't point a frequent
-    poller at it on a serverless Postgres that bills for awake time.
+    Unlike /health/live this queries the database, so frequent pollers such as
+    the Docker healthcheck should use /health/live instead.
     """
     db_status = "healthy"
     try:
@@ -179,21 +173,7 @@ async def health_check():
     return HealthResponse(
         status="ok" if db_status == "healthy" else "degraded",
         database=db_status,
-        optimizations=settings.optimization_flags(),
     )
-
-
-@app.get("/api/v1/viewers", tags=["observability"])
-async def viewer_count(_=Depends(verify_api_key)):
-    """How many WebSocket clients are currently connected.
-
-    Lets a telemetry source (the simulator) decide whether anyone is actually
-    watching before spending bandwidth generating and posting data nobody
-    sees - see simulator/robot_sim.py's viewer_watch_loop. API-key gated,
-    not console-ticket: this is a fleet-side operational signal, not
-    something the dashboard itself needs to read.
-    """
-    return {"active_connections": manager.connection_count}
 
 
 # ── WebSocket ───────────────────────────────────────────────────────

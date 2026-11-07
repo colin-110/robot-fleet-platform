@@ -84,9 +84,7 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_CREATED"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        # event_stream, not the default telemetry_stream: that one is the
-        # bounded ingest buffer the worker drains, and command traffic sharing
-        # it eats the worker's catch-up headroom.
+        # Command updates use the event stream, not the capped telemetry one.
         await manager.broadcast(broadcast_payload, stream=manager.event_stream)
 
         return payload
@@ -194,6 +192,10 @@ class CommandService:
                 values["result"] = update_data.result
 
         return values
+
+    async def get_robot_id(self, command_id: str) -> int:
+        """Robot the command is addressed to; 404 if it does not exist."""
+        return (await self._get_or_404(command_id)).robot_id
 
     async def _get_or_404(self, command_id: str) -> RobotCommand:
         stmt = select(RobotCommand).where(RobotCommand.id == command_id)

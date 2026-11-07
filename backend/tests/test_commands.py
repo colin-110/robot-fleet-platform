@@ -6,8 +6,8 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app.command_timeouts import scan_for_timeouts
 from app.models import RobotCommand
-from app.worker import scan_for_timeouts
 
 TEST_ROBOT_ID = 100
 

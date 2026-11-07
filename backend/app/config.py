@@ -3,10 +3,6 @@ Centralized application configuration using pydantic-settings.
 
 All settings are loaded from environment variables (or .env file).
 The app will fail fast at startup if required settings are missing.
-
-The two ``opt_*`` flags pick between deployment shapes: the full stack (Redis
-Stream buffer + worker + read cache) and the single-instance free-tier stack
-(direct writes, no worker, no cache) that production runs.
 """
 
 import logging
@@ -37,6 +33,14 @@ class Settings(BaseSettings):
     # silently falling back to a value that is public in this repo.
     telemetry_api_key: str
 
+    # Per-robot device keys (app/device_keys.py). While this is true the
+    # master key still works on robot endpoints; set it false once every
+    # robot has its own key.
+    allow_shared_ingest_key: bool = True
+    # How often each instance reloads key hashes so revocations propagate.
+    # Only runs with websocket_backend=redis (multiple instances).
+    device_key_refresh_seconds: int = 60
+
     # Lifetime of a browser ticket (app/tickets.py). Long enough to survive a
     # reconnect storm, short enough that a scraped ticket is quickly worthless.
     # The dashboard fetches a fresh one whenever its socket reconnects.
@@ -58,16 +62,6 @@ class Settings(BaseSettings):
     # empty. Without it, a fresh deployment in required mode has no way in.
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
-
-    # A float, not an int: a fleet that ingests continuously (no viewer-gating)
-    # can outgrow a small free-tier database well within 24 hours, so a
-    # sub-day window is a real deployment need, not just a testing knob.
-    retention_days: float = 1
-
-    # Direct-write path only. When on, telemetry is written immediately only
-    # while a dashboard is connected; otherwise telemetry_buffer.py batches it
-    # in memory so a serverless Postgres (Neon) gets idle time to suspend.
-    defer_writes_without_viewers: bool = False
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"
@@ -121,10 +115,6 @@ class Settings(BaseSettings):
     # and rendered OFFLINE - rather than disappearing from the fleet entirely.
     fleet_window_minutes: int = 15
 
-    # Rows of history per robot used to derive status and extrapolate battery
-    # drain rate.
-    fleet_history_per_robot: int = 30
-
     # ── Ingest ──────────────────────────────────────────────────────
 
     # Devices may report their own measurement time, which is what makes
@@ -134,11 +124,9 @@ class Settings(BaseSettings):
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
 
-    # Max entries retained in the telemetry Redis Stream. Redis trims the
-    # oldest beyond this - including entries a consumer group has not yet
-    # acknowledged - so this is the worker's catch-up headroom, not an
-    # unbounded durable log. The worker logs a warning as it nears the cap.
-    telemetry_stream_maxlen: int = 100_000
+    # Entries kept in the Redis streams used for live WebSocket fan-out.
+    # Listeners only read new entries, so this just bounds Redis memory.
+    telemetry_stream_maxlen: int = 1000
 
     # ── Access control ──────────────────────────────────────────────
 
@@ -146,18 +134,6 @@ class Settings(BaseSettings):
     # an API key. Defaults to public so the hosted demo works without shipping
     # a key to every browser; set true for any deployment with real data.
     require_auth_for_reads: bool = False
-
-    # ── Deployment-shape flags ──────────────────────────────────────
-
-    # Ingest path: XADD to a Redis Stream and return immediately (needs the
-    # worker running to persist it), versus INSERT + COMMIT on the request
-    # path. Production on EC2 runs with this off and no worker.
-    opt_redis_buffer: bool = True
-
-    # Read path: Redis read-through cache in front of fleet-status and
-    # analytics aggregation, versus recomputing on every request. Off in
-    # production to keep Upstash command volume down.
-    opt_read_cache: bool = True
 
     # ── Derived / validated ─────────────────────────────────────────
 
@@ -238,16 +214,6 @@ class Settings(BaseSettings):
         if self.resolved_auth_mode not in ("open", "required"):
             raise ValueError(f"AUTH_MODE must be 'open' or 'required', got {self.auth_mode!r}.")
         return self
-
-    def optimization_flags(self) -> dict[str, bool]:
-        """Current state of every ``opt_*`` flag, for /health and startup logs."""
-        # type(self).model_fields, not self.model_fields: Pydantic 2.11
-        # deprecated instance access, and this runs on every /health scrape.
-        return {
-            name: getattr(self, name)
-            for name in sorted(type(self).model_fields)
-            if name.startswith("opt_")
-        }
 
 
 @lru_cache

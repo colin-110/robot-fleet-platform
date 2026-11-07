@@ -24,18 +24,6 @@ MISSION_TYPES = ["PATROL", "DELIVERY", "INSPECTION"]
 
 
 @dataclass
-class ViewerState:
-    """Shared, mutable flag: is anyone actually watching the dashboard?
-
-    One instance per worker process, read by every robot_loop task and
-    written by viewer_watch_loop. Starts True so a fresh deploy looks alive
-    immediately rather than waiting for the first check-in.
-    """
-
-    active: bool = True
-
-
-@dataclass
 class MissionStep:
     x: float
     y: float
@@ -251,75 +239,121 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
     return value
 
 
+# Per-robot device keys, filled at startup when --device-keys is set. Empty
+# means every request uses the shared key from the session headers.
+_device_keys: dict[int, str] = {}
+
+
+def key_headers(robot_id: int) -> dict | None:
+    """Headers that authenticate as ``robot_id``, or None to use the shared key."""
+    key = _device_keys.get(robot_id)
+    return {"X-API-Key": key} if key else None
+
+
+async def provision_device_keys(
+    client: aiohttp.ClientSession, base_api: str, robot_ids: list[int], timeout_s: float
+) -> None:
+    """Issue a device key for each robot using the shared (admin) key.
+
+    Issuing rotates the key, so a restarted simulator invalidates the keys of
+    its previous run.
+    """
+    for robot_id in robot_ids:
+        for attempt in range(5):
+            try:
+                async with client.post(
+                    f"{base_api}/robots/{robot_id}/key", timeout=timeout_s
+                ) as response:
+                    response.raise_for_status()
+                    _device_keys[robot_id] = (await response.json())["key"]
+                    break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if attempt == 4:
+                    raise RuntimeError(f"Could not issue a key for robot {robot_id}") from exc
+                await asyncio.sleep(2**attempt)
+    safe_print(f"[KEYS] Issued device keys for {len(robot_ids)} robots.")
+
+
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class Outbox:
+    """Readings kept until the server has accepted them.
+
+    A reading stays here until a POST containing it succeeds, so a failed
+    upload or an unreachable server costs nothing but a retry. The server
+    skips readings it already has, so resending is safe.
+    """
+
+    MAX_PER_ROBOT = 5000
+
+    def __init__(self) -> None:
+        # robot_id -> timestamp -> payload
+        self._entries: dict[int, dict[str, dict]] = {}
+        self.generated = 0
+        self.dropped = 0
+
+    def add(self, payload: dict) -> None:
+        entries = self._entries.setdefault(payload["robot_id"], {})
+        entries[payload["timestamp"]] = payload
+        self.generated += 1
+        if len(entries) > self.MAX_PER_ROBOT:
+            entries.pop(next(iter(entries)))
+            self.dropped += 1
+
+    def unsent(self) -> list[dict]:
+        return [payload for entries in self._entries.values() for payload in entries.values()]
+
+    def confirm(self, payloads: list[dict]) -> None:
+        """Forget readings the server accepted."""
+        for payload in payloads:
+            self._entries.get(payload["robot_id"], {}).pop(payload["timestamp"], None)
+
+    def discard(self, payloads: list[dict]) -> None:
+        """Forget readings the server rejected outright (they would never succeed)."""
+        self.confirm(payloads)
+        self.dropped += len(payloads)
+
+    def pending_count(self) -> int:
+        return sum(len(entries) for entries in self._entries.values())
+
+
+class PermanentRejection(Exception):
+    """The server refused the readings in a way a retry will not fix."""
+
+
 async def post_telemetry(
-    client: aiohttp.ClientSession, api_url: str, payload: dict, timeout_s: float
-):
+    client: aiohttp.ClientSession,
+    api_url: str,
+    payload: dict | list,
+    timeout_s: float,
+    headers: dict | None = None,
+) -> dict:
+    """POST readings and return the response body."""
     for attempt in range(3):
         try:
-            response = await client.post(api_url, json=payload, timeout=timeout_s)
-            response.raise_for_status()
-            return
+            async with client.post(
+                api_url, json=payload, timeout=timeout_s, headers=headers
+            ) as response:
+                if 400 <= response.status < 500 and response.status not in (408, 429):
+                    raise PermanentRejection(f"{response.status}: {await response.text()}")
+                response.raise_for_status()
+                return await response.json()
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if attempt == 2:
                 raise exc
             await asyncio.sleep(0.5 * (2**attempt))
-
-
-# Consecutive zero-viewer polls required before actually going idle. At
-# POLL_INTERVAL_S apart, this is ~60s of confirmed silence - long enough that
-# a page reload or a brief disconnect doesn't flap the fleet in and out of
-# reporting. Going *active* has no such delay: the very next poll that sees
-# a viewer flips it back on immediately.
-POLL_INTERVAL_S = 15.0
-IDLE_AFTER_CONSECUTIVE_ZERO_POLLS = 4
-
-
-async def viewer_watch_loop(
-    client: aiohttp.ClientSession, api_url: str, state: ViewerState, timeout_s: float
-) -> None:
-    """Poll the backend's viewer count and gate the fleet's own activity on it.
-
-    Runs once per worker process, independent of how many robots that worker
-    owns, so one small GET every 15s replaces N robots' worth of traffic. Fails open on a check failure (leaves state.active
-    untouched): a transient problem with this specific request is not
-    evidence that viewers went away, and flipping the fleet dark because a
-    health check hiccuped would be a worse failure mode than the bandwidth
-    this loop exists to save.
-    """
-    base_api = get_base_api(api_url)
-    url = f"{base_api}/viewers"
-    consecutive_zero = 0
-
-    while True:
-        try:
-            async with client.get(url, timeout=timeout_s) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                count = data.get("active_connections", 0)
-
-            if count > 0:
-                consecutive_zero = 0
-                if not state.active:
-                    safe_print("[VIEWER] Viewer detected - resuming telemetry and command polling.")
-                state.active = True
-            else:
-                consecutive_zero += 1
-                if state.active and consecutive_zero >= IDLE_AFTER_CONSECUTIVE_ZERO_POLLS:
-                    safe_print(
-                        f"[VIEWER] No viewers for ~{POLL_INTERVAL_S * consecutive_zero:.0f}s - "
-                        "pausing telemetry and command polling to save bandwidth."
-                    )
-                    state.active = False
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.debug("Viewer check failed (leaving state unchanged): %s", exc)
-
-        await asyncio.sleep(POLL_INTERVAL_S)
+    raise RuntimeError("unreachable")
 
 
 async def patch_command_status(
-    client: aiohttp.ClientSession, base_api: str, cmd_id: str, status: str, **extra
+    client: aiohttp.ClientSession,
+    base_api: str,
+    robot_id: int,
+    cmd_id: str,
+    status: str,
+    **extra,
 ) -> None:
     """Best-effort command status transition.
 
@@ -329,7 +363,9 @@ async def patch_command_status(
     """
     payload = {"status": status, **extra}
     try:
-        async with client.patch(f"{base_api}/commands/{cmd_id}/status", json=payload) as response:
+        async with client.patch(
+            f"{base_api}/commands/{cmd_id}/status", json=payload, headers=key_headers(robot_id)
+        ) as response:
             await response.read()
     except Exception as exc:
         logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
@@ -389,7 +425,6 @@ async def robot_loop(
     tick_min_s: float,
     tick_max_s: float,
     post_timeout_s: float,
-    viewer_state: "ViewerState",
 ):
     base_api = get_base_api(api_url)
     robot.last_update_s = time.time()
@@ -415,69 +450,74 @@ async def robot_loop(
                     )
 
             # Command polling continues during a telemetry blackout so an
-            # operator's Stop still lands. It pauses when nobody is viewing,
-            # since only a dashboard can create commands.
-            if viewer_state.active:
-                try:
-                    # POST /claim, not GET: claiming transitions commands to
-                    # DISPATCHED, so it is not a safe method.
-                    cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
-                    async with client.post(cmd_url, timeout=10.0) as cmd_resp:
-                        if cmd_resp.status == 200:
-                            data = await cmd_resp.json()
-                            for cmd_obj in data:
-                                cmd_id = cmd_obj["id"]
-                                cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
+            # operator's Stop still lands.
+            try:
+                # POST /claim, not GET: claiming transitions commands to
+                # DISPATCHED, so it is not a safe method.
+                cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
+                async with client.post(
+                    cmd_url, timeout=10.0, headers=key_headers(robot.robot_id)
+                ) as cmd_resp:
+                    if cmd_resp.status == 200:
+                        data = await cmd_resp.json()
+                        for cmd_obj in data:
+                            cmd_id = cmd_obj["id"]
+                            cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
 
-                                if cmd_id in robot.processed_command_ids:
-                                    # End-to-end idempotency: replay the result
-                                    # rather than executing the command twice.
-                                    await patch_command_status(
-                                        client,
-                                        base_api,
-                                        cmd_id,
-                                        "COMPLETED",
-                                        result={"message": "Already processed"},
-                                    )
-                                    continue
-
-                                robot.processed_command_ids.append(cmd_id)
-                                if len(robot.processed_command_ids) > 100:
-                                    robot.processed_command_ids.pop(0)
-
-                                await patch_command_status(client, base_api, cmd_id, "ACKNOWLEDGED")
-                                await patch_command_status(client, base_api, cmd_id, "EXECUTING")
-
-                                status_to_patch = "COMPLETED"
-
-                                if cmd_action == "RETURN_TO_BASE":
-                                    clear_mission(robot)
-                                    robot.returning_to_charge = True
-                                    robot.status = "ACTIVE"
-                                    robot.online = True
-                                    safe_print(
-                                        f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})"
-                                    )
-                                elif cmd_action == "EMERGENCY_STOP":
-                                    robot.status = "STOPPED"
-                                    robot.speed = 0.0
-                                    clear_mission(robot)
-                                    robot.returning_to_charge = False
-                                    safe_print(
-                                        f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})"
-                                    )
-                                elif cmd_action == "RESUME":
-                                    robot.status = "ACTIVE"
-                                    robot.online = True
-                                    safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
-                                else:
-                                    status_to_patch = "FAILED"
-
+                            if cmd_id in robot.processed_command_ids:
+                                # End-to-end idempotency: replay the result
+                                # rather than executing the command twice.
                                 await patch_command_status(
-                                    client, base_api, cmd_id, status_to_patch
+                                    client,
+                                    base_api,
+                                    robot.robot_id,
+                                    cmd_id,
+                                    "COMPLETED",
+                                    result={"message": "Already processed"},
                                 )
-                except Exception as e:
-                    logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
+                                continue
+
+                            robot.processed_command_ids.append(cmd_id)
+                            if len(robot.processed_command_ids) > 100:
+                                robot.processed_command_ids.pop(0)
+
+                            await patch_command_status(
+                                client, base_api, robot.robot_id, cmd_id, "ACKNOWLEDGED"
+                            )
+                            await patch_command_status(
+                                client, base_api, robot.robot_id, cmd_id, "EXECUTING"
+                            )
+
+                            status_to_patch = "COMPLETED"
+
+                            if cmd_action == "RETURN_TO_BASE":
+                                clear_mission(robot)
+                                robot.returning_to_charge = True
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(
+                                    f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})"
+                                )
+                            elif cmd_action == "EMERGENCY_STOP":
+                                robot.status = "STOPPED"
+                                robot.speed = 0.0
+                                clear_mission(robot)
+                                robot.returning_to_charge = False
+                                safe_print(
+                                    f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})"
+                                )
+                            elif cmd_action == "RESUME":
+                                robot.status = "ACTIVE"
+                                robot.online = True
+                                safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
+                            else:
+                                status_to_patch = "FAILED"
+
+                            await patch_command_status(
+                                client, base_api, robot.robot_id, cmd_id, status_to_patch
+                            )
+            except Exception as e:
+                logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
             # Meltdown / Battery exhaustion DEAD checks
             is_dead = (
@@ -501,7 +541,7 @@ async def robot_loop(
 
                 # Emit dead telemetry if not blacked out
                 if not is_blacked_out:
-                    await emit_telemetry(robot, queue, rng, viewer_state)
+                    await emit_telemetry(robot, queue, rng)
 
                 # Maintenance repair crew event (45s to 90s delay)
                 if now - robot.dead_since >= rng.uniform(45.0, 90.0):
@@ -528,7 +568,7 @@ async def robot_loop(
 
             if robot.status == "STOPPED":
                 if not is_blacked_out:
-                    await emit_telemetry(robot, queue, rng, viewer_state)
+                    await emit_telemetry(robot, queue, rng)
                 await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
                 continue
 
@@ -644,7 +684,7 @@ async def robot_loop(
                                 f"[R{robot.robot_id:02d}] Completed mission {mission.mission_id} while overheating."
                             )
                             if not is_blacked_out:
-                                await emit_telemetry(robot, queue, rng, viewer_state)
+                                await emit_telemetry(robot, queue, rng)
                             clear_mission(robot)
                         else:
                             next_step = mission.steps[mission.current_step]
@@ -698,7 +738,7 @@ async def robot_loop(
                                 f"{mission.mission_type} {mission.mission_id}"
                             )
                             if not is_blacked_out:
-                                await emit_telemetry(robot, queue, rng, viewer_state)
+                                await emit_telemetry(robot, queue, rng)
                                 try:
                                     async with client.post(
                                         f"{base_api}/events",
@@ -707,6 +747,7 @@ async def robot_loop(
                                             "message": f"Completed {mission.mission_type} mission {mission.mission_id}",
                                         },
                                         timeout=10.0,
+                                        headers=key_headers(robot.robot_id),
                                     ) as _r:
                                         await _r.read()
                                 except Exception:
@@ -780,6 +821,7 @@ async def robot_loop(
                                 "message": "Entered Restricted Zone!",
                             },
                             timeout=10.0,
+                            headers=key_headers(robot.robot_id),
                         ) as _r:
                             await _r.read()
                     except Exception:
@@ -793,7 +835,7 @@ async def robot_loop(
 
             # Emit telemetry if online and not in blackout
             if not is_blacked_out:
-                await emit_telemetry(robot, queue, rng, viewer_state)
+                await emit_telemetry(robot, queue, rng)
 
             await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
 
@@ -801,14 +843,7 @@ async def robot_loop(
         safe_print(f"[R{robot.robot_id:02d}] Decommissioned and shutting down.")
 
 
-async def emit_telemetry(
-    robot: RobotState, queue: asyncio.Queue, rng: random.Random, viewer_state: "ViewerState"
-):
-    # Gated here rather than at each of this function's call sites: nobody
-    # watching means nothing this robot reports gets seen, and queuing it
-    # anyway would spend the batcher's next POST on data with no audience.
-    if not viewer_state.active:
-        return
+async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Random):
 
     payload = {
         "robot_id": robot.robot_id,
@@ -865,39 +900,74 @@ async def emit_telemetry(
 
 
 async def telemetry_batcher(
-    client: aiohttp.ClientSession, api_url: str, post_timeout_s: float, queue: asyncio.Queue
+    client: aiohttp.ClientSession,
+    api_url: str,
+    post_timeout_s: float,
+    queue: asyncio.Queue,
+    outbox: Outbox,
 ):
-    # Flush at 50 queued readings or 1s after the oldest unflushed one,
-    # whichever comes first. Measuring from the oldest item (not the newest)
-    # keeps status changes from waiting several seconds behind a busy queue.
+    # Flush at 50 new readings or 1s after the oldest unflushed one, whichever
+    # comes first. Measuring from the oldest item (not the newest) keeps status
+    # changes from waiting several seconds behind a busy queue.
     MAX_BATCH = 50
     MAX_WAIT_S = 1.0
+    MAX_PER_REQUEST = 500
 
-    batch = []
     base_api = get_base_api(api_url)
     batch_url = f"{base_api}/telemetry/batch"
     deadline = None
+    new_since_flush = 0
+    retry_at = 0.0
+    backoff = 1.0
 
     async def flush():
-        nonlocal deadline
-        try:
-            await post_telemetry(client, batch_url, batch, post_timeout_s)
-        except Exception as exc:
-            safe_print(f"[BATCHER] POST failed: {exc}")
-        batch.clear()
+        nonlocal deadline, new_since_flush, retry_at, backoff
         deadline = None
+        new_since_flush = 0
+        if time.monotonic() < retry_at:
+            return
+
+        unsent = outbox.unsent()
+        # A device key only covers its own robot, so with device keys the
+        # readings go out as one request per robot.
+        if _device_keys:
+            groups: dict[int, list] = {}
+            for item in unsent:
+                groups.setdefault(item["robot_id"], []).append(item)
+            requests = [(items, key_headers(rid)) for rid, items in groups.items()]
+        else:
+            requests = [(unsent, None)]
+
+        for items, headers in requests:
+            for start in range(0, len(items), MAX_PER_REQUEST):
+                chunk = items[start : start + MAX_PER_REQUEST]
+                try:
+                    await post_telemetry(client, batch_url, chunk, post_timeout_s, headers=headers)
+                except PermanentRejection as exc:
+                    safe_print(f"[BATCHER] Readings rejected, dropping {len(chunk)}: {exc}")
+                    outbox.discard(chunk)
+                    continue
+                except Exception as exc:
+                    # Kept in the outbox and retried with backoff.
+                    safe_print(f"[BATCHER] POST failed, will retry: {exc!r}")
+                    retry_at = time.monotonic() + backoff
+                    backoff = min(backoff * 2, 30.0)
+                    return
+                outbox.confirm(chunk)
+        backoff = 1.0
 
     while True:
         timeout = MAX_WAIT_S if deadline is None else max(0.0, deadline - time.monotonic())
         try:
             payload = await asyncio.wait_for(queue.get(), timeout=timeout)
-            batch.append(payload)
+            outbox.add(payload)
+            new_since_flush += 1
             if deadline is None:
                 deadline = time.monotonic() + MAX_WAIT_S
-            if len(batch) >= MAX_BATCH:
+            if new_since_flush >= MAX_BATCH:
                 await flush()
         except asyncio.TimeoutError:
-            if batch:
+            if outbox.pending_count():
                 await flush()
         except asyncio.CancelledError:
             break
@@ -962,18 +1032,15 @@ async def main_async(args, worker_index=0, total_workers=1):
     async with aiohttp.ClientSession(
         headers=headers, connector=connector, timeout=timeout_obj
     ) as client:
-        # Start batcher
-        batcher_task = asyncio.create_task(
-            telemetry_batcher(client, args.api_url, args.timeout, telemetry_queue)
-        )
-
-        viewer_state = ViewerState()
-        viewer_task = (
-            None
-            if args.always_active
-            else asyncio.create_task(
-                viewer_watch_loop(client, args.api_url, viewer_state, args.timeout)
+        if args.device_keys:
+            await provision_device_keys(
+                client, get_base_api(args.api_url), [r.robot_id for r in robots], args.timeout
             )
+
+        # Start batcher
+        outbox = Outbox()
+        batcher_task = asyncio.create_task(
+            telemetry_batcher(client, args.api_url, args.timeout, telemetry_queue, outbox)
         )
 
         # Start robot loops
@@ -989,7 +1056,6 @@ async def main_async(args, worker_index=0, total_workers=1):
                     tick_min_s=args.tick_min,
                     tick_max_s=args.tick_max,
                     post_timeout_s=args.timeout,
-                    viewer_state=viewer_state,
                 )
             )
             active_robot_tasks[robot.robot_id] = task
@@ -1000,10 +1066,12 @@ async def main_async(args, worker_index=0, total_workers=1):
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:
+            safe_print(
+                f"[OUTBOX] generated={outbox.generated} unsent={outbox.pending_count()} "
+                f"dropped={outbox.dropped}"
+            )
             dispatcher_task.cancel()
             batcher_task.cancel()
-            if viewer_task is not None:
-                viewer_task.cancel()
             for task in list(active_robot_tasks.values()):
                 task.cancel()
 
@@ -1037,9 +1105,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
-        "--always-active",
+        "--device-keys",
         action="store_true",
-        help="Skip viewer-gating: never poll /viewers, never idle telemetry.",
+        help="Issue each robot its own device key at startup and send as that robot.",
     )
     args = parser.parse_args()
 
