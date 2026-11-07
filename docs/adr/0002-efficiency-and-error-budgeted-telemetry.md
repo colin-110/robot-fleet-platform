@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted, not started. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build step 1 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 

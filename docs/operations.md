@@ -79,7 +79,7 @@ Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env`
 - **`DATABASE_URL` needs the `sslmode`/`channel_binding` query params stripped.** Neon hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs. Drop both; asyncpg negotiates TLS with Neon automatically.
 - **Health routes must answer `HEAD`.** Uptime monitors and load balancers default to `HEAD`; `@app.get` only registers `GET`, so they read a healthy service as down. Health/root routes use `@app.api_route(path, methods=["GET", "HEAD"])`.
 - **`CORS_ORIGINS` must match the browser's `Origin` exactly - no trailing slash.** `https://your-app.vercel.app/` never matches.
-- **The direct ingest path registers robots itself.** Fleet status is the roster `LEFT JOIN`ed onto telemetry; with no worker, `TelemetryService` must call `RobotRepository.mark_seen()` or robots never appear.
+- **Every write registers the robot.** Fleet status is the roster `LEFT JOIN`ed onto `robot_state`, so `persist()` upserts the roster in the same transaction or a robot would never appear.
 - **Direct batch ingest commits once per batch.** Per-row commits to a remote Postgres were slow enough to exceed the simulator's POST timeout and silently drop whole batches.
 - **Upstash URLs use `rediss://`.** `redis-py` picks TLS from the URL scheme alone.
 - **CartoDB's free basemap CDN was discontinued.** The map uses OpenStreetMap tiles, with the dark theme approximated by a CSS filter.
@@ -97,7 +97,7 @@ On every push and pull request to `main`:
 
 ## Logging
 
-One configuration for the API and the worker (`app/logging_config.py`), replacing two `basicConfig` calls that used different formats despite shipping in the same image.
+One logging configuration for the whole app (`app/logging_config.py`).
 
 Every line carries the `request_id` that `RequestIDMiddleware` returns as `X-Request-ID`, propagated through a `ContextVar` rather than threaded through call signatures - under asyncio that is per-task, so concurrent requests cannot see each other's value and a service function five frames deep gets correlation for free. An inbound `X-Request-ID` is honoured rather than replaced, so a trace started by nginx survives into the service.
 
@@ -148,4 +148,4 @@ In priority order, if this needed to handle a genuinely large fleet:
 4. **Multi-tenancy.** Per-fleet isolation, OIDC for operators, and per-key rate limiting.
 5. **Managed high-availability data tier.** Multi-AZ RDS with read replicas and PgBouncer for the read path, plus a clustered or replicated Redis.
 6. **Dedicated realtime gateway.** Move WebSocket fan-out to its own horizontally scaled tier so it scales independently of the ingest API.
-7. **Observability.** Metrics (Prometheus or a hosted equivalent), alerting, and distributed tracing (OpenTelemetry) across the ingest, worker, and database path.
+7. **Observability.** Metrics (Prometheus or a hosted equivalent), alerting, and distributed tracing (OpenTelemetry) across the ingest and database path.

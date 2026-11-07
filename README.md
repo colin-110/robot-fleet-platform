@@ -1,65 +1,62 @@
 # FleetOps
 
-Real-time robot fleet monitoring and control platform built around asynchronous telemetry ingestion, Redis Streams, PostgreSQL, and WebSockets.
+Real-time robot fleet monitoring and control: telemetry ingestion, live
+dashboards over WebSocket, and command dispatch, built on FastAPI and
+TimescaleDB.
 
 [Live demo](https://robot-fleet-platform-eight.vercel.app)
 
 ![Fleet dashboard](docs/images/dashboard-overview.png)
 
-## Problem
+## What it does
 
-A fleet-control dashboard needs to ingest frequent telemetry without making every request wait for a database write. At the same time, connected operators need near-real-time state updates and reliable command handling.
-
-FleetOps separates the telemetry write path from database persistence while keeping the operator path responsive.
+Robots report telemetry (battery, position, component health, mission
+progress). Operators see the fleet live on a map, get each robot's status and
+remaining battery runtime, and send commands such as return-to-base or
+emergency stop.
 
 ## Architecture
 
 ~~~text
-Robot Simulator
-      |
-      v
-  FastAPI API
-      |
-     XADD
-      |
-      v
- Redis Streams
-   |        |
-   |        +----> WebSocket fan-out ----> Dashboard
-   |
-   +----> Async Worker ----> PostgreSQL
+Robot simulator ──HTTP──► FastAPI ──► TimescaleDB
+  (per-robot keys,          │          telemetry   (hypertable, compressed)
+   outbox + retries)        │          robot_state (latest reading per robot)
+                            │          robots, commands, events, users
+                            ▼
+                   WebSocket fan-out ──► Dashboard (React, Vercel)
 ~~~
 
-The ingest API acknowledges telemetry after placing it on the Redis stream. A worker consumes the stream and performs batched PostgreSQL writes. WebSocket clients receive state updates independently of the persistence path.
+Every reading goes through one write path that inserts it, registers the
+robot and updates its current state in a single transaction.
+
+The system is partway through a redesign toward MQTT transport and
+error-budgeted telemetry, aimed at running a fleet on the smallest possible
+server. See [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
+[ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
 ## Engineering decisions
 
-- **Redis Streams + consumer groups:** buffer bursts and decouple ingestion from database writes.
-- **Bounded WebSocket queues:** isolate slow clients instead of allowing one connection to stall fan-out.
-- **Atomic command state transitions:** prevent duplicate or conflicting robot commands under concurrent requests.
-- **Short-lived WebSocket tickets:** avoid putting long-lived access tokens directly into the WebSocket connection flow.
-- **Structured logging + correlation IDs:** make asynchronous request/worker behavior traceable.
-
-## Measured performance
-
-Each optimization was A/B-benchmarked on its own during development. The harness and results were later removed to keep the repo lean; they're still in the git history before the commit "Remove benchmarks, Prometheus/Grafana and the AWS compose file".
-
-| Workload | Baseline | Optimized |
-|---|---:|---:|
-| Redis Stream ingest buffer | 1,271 ms p99 | 158 ms p99 |
-| Read-through fleet-status cache | 11,172 ms p99 | 265 ms p99 |
-| Worker bulk insert | 242 rows/s | 985 rows/s |
-| Bounded WebSocket fan-out | 5,977 msg/s | 14,352 msg/s |
-
-A load test reached about **2,000 concurrent WebSocket clients** at roughly **15,000–18,000 messages/s**, with >99% delivery on a single node. These are portfolio-scale measurements, not production capacity guarantees.
+- **Idempotent writes.** A reading is identified by `(robot_id, timestamp)`,
+  the table's primary key, so a retried upload is never stored twice.
+- **Current state on write.** `robot_state` holds one row per robot, updated
+  only by newer readings, so fleet status never scans history.
+- **TimescaleDB.** One-day chunks, compression after a day, and a 30-day
+  retention policy that drops whole chunks instead of deleting rows.
+- **Per-robot device keys.** Random keys stored only as hashes; a key can only
+  report as its own robot, and checking one does no database work.
+- **Compare-and-set command transitions.** Concurrent pollers or status
+  updates cannot both win a transition.
+- **Bounded WebSocket queues.** A slow client drops its oldest frames instead of
+  stalling fan-out for everyone else.
+- **Short-lived console tickets.** The browser never holds the master API key.
 
 ## Testing
 
 Tests cover:
 
-- telemetry ingestion and fleet-state derivation
-- worker behavior and batch persistence
-- command concurrency and idempotency
+- telemetry ingestion, idempotency and fleet-state derivation
+- device keys, rotation and revocation
+- command concurrency, idempotency and timeouts
 - WebSocket lifecycle and reconnect behavior
 - authentication and command dispatch
 - structured logging
@@ -90,21 +87,21 @@ cp backend/.env.example backend/.env
 docker compose up --build -d
 ~~~
 
-The stack starts the API, worker, dashboard, simulator, PostgreSQL, and Redis.
+The stack starts the API, dashboard, simulator, TimescaleDB and Redis (used for WebSocket fan-out until the MQTT phase).
 
 ## Repository structure
 
-- `backend/app/` - API routes, services, repositories, authentication, and worker
+- `backend/app/` - API routes, services, repositories and authentication
 - `backend/tests/` - backend test suite
 - `frontend/robot-fleet-dashboard/` - React dashboard
 - `simulator/` - asynchronous robot simulator
 - `scripts/` - EC2 provisioning and CI deploy-role setup
-- `docs/` - architecture and operations documentation
+- `docs/` - architecture, operations, and design decisions (`docs/adr/`)
 - `docker-compose.yml` - full local stack; `docker-compose.ec2.yml` - production
 
 ## Limitations
 
-This is a portfolio-scale system using synthetic robot data. The hosted demo intentionally uses simplified authentication. The deployment is single-node and does not provide production-grade high availability or a dedicated time-series database.
+This is a portfolio-scale system using synthetic robot data. The hosted demo intentionally uses simplified authentication, and the deployment is single-node without high availability. The live demo still runs the previous version until the redesign is deployed.
 
 ## License
 

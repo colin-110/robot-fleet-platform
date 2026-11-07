@@ -1,6 +1,6 @@
 # ADR 0001: MQTT transport and TimescaleDB storage
 
-Status: accepted, in progress (phase 1: robot_state and TimescaleDB done)
+Status: accepted, in progress (phase 1 done)
 
 ## Context
 
