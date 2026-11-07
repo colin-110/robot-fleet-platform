@@ -197,43 +197,6 @@ async def test_worker_exits_cleanly_on_cancellation(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_depth_reporter_publishes_length_and_pending(fake_redis):
-    sampled = asyncio.Event()
-
-    async def xlen(_key):
-        sampled.set()
-        return 1234
-
-    fake_redis.xlen = xlen
-    fake_redis.xpending = AsyncMock(return_value={"pending": 17})
-
-    with patch.object(worker.manager, "redis", fake_redis):
-        await _run_until(sampled, report_stream_depth)
-
-    assert worker.telemetry_stream_length._value.get() == 1234
-    assert worker.telemetry_stream_pending._value.get() == 17
-
-
-@pytest.mark.asyncio
-async def test_depth_reporter_handles_a_missing_consumer_group(fake_redis):
-    """On a cold start the group does not exist yet; pending must read 0 rather
-    than leaving a stale value on the gauge."""
-    sampled = asyncio.Event()
-
-    async def xlen(_key):
-        sampled.set()
-        return 5
-
-    fake_redis.xlen = xlen
-    fake_redis.xpending = AsyncMock(side_effect=Exception("NOGROUP"))
-
-    with patch.object(worker.manager, "redis", fake_redis):
-        await _run_until(sampled, report_stream_depth)
-
-    assert worker.telemetry_stream_pending._value.get() == 0
-
-
-@pytest.mark.asyncio
 async def test_depth_reporter_warns_when_the_buffer_nears_its_cap(fake_redis, caplog):
     """The documented silent-failure mode: past the cap Redis trims entries the
     worker has not acknowledged, losing telemetry with no error anywhere."""
@@ -245,7 +208,6 @@ async def test_depth_reporter_warns_when_the_buffer_nears_its_cap(fake_redis, ca
         return int(maxlen * 0.95)
 
     fake_redis.xlen = xlen
-    fake_redis.xpending = AsyncMock(return_value={"pending": 0})
 
     with patch.object(worker.manager, "redis", fake_redis), caplog.at_level("WARNING"):
         await _run_until(sampled, report_stream_depth)
@@ -267,7 +229,6 @@ async def test_depth_reporter_survives_a_redis_outage(fake_redis):
         return 0
 
     fake_redis.xlen = xlen
-    fake_redis.xpending = AsyncMock(return_value={"pending": 0})
 
     with patch.object(worker.manager, "redis", fake_redis):
         # The loop sleeps 10s between samples, so drive the retry directly.

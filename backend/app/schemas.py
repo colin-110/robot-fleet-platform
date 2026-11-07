@@ -222,6 +222,5 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     version: str = "1.0.0"
-    # Active opt_* flags. Exposed so the benchmark harness can verify the stack
-    # booted in the configuration it intends to measure.
+    # Active opt_* flags, so you can see which deployment shape is running.
     optimizations: dict[str, bool] = {}

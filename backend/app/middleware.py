@@ -1,22 +1,10 @@
 """
 Request tracing and rate limiting middleware.
 
-Two implementations of each are kept deliberately:
-
-``RequestIDMiddleware`` / ``RateLimitMiddleware``
-    Pure ASGI. They operate on the raw ``(scope, receive, send)`` triple.
-
-``LegacyRequestIDMiddleware`` / ``LegacyRateLimitMiddleware``
-    The original Starlette ``BaseHTTPMiddleware`` versions.
-
-``BaseHTTPMiddleware`` is convenient but costly: it runs the downstream app in
-a separate anyio task and pipes the response through a memory object stream, so
-every request pays task-spawn plus stream overhead — per middleware. The pure
-ASGI versions just wrap ``send``.
-
-Both are retained so ``scripts/benchmark_matrix.py`` can measure the difference
-on this workload rather than citing someone else's benchmark. Select with the
-``OPT_ASGI_MIDDLEWARE`` setting.
+Both are pure ASGI: they operate on the raw ``(scope, receive, send)`` triple
+instead of Starlette's ``BaseHTTPMiddleware``, which runs the downstream app in
+a separate task and pipes the response through a memory stream on every
+request.
 """
 
 from __future__ import annotations
@@ -25,10 +13,8 @@ import logging
 import time
 import uuid
 
-from fastapi import Request
 from starlette.datastructures import Headers, MutableHeaders
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.logging_config import reset_request_id, set_request_id
@@ -201,9 +187,9 @@ def _log_access(scope: Scope, status_code: int, elapsed_seconds: float) -> None:
         return
 
     path = scope.get("path", "")
-    # Health and metrics are scraped every few seconds; logging them buries
-    # real traffic without adding anything a monitor does not already know.
-    if path in ("/health", "/metrics"):
+    # Health checks are polled every few seconds; logging them buries real
+    # traffic without adding anything a monitor does not already know.
+    if path in ("/health", "/health/live"):
         return
 
     method = scope.get("method", "-")
@@ -305,61 +291,3 @@ def _rate_limited_response(window_seconds: int) -> JSONResponse:
         content={"detail": "Too many requests. Please try again later."},
         headers={"Retry-After": str(window_seconds)},
     )
-
-
-# ── Legacy BaseHTTPMiddleware implementations (benchmark baseline) ──
-
-
-class LegacyRequestIDMiddleware(BaseHTTPMiddleware):
-    """Original BaseHTTPMiddleware request-ID implementation.
-
-    Kept at parity with the ASGI version — including log correlation and the
-    access line — because the benchmark compares the two implementations and a
-    difference in what they *do* would make that comparison meaningless.
-    """
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        request.state.request_id = request_id
-        token = set_request_id(request_id)
-        started = time.perf_counter()
-        status_code = 500
-        try:
-            response = await call_next(request)
-            status_code = response.status_code
-            response.headers["X-Request-ID"] = request_id
-            return response
-        finally:
-            _log_access(request.scope, status_code, time.perf_counter() - started)
-            reset_request_id(token)
-
-
-class LegacyRateLimitMiddleware(BaseHTTPMiddleware):
-    """Original BaseHTTPMiddleware rate limiter."""
-
-    def __init__(
-        self,
-        app,
-        max_requests: int = 100,
-        console_max_requests: int = 60,
-        window_seconds: int = 60,
-        trusted_proxy_count: int = 0,
-    ) -> None:
-        super().__init__(app)
-        self.max_requests = max_requests
-        self.console_max_requests = console_max_requests
-        self.window_seconds = window_seconds
-        self.trusted_proxy_count = trusted_proxy_count
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        bucket = _rate_limit_bucket(request.method, request.url.path)
-        if bucket is None:
-            return await call_next(request)
-
-        budget = self.console_max_requests if bucket == CONSOLE_BUCKET else self.max_requests
-        client_ip = client_ip_from_scope(request.scope, self.trusted_proxy_count)
-        allowed = await _check_rate_limit(client_ip, budget, self.window_seconds, bucket)
-        if not allowed:
-            return _rate_limited_response(self.window_seconds)
-
-        return await call_next(request)

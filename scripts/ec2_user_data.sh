@@ -20,10 +20,10 @@ APT="apt-get -o DPkg::Lock::Timeout=300 -y"
 $APT update
 $APT install git curl ca-certificates
 
-# 1 GB of swap. The box has 1 GB of RAM and runs backend, worker, simulator,
-# nginx and Prometheus; the OOM killer taking out the backend mid-migration is
-# a worse outage than the paging. Kept to 1 GB because the 7.6 GB disk is also
-# holding container images, Prometheus data and logs.
+# 1 GB of swap. The box has 1 GB of RAM and runs backend, simulator and nginx;
+# the OOM killer taking out the backend mid-migration is a worse outage than
+# the paging. Kept to 1 GB because the 7.6 GB disk also holds container images
+# and logs.
 if [ ! -f /swapfile ]; then
     fallocate -l 1G /swapfile
     chmod 600 /swapfile
@@ -51,8 +51,8 @@ cat <<'NOTE'
 Host bootstrapped. Two steps remain and neither can be automated
 from here, because both involve secrets that are not in the repo:
 
-  1. Write /opt/fleetops/backend/.env (see backend/.env.example).
-     It carries the RDS and ElastiCache URLs, TELEMETRY_API_KEY,
+  1. Write /opt/fleetops/.env (see backend/.env.example).
+     It carries the Neon and Upstash URLs, TELEMETRY_API_KEY,
      APP_ENV=production, CORS_ORIGINS and TRUSTED_PROXY_COUNT=2.
      Compose cannot interpolate from env_file, so the stack starts
      without these rather than failing on them.
@@ -60,7 +60,7 @@ from here, because both involve secrets that are not in the repo:
   2. If the GHCR packages are private, authenticate the host once:
        docker login ghcr.io -u <user> -p <read:packages PAT>
      Otherwise `docker compose pull` fails with 'denied'. Making the
-     three packages public is the other, simpler option.
+     two packages public is the other, simpler option.
 
 Then the deploy-aws job can roll this host over on every push.
 ================================================================

@@ -116,8 +116,8 @@ async def test_get_fleet_status_serves_from_cache(read_cache_enabled):
 async def test_get_fleet_status_bypasses_cache_when_disabled():
     """With OPT_READ_CACHE off the cache is not consulted at all.
 
-    Guards the benchmark: if the disabled path still read from Redis, the
-    'no cache' arm would silently measure cache hits and report a bogus 0%.
+    Production runs with the cache off to save Upstash commands; if the
+    disabled path still read from Redis, that saving would silently vanish.
     """
     service = RobotService(AsyncMock())
 

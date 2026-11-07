@@ -148,7 +148,7 @@ async def test_overflow_drops_the_oldest_frame_not_the_newest(manager):
     await _settle()
 
     for i in range(CLIENT_QUEUE_MAXSIZE + 10):
-        manager._enqueue_to_all_clients({"seq": i})
+        manager._fan_out({"seq": i})
 
     queue = manager._queues[ws]
     assert queue.qsize() == CLIENT_QUEUE_MAXSIZE
@@ -169,7 +169,7 @@ async def test_fan_out_skips_a_client_with_no_queue(manager):
     await manager.connect(ws)
     manager._queues.pop(ws)
 
-    manager._enqueue_to_all_clients({"robot_id": 1})  # must not raise
+    manager._fan_out({"robot_id": 1})  # must not raise
 
     manager.disconnect(ws)
 

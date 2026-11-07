@@ -14,23 +14,17 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Query, Response, WebSocket
+from fastapi import Depends, FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import metrics, telemetry_buffer
+from app import telemetry_buffer
 from app.auth import is_valid_api_key, verify_api_key
 from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
-from app.middleware import (
-    LegacyRateLimitMiddleware,
-    LegacyRequestIDMiddleware,
-    RateLimitMiddleware,
-    RequestIDMiddleware,
-)
+from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.retention import prune_loop
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
@@ -116,9 +110,6 @@ async def lifespan(app: FastAPI):
     if buffer_flush_task:
         buffer_flush_task.cancel()
 
-    # Drop this worker's gauge samples so a restart doesn't leave phantom
-    # connections summed into the multiprocess registry.
-    metrics.mark_worker_exit()
     logger.info("FleetOps shutting down")
 
 
@@ -129,34 +120,18 @@ app = FastAPI(
     description="Mission dispatch and real-time telemetry ingestion",
     version="1.0.0",
     lifespan=lifespan,
-    # No custom response class. orjson was benchmarked here and did help — but
-    # only on the handful of routes without a `response_model`, because FastAPI
-    # serializes through Pydantic directly whenever one is declared, bypassing
-    # the class entirely. FastAPI has since deprecated ORJSONResponse for that
-    # exact reason, so the code is gone; the measurement and what it taught us
-    # are kept in docs/performance.md.
 )
 
 # ── Middleware (order matters: outermost first) ─────────────────────
 
-if settings.opt_asgi_middleware:
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(
-        RateLimitMiddleware,
-        max_requests=settings.rate_limit_per_minute,
-        console_max_requests=settings.console_rate_limit_per_minute,
-        window_seconds=60,
-        trusted_proxy_count=settings.trusted_proxy_count,
-    )
-else:
-    app.add_middleware(LegacyRequestIDMiddleware)
-    app.add_middleware(
-        LegacyRateLimitMiddleware,
-        max_requests=settings.rate_limit_per_minute,
-        console_max_requests=settings.console_rate_limit_per_minute,
-        window_seconds=60,
-        trusted_proxy_count=settings.trusted_proxy_count,
-    )
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    max_requests=settings.rate_limit_per_minute,
+    console_max_requests=settings.console_rate_limit_per_minute,
+    window_seconds=60,
+    trusted_proxy_count=settings.trusted_proxy_count,
+)
 
 # A wildcard origin cannot be combined with credentials — the spec forbids it
 # and browsers reject the response. cors_allow_credentials drops credentials
@@ -204,8 +179,8 @@ def liveness():
 async def health_check():
     """Health check — verifies database connectivity and reports active flags.
 
-    The optimization flags are exposed so the benchmark harness can assert the
-    stack actually came up in the configuration it intended to measure.
+    Unlike /health/live this queries the database, so don't point a frequent
+    poller at it on a serverless Postgres that bills for awake time.
     """
     db_status = "healthy"
     try:
@@ -220,12 +195,6 @@ async def health_check():
         database=db_status,
         optimizations=settings.optimization_flags(),
     )
-
-
-@app.get("/metrics", tags=["observability"])
-async def prometheus_metrics():
-    """Prometheus metrics endpoint (multiprocess-aware)."""
-    return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/v1/viewers", tags=["observability"])

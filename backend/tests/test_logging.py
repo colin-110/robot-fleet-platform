@@ -224,8 +224,8 @@ async def test_an_inbound_request_id_is_honoured(client, caplog):
 
 
 @pytest.mark.asyncio
-async def test_health_and_metrics_are_not_access_logged(client, caplog):
-    """Scraped every few seconds; logging them buries real traffic."""
+async def test_health_checks_are_not_access_logged(client, caplog):
+    """Polled every few seconds; logging them buries real traffic."""
     with caplog.at_level(logging.INFO, logger="app.middleware"):
         await client.get("/health")
 
