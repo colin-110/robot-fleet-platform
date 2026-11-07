@@ -29,10 +29,7 @@ settings = get_settings()
 # Max frames buffered per client before we start dropping the oldest.
 CLIENT_QUEUE_MAXSIZE = 256
 
-# Max entries retained in a Redis Stream. Redis trims the oldest beyond this,
-# including entries a consumer group has not yet acknowledged, so this is the
-# worker's catch-up headroom rather than an unbounded durable log. The worker
-# exports stream length and pending count so falling behind is visible.
+# Max entries kept in each fan-out stream; listeners only read new entries.
 STREAM_MAXLEN = settings.telemetry_stream_maxlen
 
 

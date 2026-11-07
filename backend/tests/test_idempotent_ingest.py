@@ -1,8 +1,8 @@
 """Telemetry writes are idempotent.
 
-A reading is identified by (robot_id, timestamp). Retried uploads, duplicate
-readings inside a batch, and worker batches replayed after a crash must all
-leave exactly one row per reading.
+A reading is identified by (robot_id, timestamp), so its timestamp is
+required. Retried uploads and duplicate readings inside a batch must leave
+exactly one row per reading.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 from app.models import Robot, Telemetry
 from app.schemas import TelemetryCreate
 from app.websocket_manager import manager
-from app.worker import process_batch
 from tests.conftest import TestSessionLocal
 
 T0 = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -103,37 +102,18 @@ async def test_first_write_wins(client, db):
 
 
 @pytest.mark.asyncio
-async def test_replayed_worker_batch_is_stored_once(db):
-    """The worker commits before XACK; a crash in between replays the batch."""
-    messages = [
-        (f"1-{i}", {"payload": orjson.dumps(reading(offset_s=i)).decode()}) for i in range(3)
-    ]
-
-    for _ in range(2):
-        async with TestSessionLocal() as session:
-            ids = await process_batch(session, messages)
-        assert ids == ["1-0", "1-1", "1-2"]
-
-    assert await row_count(db) == 3
-
-
-@pytest.mark.asyncio
-async def test_worker_skips_invalid_payloads_but_acks_them(db):
-    messages = [
-        ("1-0", {"payload": orjson.dumps({"robot_id": "x", "battery": 1}).decode()}),
-        ("1-1", {"payload": orjson.dumps(reading()).decode()}),
-    ]
-
-    async with TestSessionLocal() as session:
-        ids = await process_batch(session, messages)
-
-    assert ids == ["1-0", "1-1"]
-    assert await row_count(db) == 1
-
-
-@pytest.mark.asyncio
 async def test_write_registers_the_robot_in_the_same_transaction(client, db):
     await client.post("/api/v1/telemetry/batch", json=[reading(offset_s=0), reading(offset_s=30)])
 
     robot = (await db.execute(select(Robot).where(Robot.id == 1))).scalar_one()
     assert robot.last_seen == T0 + timedelta(seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_reading_without_a_timestamp_is_rejected(client):
+    payload = reading()
+    del payload["timestamp"]
+
+    response = await client.post("/api/v1/telemetry", json=payload)
+
+    assert response.status_code == 422

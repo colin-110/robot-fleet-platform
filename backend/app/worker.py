@@ -1,24 +1,17 @@
 import asyncio
 import logging
 import signal
-import socket
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import orjson
-from pydantic import ValidationError
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app import telemetry_stream
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.logging_config import configure_logging
 from app.models import RobotCommand
-from app.repositories.telemetry_repo import persist
-from app.schemas import TelemetryCreate
 from app.services.command_service import TERMINAL_STATES
 from app.websocket_manager import manager
 
@@ -26,162 +19,6 @@ configure_logging(service="worker")
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
-
-STREAM_KEY = telemetry_stream.STREAM_KEY
-CONSUMER_GROUP = "db_writers"
-CONSUMER_NAME = f"worker-{socket.gethostname()}"
-
-
-async def process_batch(session: AsyncSession, stream_messages: list) -> list:
-    """Parse a batch of Redis-stream telemetry entries and persist them.
-
-    ``stream_messages`` is a list of ``(msg_id, fields)`` tuples as returned by
-    ``XREADGROUP``, where ``fields`` carries a JSON ``"payload"``. Non-telemetry
-    payloads (events/commands - anything without a ``battery`` field) and
-    undecodable payloads are skipped, but every message id seen is returned so
-    the caller can ``XACK`` the whole batch and avoid reprocessing.
-
-    The batch is written with the shared ``persist`` path in one transaction.
-    Readings already stored are skipped, so replaying a batch after a crash
-    between commit and XACK cannot create duplicates.
-    """
-    message_ids: list = []
-    rows: list[tuple[TelemetryCreate, datetime]] = []
-
-    for msg_id, fields in stream_messages:
-        message_ids.append(msg_id)
-        payload_raw = fields.get("payload") if fields else None
-        if not payload_raw:
-            continue
-        try:
-            decoded = orjson.loads(payload_raw)
-        except orjson.JSONDecodeError:
-            logger.warning("Failed to decode Redis payload: %s", payload_raw)
-            continue
-        # Only telemetry objects carry a battery reading; ignore events/commands.
-        if "battery" not in decoded:
-            continue
-        try:
-            reading = TelemetryCreate.model_validate(decoded)
-        except ValidationError:
-            logger.warning("Skipping invalid telemetry payload: %s", payload_raw)
-            continue
-        rows.append((reading, reading.timestamp or datetime.now(timezone.utc)))
-
-    if rows:
-        started = time.perf_counter()
-        inserted = await persist(session, rows)
-        await session.commit()
-        logger.info(
-            "Persisted %d telemetry records (%d duplicates skipped) in %.1f ms.",
-            len(inserted),
-            len(rows) - len(inserted),
-            (time.perf_counter() - started) * 1000,
-        )
-
-    return message_ids
-
-
-async def report_stream_depth():
-    """Warn when the telemetry stream nears its cap.
-
-    The telemetry stream is capped, and Redis trims the oldest entries past the
-    cap whether or not a consumer group has acknowledged them. A worker that
-    falls far enough behind therefore drops telemetry with no error anywhere;
-    this turns that silent failure into a log warning.
-    """
-    while True:
-        try:
-            length = await manager.redis.xlen(STREAM_KEY)
-            if length >= settings.telemetry_stream_maxlen * 0.9:
-                logger.warning(
-                    "Telemetry stream at %d/%d entries - Redis will trim "
-                    "unacknowledged telemetry if the worker falls further behind.",
-                    length,
-                    settings.telemetry_stream_maxlen,
-                )
-        except asyncio.CancelledError:
-            logger.info("Stream depth reporter cancelled. Exiting.")
-            break
-        except Exception:
-            logger.warning("Failed to sample stream depth", exc_info=True)
-
-        await asyncio.sleep(10)
-
-
-async def redis_to_db_sync_worker():
-    """Background worker that batch-saves telemetry from Redis to PostgreSQL."""
-    logger.info("Starting Redis-to-DB sync worker...")
-    redis = manager.redis
-
-    retry_delay = 2.0  # seconds
-    max_retry_delay = 30.0
-
-    # Ensure consumer group exists
-    try:
-        await redis.xgroup_create(STREAM_KEY, CONSUMER_GROUP, id="0", mkstream=True)
-    except Exception as e:
-        if "BUSYGROUP" not in str(e):
-            logger.error("Failed to create consumer group: %s", e)
-
-    while True:
-        try:
-            message_ids = []
-
-            messages = await redis.xreadgroup(
-                CONSUMER_GROUP, CONSUMER_NAME, {STREAM_KEY: "0"}, count=100
-            )
-
-            if not messages or not messages[0][1]:
-                try:
-                    res = await redis.execute_command(
-                        "XAUTOCLAIM",
-                        STREAM_KEY,
-                        CONSUMER_GROUP,
-                        CONSUMER_NAME,
-                        "60000",
-                        "0",
-                        "COUNT",
-                        "100",
-                    )
-                    if res and len(res) >= 2 and res[1]:
-                        continue
-                except Exception as e:
-                    logger.warning("XAUTOCLAIM failed: %s", e)
-
-                messages = await redis.xreadgroup(
-                    CONSUMER_GROUP, CONSUMER_NAME, {STREAM_KEY: ">"}, count=100, block=500
-                )
-
-            if messages:
-                stream_messages = []
-                for _stream, stream_msgs in messages:
-                    stream_messages.extend(stream_msgs)
-
-                if stream_messages:
-                    async with AsyncSessionLocal() as session:
-                        message_ids = await process_batch(session, stream_messages)
-                    # Reset retry delay on a successful drain of the batch.
-                    retry_delay = 2.0
-
-            # Acknowledge messages in Redis stream so they are removed from PEL
-            if message_ids:
-                await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
-                # Yield briefly before checking the queue again.
-                await asyncio.sleep(0.05)
-
-        except asyncio.CancelledError:
-            logger.info("Sync worker task cancelled. Exiting.")
-            break
-        except Exception as e:
-            logger.error(
-                "Error in database sync worker: %s. Retrying in %.1fs...",
-                e,
-                retry_delay,
-                exc_info=True,
-            )
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(max_retry_delay, retry_delay * 2.0)
 
 
 async def scan_for_timeouts(session: AsyncSession):
@@ -305,10 +142,8 @@ async def main():
 
     # Run the sync worker, timeout scanner and health heartbeat concurrently
     tasks = [
-        asyncio.create_task(redis_to_db_sync_worker()),
         asyncio.create_task(timeout_worker_loop()),
         asyncio.create_task(health_heartbeat()),
-        asyncio.create_task(report_stream_depth()),
     ]
     try:
         await asyncio.gather(*tasks)

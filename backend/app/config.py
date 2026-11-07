@@ -128,11 +128,9 @@ class Settings(BaseSettings):
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
 
-    # Max entries retained in the telemetry Redis Stream. Redis trims the
-    # oldest beyond this - including entries a consumer group has not yet
-    # acknowledged - so this is the worker's catch-up headroom, not an
-    # unbounded durable log. The worker logs a warning as it nears the cap.
-    telemetry_stream_maxlen: int = 100_000
+    # Entries kept in the Redis streams used for live WebSocket fan-out.
+    # Listeners only read new entries, so this just bounds Redis memory.
+    telemetry_stream_maxlen: int = 1000
 
     # ── Access control ──────────────────────────────────────────────
 
@@ -142,11 +140,6 @@ class Settings(BaseSettings):
     require_auth_for_reads: bool = False
 
     # ── Deployment-shape flags ──────────────────────────────────────
-
-    # Ingest path: XADD to a Redis Stream and return immediately (needs the
-    # worker running to persist it), versus INSERT + COMMIT on the request
-    # path. Production on EC2 runs with this off and no worker.
-    opt_redis_buffer: bool = True
 
     # ── Derived / validated ─────────────────────────────────────────
 

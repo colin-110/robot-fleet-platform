@@ -43,9 +43,8 @@ async def create_event(
         if new_event.timestamp
         else None,
     }
-    # event_stream, not the default telemetry_stream: that stream is a bounded
-    # ingest buffer whose overflow drops unacknowledged telemetry, so events
-    # sharing it would consume the worker's catch-up headroom.
+    # Events get their own stream so a burst of telemetry cannot push them
+    # out of the capped telemetry stream before listeners read them.
     await manager.broadcast(payload, stream=manager.event_stream)
     return {"message": "Event logged", "id": new_event.id}
 

@@ -71,7 +71,6 @@ jobs:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db
           REDIS_URL: redis://localhost:6379/0
           TELEMETRY_API_KEY: ci-test-key-not-a-real-secret
-          OPT_REDIS_BUFFER: "false"
           PYTHONPATH: .
         run: cd backend && pytest tests/ -v --cov=app --cov-report=term-missing
 

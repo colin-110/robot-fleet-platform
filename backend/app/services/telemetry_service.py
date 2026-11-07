@@ -1,15 +1,8 @@
 """
 Telemetry service - ingest + broadcast + read.
 
-Two ingest paths, selected by ``OPT_REDIS_BUFFER``:
-
-**Buffered (default).** The request handler does a single Redis ``XADD`` and
-returns. A separate worker process drains the stream and bulk-inserts into
-PostgreSQL. Request latency is decoupled from database I/O, so an ingest spike
-queues in Redis instead of blocking on disk.
-
-**Direct.** ``INSERT`` + ``COMMIT`` inline on the request path, no worker
-needed.
+Readings are written in one transaction through ``persist()``, which skips
+readings already stored, then broadcast to dashboards.
 """
 
 import logging
@@ -18,7 +11,6 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import telemetry_stream
 from app.config import get_settings
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository, persist
@@ -93,13 +85,6 @@ def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
     }
 
 
-def _reading_to_dict(data: TelemetryCreate, timestamp: datetime) -> dict:
-    """JSON-ready reading with its resolved timestamp (stream and broadcast)."""
-    payload = data.model_dump(mode="json")
-    payload["timestamp"] = _to_iso(timestamp)
-    return payload
-
-
 class TelemetryService:
     """Handles telemetry ingestion, broadcast, and retrieval."""
 
@@ -107,59 +92,38 @@ class TelemetryService:
         self.repo = TelemetryRepository(db)
 
     async def ingest(self, data: TelemetryCreate, background_tasks: BackgroundTasks = None) -> dict:
-        """Ingest one reading. Same paths as ``ingest_batch``."""
-        mode, stored = await self._ingest([data], background_tasks)
-        if mode == "queued":
-            return {"message": "Telemetry queued in Redis"}
-        if not stored:
-            return {"message": "Telemetry already received"}
-        return {"message": "Telemetry received"}
+        """Ingest one reading. Same path as ``ingest_batch``."""
+        stored = await self._ingest([data], background_tasks)
+        return {"message": "Telemetry received" if stored else "Telemetry already received"}
 
     async def ingest_batch(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks = None
     ) -> dict:
         """Ingest a batch of readings."""
-        mode, stored = await self._ingest(data, background_tasks)
-        if mode == "queued":
-            message = f"{len(stored)} telemetry readings queued in Redis"
-        else:
-            message = f"{len(stored)} telemetry readings received"
-        duplicates = len(data) - len(stored)
-        if duplicates:
-            message += f", {duplicates} already stored"
+        stored = await self._ingest(data, background_tasks)
+        message = f"{len(stored)} telemetry readings received"
+        if len(data) > len(stored):
+            message += f", {len(data) - len(stored)} already stored"
         return {"message": message}
 
     async def _ingest(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks | None
-    ) -> tuple[str, list]:
-        """Route readings to one of two paths and broadcast the new ones.
+    ) -> list[Telemetry]:
+        """Store readings in one transaction and broadcast the new ones.
 
-        - ``queued``: added to the Redis stream; the worker persists them.
-        - ``direct``: written now, in one transaction.
-
-        Returns the path taken and the readings that were new (queued
-        payloads or inserted rows). Readings already stored are skipped.
+        Returns the rows actually inserted; readings already stored are skipped.
         """
         received_at = datetime.now(timezone.utc)
         # Resolved per reading: stamping a whole batch with one time would
         # collapse readings taken seconds apart onto a single instant.
         rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
 
-        if settings.opt_redis_buffer:
-            # Awaited, not a background task: the response tells the robot the
-            # readings are safe, so they must be on the stream first.
-            queued = await telemetry_stream.enqueue([_reading_to_dict(d, ts) for d, ts in rows])
-            if settings.websocket_backend == "direct":
-                # The Redis listener is off in this mode, so fan out here.
-                await self._broadcast(queued, background_tasks)
-            return "queued", queued
-
         inserted = await persist(self.repo.db, rows)
         await self.repo.db.commit()
 
         # Only new rows are broadcast, so a retried upload is not shown twice.
         await self._broadcast([_telemetry_to_broadcast_dict(t) for t in inserted], background_tasks)
-        return "direct", inserted
+        return inserted
 
     @staticmethod
     async def _broadcast(payloads: list[dict], background_tasks: BackgroundTasks | None) -> None:

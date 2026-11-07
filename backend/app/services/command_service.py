@@ -84,9 +84,7 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_CREATED"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        # event_stream, not the default telemetry_stream: that one is the
-        # bounded ingest buffer the worker drains, and command traffic sharing
-        # it eats the worker's catch-up headroom.
+        # Command updates use the event stream, not the capped telemetry one.
         await manager.broadcast(broadcast_payload, stream=manager.event_stream)
 
         return payload

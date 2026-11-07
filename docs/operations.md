@@ -33,19 +33,11 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
 | `MAX_CLOCK_SKEW_SECONDS` | `300` | Future-dated device timestamps beyond this are clamped to server time |
-| `TELEMETRY_STREAM_MAXLEN` | `100000` | Entries retained in the ingest stream; the worker's catch-up headroom |
+| `TELEMETRY_STREAM_MAXLEN` | `1000` | Entries kept in the Redis streams used for live WebSocket fan-out |
 | `LOG_FORMAT` | `text` (`json` in production) | `json` emits one object per line with the request id and structured fields, for a log aggregator |
 | `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/health/live` are excluded so health polls do not bury real traffic |
 | `WEBSOCKET_BACKEND` | `redis` | `direct` fans out in-process - correct for exactly one API instance, and saves Redis commands |
 | `RATE_LIMIT_BACKEND` | `redis` | `memory` keeps the sliding window in-process - same one-instance reasoning |
-
-### Deployment-shape flags
-
-These two pick between the full stack and the single-instance stack production runs.
-
-| Flag | `true` (local default) | `false` (production on EC2) |
-| :--- | :--- | :--- |
-| `OPT_REDIS_BUFFER` | `XADD` to a Redis Stream; the worker persists in batches | `INSERT` on the request path; no worker needed |
 
 ---
 
@@ -61,7 +53,7 @@ Viewer --HTTPS--> Vercel (static dashboard)
                                    '--> Upstash (Redis)
 ```
 
-There is no worker on this box, so the host's `.env` runs `OPT_REDIS_BUFFER=false`. The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
+The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
 
 The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
 
@@ -122,7 +114,7 @@ There is no metrics stack. The signals that exist are:
 - `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
 - `GET /health` - checks the database and reports the active `opt_*` flags. Use it by hand; don't poll it against Neon.
 - `GET /api/v1/viewers` (API key) - connected WebSocket clients.
-- Structured logs (above). The worker, when it runs, logs a warning when the telemetry stream nears `TELEMETRY_STREAM_MAXLEN`, past which Redis trims unacknowledged entries.
+- Structured logs (above).
 
 Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
 

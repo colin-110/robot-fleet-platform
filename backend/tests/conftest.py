@@ -79,10 +79,6 @@ TestSessionLocal = sessionmaker(
     class_=AsyncSession,
 )
 
-# Telemetry ingestion has two code paths; tests assert on synchronous DB writes,
-# so pin the buffer off regardless of the ambient environment.
-get_settings().opt_redis_buffer = False
-
 
 async def override_get_db():
     """Dependency override that yields a test database session."""
