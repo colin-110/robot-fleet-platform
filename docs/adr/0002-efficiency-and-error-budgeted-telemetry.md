@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 to 9 done, 10 prepared. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 9 done, 10 to be rebuilt. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -214,11 +214,8 @@ Each step ships with tests and a measurement, and is committed separately.
    targets: it is a stress case whose robots stop and start every few
    seconds, and its keyframe floor is about five a minute even at the
    loosest tolerances. See the benchmark for what that means for cost.
-10. **Deployment** (prepared, not yet run). `docker-compose.ec2.yml` for the
-    whole stack with the measured limits, TLS on 8883 with the host's
-    certificate, nightly `pg_dump` to S3 and a tested restore, an AWS Budgets
-    alert, arm64 images from CI, and a Graviton instance from
-    `scripts/deploy_aws.ps1`.
+10. **Deployment.** Removed from the repository, to be rebuilt from scratch:
+    the smallest instance, TLS on MQTT, backups to S3, budget alerts.
 
 ## Risks and how they are handled
 

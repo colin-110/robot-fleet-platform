@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Configuration, deployment, security posture, and the scaling roadmap. For local setup see [Running Locally](../README.md#running-locally) in the README.
+Configuration, CI, security posture, and the scaling roadmap. For local setup see [Running Locally](../README.md#running-locally) in the README.
 
 ---
 
@@ -73,85 +73,12 @@ The API runs as **one process**. The broker replaces each client id with the use
 
 ---
 
-## Deployment
-
-> The live demo still runs the version before the redesign (backend and simulator on a t3.micro, with Neon and Upstash). What follows is the deployment the repository now describes; moving to it is a manual step for the operator.
-
-Production is one small Graviton instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): TimescaleDB, the Mosquitto broker, the API and the demo simulator, with the memory limits [`bench/run.py`](../bench/run.py) measured (480 MB in all; see [the benchmark](benchmark.md)). The dashboard is a static build on Vercel. nginx and Let's Encrypt run on the host.
-
-```
-Viewer --HTTPS--> Vercel (static dashboard)
-   |
-   '--HTTPS/WSS--> nginx (host) --> API :8000 ----> TimescaleDB
-                                       |  ^
-Robots --MQTT over TLS :8883--> Mosquitto (go-auth asks the API)
-```
-
-| Port | Open to | What |
-| :--- | :--- | :--- |
-| 22 | anywhere (narrow it) | SSH |
-| 80, 443 | anywhere | nginx: Let's Encrypt and HTTPS to the API |
-| 8883 | anywhere | MQTT over TLS for robots |
-| 8000, 1883, 5432 | nobody | bound to localhost or the Docker network |
-
-The host **pulls pre-built images from GHCR rather than building**; CI publishes them for amd64 and arm64 after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA:
-
-```bash
-cd /opt/fleetops
-IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops pull
-IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
-```
-
-Every container caps its logs at 30 MB (`10m` × 3 files).
-
-### Provisioning the host
-
-[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance (`-InstanceType`, default `t4g.small`; the stack fits a `t4g.nano` by the benchmark, with the swap the bootstrap adds), and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap and clones the repo to `/opt/fleetops`. Two details matter:
-
-- **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. `send-command` treats a target that matches nothing as success, so an untagged host is a silent non-deploy.
-- **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the SSM agent never registers and the host is invisible to the pipeline.
-
-Then, by hand, because each involves a secret or a domain:
-
-1. Write `/opt/fleetops/.env` from [`backend/.env.example`](../backend/.env.example): `POSTGRES_*`, `DATABASE_URL` pointing at host `db`, a long `TELEMETRY_API_KEY`, `APP_ENV=production`, `CORS_ORIGINS`.
-2. Issue a certificate for the API and broker host names with certbot, then give the broker a copy it can read: `MQTT_DOMAIN=<host> sudo scripts/mqtt_certs.sh`, and link the script into `/etc/letsencrypt/renewal-hooks/deploy/` so renewals reach it.
-3. `docker login ghcr.io` if the GHCR packages are private.
-4. Backups, below, and a budget alert: `BUDGET_EMAIL=<you> BUDGET_USD=20 scripts/setup_budget_alert.sh`.
-
-### Backups
-
-[`scripts/backup_db.sh`](../scripts/backup_db.sh) writes a compressed `pg_dump` to S3 or a directory; run it nightly from the host's crontab:
-
-```
-15 3 * * * cd /opt/fleetops && BACKUP_TARGET=s3://<bucket>/fleetops scripts/backup_db.sh >> /var/log/fleetops-backup.log 2>&1
-```
-
-Give the instance role `s3:PutObject` on that prefix, and expire old dumps with a lifecycle rule:
-
-```bash
-aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lifecycle-configuration \
-  '{"Rules":[{"ID":"expire-fleetops-dumps","Status":"Enabled","Filter":{"Prefix":"fleetops/"},"Expiration":{"Days":30}}]}'
-```
-
-[`scripts/restore_db.sh`](../scripts/restore_db.sh) restores one (stop the API first). It wraps `pg_restore` in TimescaleDB's `timescaledb_pre_restore()` and `timescaledb_post_restore()`, without which hypertables do not come back.
-
-### Gotchas hit on this stack
-
-- **`DATABASE_URL` must not carry `sslmode`/`channel_binding`.** A managed Postgres hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs.
-- **Health routes must answer `HEAD`.** Uptime monitors and load balancers default to `HEAD`; `@app.get` only registers `GET`, so they read a healthy service as down. Health/root routes use `@app.api_route(path, methods=["GET", "HEAD"])`.
-- **`CORS_ORIGINS` must match the browser's `Origin` exactly - no trailing slash.** `https://your-app.vercel.app/` never matches.
-- **Every write registers the robot.** Fleet status is the roster `LEFT JOIN`ed onto `robot_state`, so `persist()` upserts the roster in the same transaction or a robot would never appear.
-- **Direct batch ingest commits once per batch.** Per-row commits to a remote Postgres were slow enough to exceed the simulator's POST timeout and silently drop whole batches.
-- **CartoDB's free basemap CDN was discontinued.** The map uses OpenStreetMap tiles, with the dark theme approximated by a CSS filter.
-
-### CI/CD
+## CI
 
 On every push and pull request to `main`:
 
 1. **`backend-test`** - `ruff check` across `backend/`, `simulator/` and `agent/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against a real TimescaleDB service container and an anonymous Mosquitto broker for the MQTT integration tests, and the agent's own tests (wire format, outbox, and the client against the broker, including a robot killed with `-9`).
 2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
-3. **`publish-images`** - builds and pushes the `backend` and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance. The frontend is deployed by Vercel, not from an image.
-4. **`deploy-aws`** - gated SSM-based rollout, opt-in via a repository variable. The AWS identity it assumes is created by [`scripts/setup_oidc_role.ps1`](../scripts/setup_oidc_role.ps1): a GitHub OIDC provider and a role trusted only by this repository on `main`, so the pipeline holds no long-lived key. Its one permission is `ssm:SendCommand`, conditioned on `ssm:resourceTag/role = fleet-app` - without that condition the role could run shell on every instance in the account. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget, so without this a deploy that ran nowhere would still report success. The host is reset to the deployed SHA rather than to `origin/main`, then runs `docker-compose.ec2.yml`, so the compose file on the box comes from the same commit as the images `IMAGE_TAG` pins.
 
 ---
 
