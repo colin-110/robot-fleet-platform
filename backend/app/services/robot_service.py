@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import presence
 from app.config import get_settings
-from app.intelligence import fleet
+from app.intelligence import anomaly, fleet
 from app.models import Robot
 from app.mqtt import predict
 from app.repositories.config_repo import applied_settings
@@ -133,11 +133,12 @@ def _carried_forward(state, ts: datetime, now: datetime, tol: dict) -> dict | No
     return predict.predict(keyframe, until)
 
 
-def summarize_state(state, applied: dict | None = None) -> dict:
+def summarize_state(state, applied: dict | None = None, peer=None) -> dict:
     """Turn a robot's latest state into a status payload.
 
     ``applied`` is the settings the robot reported applying; its tolerances
     and heartbeat decide the error bounds and how long silence is normal.
+    ``peer`` is its anomaly score against the rest of the fleet, if any.
     """
     now = datetime.now(timezone.utc)
     ts = _as_utc(state.timestamp)
@@ -168,6 +169,11 @@ def summarize_state(state, applied: dict | None = None) -> dict:
         "last_seen": _iso(ts),
         **_runtime(state, battery),
         "suspicion": _rounded(fleet.suspicion(state.robot_id), 1),
+        "anomaly": (
+            {"score": round(peer.score, 1), "feature": peer.feature, "z": round(peer.z, 1)}
+            if peer
+            else None
+        ),
         "x": round(x, 2) if x is not None else 0.0,
         "y": round(y, 2) if y is not None else 0.0,
         "vx": getattr(state, "vx", None),
@@ -235,10 +241,11 @@ class RobotService:
         now = datetime.now(timezone.utc)
         robots = []
         applied = await applied_settings(self.db)
+        peers = anomaly.scores(fleet.robots(), now.timestamp())
         for robot, state in await self.robots.list_with_state(limit=limit, skip=skip):
             fresh = state is not None and (now - _as_utc(state.timestamp)).total_seconds() <= window
             robots.append(
-                summarize_state(state, applied.get(robot.id))
+                summarize_state(state, applied.get(robot.id), peers.get(robot.id))
                 if fresh
                 else summarize_silent_robot(robot)
             )
