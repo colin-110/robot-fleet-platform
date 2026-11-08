@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 import orjson
 import paho.mqtt.client as mqtt
+from fastapi import HTTPException
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from pydantic import ValidationError
@@ -29,7 +30,8 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.mqtt import topics
 from app.repositories.event_repo import insert_events
-from app.schemas import EventCreate, TelemetryCreate
+from app.schemas import CommandStatusUpdate, EventCreate, TelemetryCreate
+from app.services.command_service import CommandService
 from app.services.event_service import broadcast_events
 from app.services.telemetry_service import (
     broadcast_payloads,
@@ -63,7 +65,7 @@ class Delivery:
     epoch: int
 
 
-SUBSCRIBED_CHANNELS = (topics.TELEMETRY, topics.EVENTS)
+SUBSCRIBED_CHANNELS = (topics.TELEMETRY, topics.EVENTS, topics.COMMAND_STATUS)
 
 
 def _decode(robot_id: int, payload: bytes, model):
@@ -104,11 +106,34 @@ def decode_events(robot_id: int, payload: bytes) -> list[EventCreate]:
     return events
 
 
+@dataclass(frozen=True)
+class StatusReport:
+    robot_id: int
+    command_id: str
+    update: CommandStatusUpdate
+
+
+def decode_command_status(robot_id: int, payload: bytes) -> StatusReport:
+    """``{"id": <command id>, "status": ..., "error_code"?, "error_message"?, "result"?}``"""
+    try:
+        body = orjson.loads(payload)
+    except orjson.JSONDecodeError as exc:
+        raise BadMessage(f"not JSON: {exc}") from None
+    if not isinstance(body, dict) or not isinstance(body.get("id"), str):
+        raise BadMessage("a command status needs the command id")
+    try:
+        update = CommandStatusUpdate.model_validate(body)
+    except ValidationError as exc:
+        raise BadMessage(str(exc)) from None
+    return StatusReport(robot_id, body["id"], update)
+
+
 @dataclass
 class Decoded:
     readings: list[TelemetryCreate] = field(default_factory=list)
     events: list[EventCreate] = field(default_factory=list)
     presence: list[tuple[int, tuple[bool, str | None]]] = field(default_factory=list)
+    statuses: list[StatusReport] = field(default_factory=list)
 
 
 def decode_presence(payload: bytes) -> tuple[bool, str | None]:
@@ -149,7 +174,14 @@ class IngestConsumer:
         self.session_factory = session_factory
         self.epoch = 0
         self.connected = asyncio.Event()
-        self.stats = {"stored": 0, "events": 0, "duplicates": 0, "rejected": 0, "batches": 0}
+        self.stats = {
+            "stored": 0,
+            "events": 0,
+            "statuses": 0,
+            "duplicates": 0,
+            "rejected": 0,
+            "batches": 0,
+        }
         self._queue: asyncio.Queue[Delivery] = asyncio.Queue()
         # Called with a robot id whenever a robot is seen coming online.
         self.on_robot_online: list = []
@@ -247,6 +279,10 @@ class IngestConsumer:
                     decoded.readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
                 elif delivery.channel == topics.EVENTS:
                     decoded.events.extend(decode_events(delivery.robot_id, delivery.payload))
+                elif delivery.channel == topics.COMMAND_STATUS:
+                    decoded.statuses.append(
+                        decode_command_status(delivery.robot_id, delivery.payload)
+                    )
                 elif delivery.channel == topics.PRESENCE:
                     decoded.presence.append((delivery.robot_id, decode_presence(delivery.payload)))
                 else:
@@ -277,6 +313,8 @@ class IngestConsumer:
             await manager.broadcast_batch(broadcast_payloads(readings))
         if events:
             await broadcast_events(events)
+        for report in decoded.statuses:
+            await self._apply_status(report)
         for robot_id in dict.fromkeys(changed):
             await broadcast_presence(robot_id)
             if presence.get(robot_id).online:
@@ -302,6 +340,40 @@ class IngestConsumer:
                 raise
             except Exception:
                 logger.exception("Storing a batch failed; retrying in %.1fs", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
+
+    async def _apply_status(self, report: StatusReport) -> None:
+        """Advance a command through the same state machine as the HTTP PATCH.
+
+        A refused transition (wrong robot, unknown command, a late or replayed
+        status) is final and dropped. Only a database failure is retried, and
+        until it succeeds nothing in the batch is acknowledged.
+        """
+        delay = 0.5
+        while True:
+            try:
+                async with self.session_factory() as db:
+                    service = CommandService(db)
+                    if await service.get_robot_id(report.command_id) != report.robot_id:
+                        raise HTTPException(403, "command belongs to another robot")
+                    await service.update_status(report.command_id, report.update)
+                self.stats["statuses"] += 1
+                return
+            except HTTPException as exc:
+                self.stats["rejected"] += 1
+                logger.info(
+                    "Ignoring status %s for command %s from robot %d: %s",
+                    report.update.status,
+                    report.command_id,
+                    report.robot_id,
+                    exc.detail,
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Applying a command status failed; retrying in %.1fs", delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
 

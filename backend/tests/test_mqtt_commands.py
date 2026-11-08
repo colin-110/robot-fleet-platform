@@ -158,6 +158,62 @@ async def test_robot_may_acknowledge_before_the_dispatch_lands(client):
     assert response.json()["payload"]["status"] == "ACKNOWLEDGED"
 
 
+def status_report(command_id, robot_id, status, mid, **extra):
+    body = orjson.dumps({"id": command_id, "status": status, **extra})
+    return Delivery(robot_id, "commands/status", body, mid, 1, 0)
+
+
+@pytest.fixture
+def status_consumer():
+    consumer = IngestConsumer(session_factory=TestSessionLocal)
+    consumer.acked = []
+    consumer.client = type("C", (), {"ack": lambda self, mid, qos: consumer.acked.append(mid)})()
+    return consumer
+
+
+@pytest.mark.asyncio
+async def test_robot_reports_command_progress_over_mqtt(client, status_consumer, broadcasts):
+    command_id = await create(client, robot_id=4)
+    for mid, status in enumerate(["ACKNOWLEDGED", "EXECUTING", "COMPLETED"], start=1):
+        await status_consumer.process([status_report(command_id, 4, status, mid)])
+    assert await status_of(command_id) == "COMPLETED"
+    assert status_consumer.acked == [1, 2, 3]
+    assert status_consumer.stats["statuses"] == 3
+
+
+@pytest.mark.asyncio
+async def test_replayed_status_is_harmless(client, status_consumer, broadcasts):
+    command_id = await create(client, robot_id=4)
+    await status_consumer.process([status_report(command_id, 4, "ACKNOWLEDGED", 1)])
+    await status_consumer.process([status_report(command_id, 4, "ACKNOWLEDGED", 2)])
+    assert await status_of(command_id) == "ACKNOWLEDGED"
+    assert status_consumer.acked == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_robot_cannot_report_on_another_robots_command(client, status_consumer, broadcasts):
+    command_id = await create(client, robot_id=4)
+    await status_consumer.process([status_report(command_id, 5, "FAILED", 1)])
+    assert await status_of(command_id) == "PENDING"
+    assert status_consumer.acked == [1]
+    assert status_consumer.stats["rejected"] == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_and_malformed_reports_are_dropped(client, status_consumer, broadcasts):
+    command_id = await create(client, robot_id=4)
+    await status_consumer.process(
+        [
+            status_report(command_id, 4, "COMPLETED", 1),  # PENDING -> COMPLETED is not allowed
+            status_report("no-such-command", 4, "ACKNOWLEDGED", 2),
+            Delivery(4, "commands/status", b'{"status": "FAILED"}', 3, 1, 0),
+        ]
+    )
+    assert await status_of(command_id) == "PENDING"
+    assert status_consumer.acked == [1, 2, 3]
+    assert status_consumer.stats["rejected"] == 3
+
+
 # ── against a real broker ───────────────────────────────────────────
 
 MQTT_HOST = os.getenv("MQTT_TEST_HOST")
