@@ -1,5 +1,10 @@
 """Running the allocator: every ``INTERVAL`` seconds, new tolerances where needed.
 
+A robot whose tolerances just changed is measured afresh for a minute. Until
+then it is not reallocated, but it still uses its share: its expected rate,
+from the demand last learned and the scale just assigned, is taken off the
+budget before the measured robots divide the rest.
+
 Weights: an open alarm makes a robot matter four times as much, an anomaly
 score above 2 twice as much. A robot's new tolerances are pushed as desired
 config only when its scale moves by more than ``HYSTERESIS``, so a steady
@@ -62,7 +67,10 @@ async def set_budget(db, value: dict) -> dict:
     return value
 
 
-def demands(applied: dict[int, dict], now: float) -> list[Demand]:
+def demands(applied: dict[int, dict], now: float, assigned: dict | None = None) -> list[Demand]:
+    """What each measured robot needs. Its scale is the one it was last given
+    (the agent applies desired settings at once), else what it reports."""
+    assigned = assigned or {}
     open_alarms = (
         {robot for robot, _ in (alarm_engine.engine._open or {})}
         if (alarm_engine.engine)
@@ -82,7 +90,8 @@ def demands(applied: dict[int, dict], now: float) -> list[Demand]:
         if peer and peer.score > 2:
             weight *= 2
         heartbeat = predict.tolerances(settings)["heartbeat_s"]
-        out.append(Demand(robot_id, rate, scale_of(settings), weight, 60 / heartbeat))
+        scale = assigned.get(robot_id) or scale_of(settings)
+        out.append(Demand(robot_id, rate, scale, weight, 60 / heartbeat))
     return out
 
 
@@ -90,6 +99,9 @@ class BudgetController:
     def __init__(self, session_factory=AsyncSessionLocal) -> None:
         self.session_factory = session_factory
         self.last: dict = {}
+        # The last measured demand of each robot, and the scale it was given.
+        self.known: dict[int, Demand] = {}
+        self.assigned: dict[int, float] = {}
 
     async def step(self, now: float | None = None) -> dict[int, float]:
         """One allocation. Returns the robots whose tolerances were changed."""
@@ -99,8 +111,21 @@ class BudgetController:
             if not budget.get("enabled") or not budget.get("messages_per_minute"):
                 return {}
             applied = await config_repo.applied_settings(db)
-            wanted = demands(applied, now)
-            scales = allocate(wanted, float(budget["messages_per_minute"]))
+            wanted = demands(applied, now, self.assigned)
+            for d in wanted:
+                self.known[d.robot_id] = d
+            measured = {d.robot_id for d in wanted}
+            waiting = [
+                self.known[robot_id]
+                for robot_id, model in fleet.robots().items()
+                if robot_id not in measured
+                and robot_id in self.known
+                and now - model.last.get("t", 0.0) <= 120
+            ]
+            fixed = sum(
+                d.c / self.assigned.get(d.robot_id, d.scale) ** 2 + d.floor_per_min for d in waiting
+            )
+            scales = allocate(wanted, float(budget["messages_per_minute"]) - fixed)
             changed = {}
             for d in wanted:
                 new = scales[d.robot_id]
@@ -117,6 +142,7 @@ class BudgetController:
                 }
                 row = await config_repo.set_desired(db, d.robot_id, desired)
                 changed[d.robot_id] = (row.version, row.desired, new)
+                self.assigned[d.robot_id] = new
             await db.commit()
         for robot_id, (version, desired, _) in changed.items():
             if mqtt_config.publisher is not None:
@@ -124,11 +150,14 @@ class BudgetController:
             # Its rate at the old tolerances says nothing about the new ones,
             # so it is measured afresh (and left alone for a minute).
             fleet.get(robot_id).restart_rate(now)
+        planned = (predicted_rate(wanted, scales) if wanted else 0.0) + fixed
         self.last = {
-            "robots": len(wanted),
+            "robots": len(wanted) + len(waiting),
+            "measured": len(wanted),
             "observed_per_min": round(sum(d.rate_per_min for d in wanted), 1),
-            "planned_per_min": round(predicted_rate(wanted, scales), 1) if wanted else 0.0,
+            "planned_per_min": round(planned, 1),
             "changed": len(changed),
+            "changed_ids": sorted(changed),
         }
         if changed:
             logger.info("Budget: %s", self.last)

@@ -117,6 +117,21 @@ async def test_a_changed_robot_is_measured_afresh(client, publisher):
     assert await controller.step(NOW + 30) == {}
 
 
+async def test_robots_not_measured_still_count_against_the_budget(client, publisher):
+    for robot_id in range(1, 11):
+        busy_robot(robot_id, 20)
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 50})
+    controller = BudgetController(TestSessionLocal)
+    first = await controller.step(NOW)
+    # Robots 2 to 10 are being measured afresh; robot 1 is measured again.
+    busy_robot(1, 2 + 18 / first[1] ** 2)
+    fleet.get(1).first_seen = NOW - 300
+    await controller.step(NOW)
+    # Robot 1 must not be handed the whole budget the others are still using.
+    assert controller.last["planned_per_min"] == pytest.approx(50, rel=0.05)
+    assert 1 not in controller.last.get("changed_ids", [])
+
+
 async def test_the_budget_api_validates(client):
     assert (await client.get("/api/v1/fleet/budget")).json()["enabled"] is False
     bad = await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 0})
