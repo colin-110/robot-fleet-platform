@@ -53,6 +53,14 @@ A webhook body is `{"event": "raised" | "acknowledged" | "cleared", "alarm": {..
 
 The rules (`backend/app/alarms/rules.py`): `BATTERY_CRITICAL` below 10 %, `BATTERY_LOW` below 20 % for 10 s, `OVERHEATING` above 75 C for 10 s, `COMPONENT_FAILING` below 30 % health for 30 s, `ANOMALY` beyond 4 robust standard deviations from the fleet for 60 s, `SILENT` at phi 8 while connected, `OFFLINE` after 30 s disconnected, and `DUPLICATE_SESSION` at four new connections in a minute. Each clears at its own, safer threshold.
 
+### Message budget
+
+`PUT /api/v1/fleet/budget` with `{"enabled": true, "messages_per_minute": 200}` (operator role) turns it on. Every 30 seconds the API then sets every robot's tolerances (`tol_*` settings) to keep the fleet's keyframes within it; `GET` the same path for the budget and the last allocation (`measured_per_min`, `planned_per_min`, `correction`, and `feasible`, false when even the loosest tolerances cannot get under it). Other settings in a robot's desired config are kept.
+
+### History
+
+`GET /api/v1/robots/<id>/history?start=&end=&resolution=minute|hour` returns exact time-weighted rollups: averages, minimum and maximum battery, distance and how many seconds of the bucket the robot was heard from. A job recomputes the last ten minutes every minute, and further back for keyframes that arrive late. Retention: keyframes 30 days, minutes a year, hours indefinitely.
+
 ### Robot settings
 
 `PUT /api/v1/robots/<id>/config` with `{"values": {"report_interval_s": 5}}` (operator role) replaces a robot's desired settings, bumps their version and publishes them to the robot's retained `fleet/<id>/config` topic. `GET` the same path to see the desired settings next to what the robot last reported applying; `in_sync` is true once the versions match. Unknown settings and out-of-range values are refused with `422`, using the same table the agent checks (`CONFIG_FIELDS` in `wire.py`). The API republishes every desired config when it starts, in case the broker lost its retained messages.

@@ -35,7 +35,7 @@ goes through one write path that inserts it, registers the robot and updates
 its current state in a single transaction. There is no Redis and no worker
 process.
 
-This is step 5 of a redesign aimed at running a fleet on the smallest possible
+This is step 8 of a redesign aimed at running a fleet on the smallest possible
 server; next is error-budgeted telemetry. See
 [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
@@ -61,6 +61,16 @@ server; next is error-budgeted telemetry. See
   robot, no history queries.
 - **Alarms without storms.** Separate raise and clear thresholds, hold times,
   one open alarm per robot and kind, acknowledge and clear, signed webhooks.
+- **A message budget.** An operator sets one number for the fleet; the server
+  chooses every robot's tolerance to meet it, tighter where an alarm,
+  an anomaly or a watching operator makes accuracy matter, with feedback on
+  what the fleet actually sends.
+- **Exact rollups.** Minutes and hours are time-weighted integrals of the
+  prediction between keyframes, not averages of unevenly spaced rows; minutes
+  kept a year, hours indefinitely.
+- **A dashboard that moves between messages.** The map runs the same
+  predictor, so robots glide although they report rarely, each with its error
+  bound drawn.
 - **Fast clocks corrected.** A robot whose clock runs ahead has its readings
   moved back by the measured offset, keeping their spacing.
 - **Idempotent writes.** A reading is identified by `(robot_id, timestamp)`,
