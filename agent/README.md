@@ -13,6 +13,9 @@ telemetry, events and command progress to the FleetOps broker over MQTT.
   is committed (`fleet/<id>/stored`). A broker acknowledgement is not enough,
   because a broker can lose what it accepted; anything the server does not
   confirm is sent again.
+- **Remote settings.** The server's desired settings arrive on a retained
+  topic; the agent applies the ones it knows, keeps them on disk, calls
+  `on_config` and reports what it applied.
 - **Commands run once.** Command ids are remembered on disk, so a command
   pushed again after a reconnect or a restart is not run twice.
 

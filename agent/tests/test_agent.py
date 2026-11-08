@@ -56,6 +56,7 @@ class FakeServer:
         self.readings: dict[int, dict] = {}  # by sequence number
         self.statuses: list[dict] = []
         self.presence: list[dict] = []
+        self.reported: list[tuple[int, dict, dict]] = []
         self.mark: tuple[str, int] | None = None
         self.lock = threading.Lock()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
@@ -69,6 +70,9 @@ class FakeServer:
         channel = message.topic.split("/", 2)[2]
         if channel == "presence":
             self.presence.append(json.loads(message.payload))
+            return
+        if channel == "config/reported":
+            self.reported.append(wire.decode_reported(message.payload))
             return
         if channel not in wire.CHANNELS:
             return
@@ -104,6 +108,14 @@ class FakeServer:
                     qos=0,
                     retain=True,
                 )
+
+    def set_config(self, version: int, values: dict) -> None:
+        self.client.publish(
+            f"fleet/{self.robot_id}/config",
+            wire.encode_config(version, values),
+            qos=1,
+            retain=True,
+        ).wait_for_publish(5)
 
     def push_command(self, command: dict) -> None:
         self.client.publish(
@@ -279,3 +291,28 @@ def test_presence_online_then_offline_on_stop(robot_id, outbox_path):
         assert server.presence[0]["conn"] == server.presence[-1]["conn"]
     finally:
         server.close()
+
+
+@broker
+def test_settings_are_applied_reported_and_kept(robot_id, outbox_path):
+    server = FakeServer(robot_id)
+    server.set_config(3, {"report_interval_s": 4, "warp": 9})
+    agent = make_agent(robot_id, outbox_path)
+    seen = []
+    agent.on_config = seen.append
+    try:
+        assert wait_until(lambda: agent.config_version == 3)
+        assert agent.config == {"report_interval_s": 4.0}
+        assert wait_until(lambda: server.reported)
+        assert server.reported[-1] == (3, {"report_interval_s": 4.0}, {"warp": "unknown setting"})
+
+        server.set_config(4, {"report_interval_s": 1})
+        assert wait_until(lambda: seen and seen[-1] == {"report_interval_s": 1.0})
+    finally:
+        agent.stop()
+        server.close()
+
+    # A restart with no broker still has the last settings.
+    offline = Agent(robot_id, "key", "127.0.0.1", 1, outbox_path=outbox_path)
+    assert (offline.config_version, offline.config) == (4, {"report_interval_s": 1.0})
+    offline.outbox.close()

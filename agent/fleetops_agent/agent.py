@@ -21,6 +21,12 @@ retained ``online`` published on connect and a retained ``offline`` last
 will, each naming the connection, so the server can ignore a late will from
 an older connection.
 
+Settings come from the server as desired config on the retained
+``fleet/<id>/config`` topic. The agent applies the ones it knows
+(``wire.CONFIG_FIELDS``), keeps them in the outbox file so a restart without
+a broker still uses them, calls ``on_config``, and reports what it applied on
+``fleet/<id>/config/reported``.
+
 Two threads per agent: paho's network loop, and a sender that batches the
 outbox into envelopes. The public methods are thread-safe and never block on
 the network.
@@ -101,6 +107,11 @@ class Agent:
         self.outbox = Outbox(outbox_path, max_items=max_outbox, synchronous=synchronous)
         # Called from paho's thread with each new command, if set.
         self.on_command: Callable[[dict], None] | None = None
+        # Called from paho's thread with the applied settings when they change.
+        self.on_config: Callable[[dict], None] | None = None
+        saved = self.outbox.get_meta("config") or {"version": 0, "values": {}}
+        self._config_version: int = saved["version"]
+        self._config: dict = saved["values"]
         self.stats = collections.Counter()
 
         self._lock = threading.Lock()
@@ -177,6 +188,15 @@ class Agent:
         while self._commands:
             taken.append(self._commands.popleft())
         return taken
+
+    @property
+    def config(self) -> dict:
+        """The settings in force, as last applied from the server."""
+        return dict(self._config)
+
+    @property
+    def config_version(self) -> int:
+        return self._config_version
 
     @property
     def connected(self) -> bool:
@@ -308,7 +328,13 @@ class Agent:
             )
             return
         client.publish(self._topic("presence"), self._presence(True), qos=1, retain=True)
-        client.subscribe([(self._topic("commands"), 1), (self._topic("stored"), 0)])
+        client.subscribe(
+            [
+                (self._topic("commands"), 1),
+                (self._topic("stored"), 0),
+                (self._topic("config"), 1),
+            ]
+        )
         with self._lock:
             self._connected = True
         self._wake.set()
@@ -327,8 +353,34 @@ class Agent:
                 self._confirmed(*wire.decode_stored(message.payload))
             elif channel == "commands":
                 self._command(json.loads(message.payload))
+            elif channel == "config":
+                self._apply_config(*wire.decode_config(message.payload))
         except (ValueError, TypeError) as exc:
             logger.warning("Robot %d: ignoring a bad %s message: %s", self.robot_id, channel, exc)
+
+    def _apply_config(self, version: int, values: dict) -> None:
+        """Apply desired settings and report the outcome.
+
+        The server's desired state wins even if its version is lower than the
+        one applied (its database was restored, say). Reported every time, so
+        a lost report is repaired by the next delivery.
+        """
+        applied, rejected = wire.check_config(values)
+        changed = applied != self._config or version != self._config_version
+        if changed:
+            self.outbox.set_meta("config", {"version": version, "values": applied})
+            self._config_version, self._config = version, applied
+            self.stats["configs"] += 1
+        self.client.publish(
+            self._topic("config/reported"),
+            wire.encode_reported(version, applied, rejected),
+            qos=1,
+            retain=True,
+        )
+        if rejected:
+            logger.warning("Robot %d: settings refused: %s", self.robot_id, rejected)
+        if changed and self.on_config is not None:
+            self.on_config(dict(applied))
 
     def _command(self, command) -> None:
         if not isinstance(command, dict) or not isinstance(command.get("id"), str):
