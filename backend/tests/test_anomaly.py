@@ -9,9 +9,9 @@ from tests.conftest import TestSessionLocal
 NOW = 1_000_000.0
 
 
-def model(temperature, drain_per_min=None, age=0.0) -> RobotModel:
+def model(temperature, drain_per_min=None, age=0.0, speed=1.0) -> RobotModel:
     m = RobotModel()
-    m.last = {"t": NOW - age, "temperature": temperature}
+    m.last = {"t": NOW - age, "temperature": temperature, "speed": speed}
     if drain_per_min is not None:
         m.battery.update(NOW - 60, 80.0)
         m.battery.x = [80.0, -drain_per_min / 60]
@@ -44,6 +44,17 @@ def test_drain_is_compared_too():
     models = {i: model(35.0, drain_per_min=0.5) for i in range(8)}
     models[99] = model(35.0, drain_per_min=3.0)
     assert anomaly.scores(models, NOW)[99].feature == "drain"
+
+
+def test_drain_is_compared_only_among_moving_robots():
+    # Most of the fleet drives; three idle robots drain far less. Comparing
+    # them would flag the idle ones, which says nothing about either.
+    models = {i: model(35.0, drain_per_min=2.5) for i in range(8)}
+    for i in (97, 98, 99):
+        models[i] = model(35.0, drain_per_min=0.1, speed=0.0)
+    scores = anomaly.scores(models, NOW)
+    assert all(scores[i].feature == "temperature" for i in (97, 98, 99))
+    assert max(a.score for a in scores.values()) < 1.5
 
 
 def test_too_few_peers_or_stale_readings_say_nothing():

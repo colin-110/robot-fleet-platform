@@ -8,7 +8,9 @@ for, as a mean and standard deviation would be. The spread has a floor so a
 fleet that reads almost identically does not flag tiny differences.
 
 Features: temperature, and battery drain (percent per minute, from the
-Kalman filter; charging robots are left out).
+Kalman filter). Drain is compared only among robots that are moving: an idle
+robot drains a fraction of what a driving one does, and comparing the two
+flags whichever is in the minority, which says nothing about either robot.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ MIN_PEERS = 5
 # Readings older than this do not take part.
 MAX_AGE_SECONDS = 120.0
 FLOORS = {"temperature": 1.0, "drain": 0.1}
+# m/s; below this a robot is not doing comparable work for drain.
+MOVING_SPEED = 0.3
 
 
 @dataclass(frozen=True)
@@ -34,7 +38,8 @@ def _features(model) -> dict[str, float]:
     temperature = model.last.get("temperature")
     if temperature is not None:
         out["temperature"] = temperature
-    if model.battery.t is not None and model.battery.rate < 0:
+    moving = (model.last.get("speed") or 0.0) >= MOVING_SPEED
+    if moving and model.battery.t is not None and model.battery.rate < 0:
         out["drain"] = -model.battery.rate * 60
     return out
 
