@@ -126,6 +126,8 @@ def bounds(tol: dict) -> dict:
         "speed": tol["tol_speed"],
         "mission_progress_pct": tol["tol_progress_pct"],
         "health_pct": tol["tol_health_pct"],
+        # Prediction stops here, so clients carrying values forward know when.
+        "heartbeat_s": tol["heartbeat_s"],
     }
 
 

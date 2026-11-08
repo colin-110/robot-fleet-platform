@@ -273,7 +273,9 @@ async def websocket_endpoint(
     try:
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                text = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                if text not in ("ping", "pong"):
+                    manager.handle_client_message(websocket, text)
             except asyncio.TimeoutError:
                 await websocket.send_text("ping")
     except WebSocketDisconnect:

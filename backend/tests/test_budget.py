@@ -208,3 +208,14 @@ async def test_the_fleet_settles_on_the_budget_when_the_model_is_wrong(
         for r, s in (await controller.step(now)).items():
             scale[r] = s
     assert all(abs(t - 100) <= 10 for t in totals[-10:]), " ".join(str(round(t)) for t in totals)
+
+
+async def test_a_watched_robot_is_watched_more_closely(client, publisher, monkeypatch):
+    from app.websocket_manager import manager
+
+    for robot_id in (1, 2):
+        busy_robot(robot_id, 20)
+    monkeypatch.setattr(manager, "watched", lambda: {2})
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 12})
+    changed = await BudgetController(TestSessionLocal).step(NOW)
+    assert changed[2] < changed[1]
