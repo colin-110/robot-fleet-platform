@@ -108,6 +108,15 @@ async def test_a_steady_fleet_sends_no_config(client, publisher):
     assert len(publisher.sent()) == sent
 
 
+async def test_a_changed_robot_is_measured_afresh(client, publisher):
+    busy_robot(1, 40)
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 5})
+    controller = BudgetController(TestSessionLocal)
+    assert 1 in await controller.step(NOW)
+    assert fleet.get(1).rate_per_minute(NOW + 30) is None
+    assert await controller.step(NOW + 30) == {}
+
+
 async def test_the_budget_api_validates(client):
     assert (await client.get("/api/v1/fleet/budget")).json()["enabled"] is False
     bad = await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 0})

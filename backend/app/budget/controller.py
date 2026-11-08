@@ -121,6 +121,9 @@ class BudgetController:
         for robot_id, (version, desired, _) in changed.items():
             if mqtt_config.publisher is not None:
                 mqtt_config.publisher.publish(robot_id, version, desired)
+            # Its rate at the old tolerances says nothing about the new ones,
+            # so it is measured afresh (and left alone for a minute).
+            fleet.get(robot_id).restart_rate(now)
         self.last = {
             "robots": len(wanted),
             "observed_per_min": round(sum(d.rate_per_min for d in wanted), 1),

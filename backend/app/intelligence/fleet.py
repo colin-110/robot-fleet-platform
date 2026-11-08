@@ -23,7 +23,12 @@ class RobotModel:
     keyframes: deque = field(default_factory=lambda: deque(maxlen=RATE_SAMPLES))
     first_seen: float | None = None
 
-    def rate_per_minute(self, now: float, window: float = 300.0) -> float | None:
+    def restart_rate(self, now: float) -> None:
+        """Forget the keyframe rate, e.g. because the robot's tolerances changed."""
+        self.keyframes.clear()
+        self.first_seen = now
+
+    def rate_per_minute(self, now: float, window: float = 120.0) -> float | None:
         """Keyframes per minute over the last ``window`` seconds (or since first
         seen); None until there is a minute of history."""
         if self.first_seen is None or now - self.first_seen < 60:
