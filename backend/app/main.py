@@ -31,6 +31,7 @@ from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
+from app.routes.mqtt_auth import router as mqtt_auth_router
 from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
@@ -133,6 +134,7 @@ app.include_router(robots_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
 app.include_router(auth_router)
+app.include_router(mqtt_auth_router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["root"])

@@ -101,6 +101,11 @@ def set_hash(robot_id: int, key_hash: str | None) -> None:
         _hashes.pop(robot_id, None)
 
 
+def has_key(robot_id: int) -> bool:
+    """Whether the robot currently holds a key (it has not been revoked)."""
+    return robot_id in _hashes
+
+
 def reset() -> None:
     """Forget all cached hashes (used by tests)."""
     _hashes.clear()

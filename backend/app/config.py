@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # ── CORS ────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # ── MQTT ────────────────────────────────────────────────────────
+    # The API's own broker account. It logs in with the master key and is a
+    # superuser; robots log in as robot-<id> with their device key.
+    mqtt_service_username: str = "fleetops"
+
     # ── Realtime fan-out ────────────────────────────────────────────
     # "redis" relays broadcasts through a Redis Stream so every API instance
     # sees every message. "direct" fans out in-process: correct for a single
