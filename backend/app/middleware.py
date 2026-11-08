@@ -18,7 +18,6 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.logging_config import reset_request_id, set_request_id
-from app.redis_pool import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +126,7 @@ class RequestIDMiddleware:
 
 
 class RateLimitMiddleware:
-    """Redis-backed sliding-window rate limiter on the ingest endpoints."""
+    """In-process sliding-window rate limiter on the ingest and console endpoints."""
 
     def __init__(
         self,
@@ -205,32 +204,18 @@ def _log_access(scope: Scope, status_code: int, elapsed_seconds: float) -> None:
 
 # ── Shared limiter logic ────────────────────────────────────────────
 
-# In-memory backend's state: one process's counters, shared across requests.
-# Keys are never pruned; the set of client IPs this app sees (the fleet plus a
-# few browsers) stays small.
+# One process's sliding windows, keyed by bucket and client IP. The app runs as
+# a single process, so in-process counters are exact and cost no network call.
 _memory_windows: dict[str, list[float]] = {}
 
+# Above this many keys, windows with no recent request are dropped, so a scan
+# from many addresses cannot grow the table without bound.
+MAX_TRACKED_CLIENTS = 10_000
 
-def _check_rate_limit_memory(
-    client_ip: str, max_requests: int, window_seconds: int, bucket: str
-) -> bool:
-    """In-process equivalent of the Redis sliding window, for a single worker.
 
-    Same semantics: drop entries older than the window, count what's left,
-    record this request, return whether the count *before* recording was
-    under budget. No pipeline, no network call, no metered command.
-    """
-    key = f"{bucket}:{client_ip}"
-    now = time.time()
-    cutoff = now - window_seconds
-
-    timestamps = _memory_windows.setdefault(key, [])
-    fresh = [t for t in timestamps if t > cutoff]
-
-    allowed = len(fresh) < max_requests
-    fresh.append(now)
-    _memory_windows[key] = fresh
-    return allowed
+def _prune(cutoff: float) -> None:
+    for key in [k for k, v in _memory_windows.items() if not v or v[-1] <= cutoff]:
+        del _memory_windows[key]
 
 
 async def _check_rate_limit(
@@ -239,43 +224,28 @@ async def _check_rate_limit(
     """Return ``True`` if this request is within the limit.
 
     Sliding window: drop entries older than the window, count what's left,
-    and record this request. The count is read *before* the insert lands so a
-    client gets exactly ``max_requests`` per window rather than one fewer.
-    Backed by Redis (default, correct across multiple instances) or an
-    in-process dict (``RATE_LIMIT_BACKEND=memory``, correct for exactly one
-    instance and free) - see config.py.
-
-    The Redis path fails open - if Redis is unavailable we serve the request
-    rather than hard-failing ingestion on a cache outage.
+    and record this request. The count is read *before* recording so a client
+    gets exactly ``max_requests`` per window rather than one fewer. Buckets
+    keep a burst of console requests from exhausting the fleet's ingest
+    budget, or the other way round.
     """
-    from app.config import get_settings
-
-    if get_settings().rate_limit_backend == "memory":
-        return _check_rate_limit_memory(client_ip, max_requests, window_seconds, bucket)
-
-    redis = get_redis()
-    if redis is None:
-        return True
-
-    # Bucketed so a burst of console requests cannot exhaust the fleet's
-    # ingest budget, or vice versa.
-    key = f"rate_limit:{bucket}:{client_ip}"
+    key = f"{bucket}:{client_ip}"
     now = time.time()
-    member = f"{now}:{uuid.uuid4().hex[:8]}"  # unique: identical timestamps collide
+    cutoff = now - window_seconds
 
-    try:
-        pipeline = redis.pipeline()
-        pipeline.zremrangebyscore(key, 0, now - window_seconds)
-        pipeline.zcard(key)
-        pipeline.zadd(key, {member: now})
-        pipeline.expire(key, window_seconds)
-        results = await pipeline.execute()
-    except Exception:
-        logger.warning("Rate limiter unavailable, failing open", exc_info=True)
-        return True
+    if key not in _memory_windows and len(_memory_windows) >= MAX_TRACKED_CLIENTS:
+        _prune(cutoff)
 
-    count_before_insert = results[1]
-    return count_before_insert < max_requests
+    fresh = [t for t in _memory_windows.get(key, ()) if t > cutoff]
+    allowed = len(fresh) < max_requests
+    fresh.append(now)
+    _memory_windows[key] = fresh
+    return allowed
+
+
+def reset_rate_limits() -> None:
+    """Forget all counters (used by tests)."""
+    _memory_windows.clear()
 
 
 def _rate_limited_response(window_seconds: int) -> JSONResponse:

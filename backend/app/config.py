@@ -25,9 +25,6 @@ class Settings(BaseSettings):
     # ── Database ────────────────────────────────────────────────────
     database_url: str
 
-    # ── Redis ───────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
-
     # ── Auth ────────────────────────────────────────────────────────
     # No default: a missing key must fail loudly at startup rather than
     # silently falling back to a value that is public in this repo.
@@ -38,7 +35,7 @@ class Settings(BaseSettings):
     # robot has its own key.
     allow_shared_ingest_key: bool = True
     # How often each instance reloads key hashes so revocations propagate.
-    # Only runs with websocket_backend=redis (multiple instances).
+    # Only runs with websocket_backend=mqtt (multiple instances).
     device_key_refresh_seconds: int = 60
 
     # Lifetime of a browser ticket (app/tickets.py). Long enough to survive a
@@ -95,14 +92,12 @@ class Settings(BaseSettings):
     # ── Realtime fan-out ────────────────────────────────────────────
     # "direct" fans out in-process: correct for a single instance and the
     # cheapest. "mqtt" relays every broadcast through the broker so several
-    # API instances all see every update (needs MQTT_ENABLED). "redis" relays
-    # through a Redis Stream.
-    websocket_backend: str = "redis"
+    # API instances all see every update (needs MQTT_ENABLED); it also marks
+    # the deployment as multi-instance for the device-key cache.
+    websocket_backend: str = "direct"
 
     # ── Rate Limiting ───────────────────────────────────────────────
-    # "redis" shares one sliding-window counter across instances; "memory"
-    # keeps it in-process, which is enough for a single instance.
-    rate_limit_backend: str = "redis"
+    # In-process sliding windows (app/middleware.py), per client IP.
     rate_limit_per_minute: int = 600
     # Separate, tighter budget for what a browser can reach without the master
     # key: minting console tickets and dispatching commands. Both are public on
@@ -140,10 +135,6 @@ class Settings(BaseSettings):
     # clock would otherwise poison time-bucketed analytics, so a reading dated
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
-
-    # Entries kept in the Redis streams used for live WebSocket fan-out.
-    # Listeners only read new entries, so this just bounds Redis memory.
-    telemetry_stream_maxlen: int = 1000
 
     # ── Access control ──────────────────────────────────────────────
 
@@ -228,6 +219,10 @@ class Settings(BaseSettings):
             if self.jwt_secret is not None and len(self.jwt_secret) < 32:
                 raise ValueError("JWT_SECRET must be at least 32 characters in production.")
 
+        if self.websocket_backend not in ("direct", "mqtt"):
+            raise ValueError(
+                f"WEBSOCKET_BACKEND must be 'direct' or 'mqtt', got {self.websocket_backend!r}."
+            )
         if self.resolved_auth_mode not in ("open", "required"):
             raise ValueError(f"AUTH_MODE must be 'open' or 'required', got {self.auth_mode!r}.")
         return self

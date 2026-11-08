@@ -75,14 +75,9 @@ async def lifespan(app: FastAPI):
     # instances need a periodic reload so a revocation reaches all of them.
     key_refresh_task = (
         asyncio.create_task(device_keys.refresh_loop(settings.device_key_refresh_seconds))
-        if settings.websocket_backend == "redis"
+        if settings.websocket_backend == "mqtt"
         else None
     )
-
-    # Nothing to consume in direct mode: broadcast() already fanned out
-    # in-process, so a Redis listener here would just poll an empty stream.
-    if settings.websocket_backend == "redis":
-        manager._listener_task = asyncio.create_task(manager.listen_to_redis())
 
     timeout_task = asyncio.create_task(timeout_loop())
 
@@ -109,8 +104,6 @@ async def lifespan(app: FastAPI):
         mqtt_task.cancel()
         await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()
-    if manager._listener_task:
-        manager._listener_task.cancel()
     if key_refresh_task:
         key_refresh_task.cancel()
 

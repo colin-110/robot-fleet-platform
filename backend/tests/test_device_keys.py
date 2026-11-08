@@ -344,7 +344,7 @@ async def test_key_issued_by_another_instance_is_accepted_after_one_lookup(monke
         return device_keys.hash_key(key)
 
     monkeypatch.setattr(device_keys, "_fetch_hash", fetch)
-    monkeypatch.setattr(settings, "websocket_backend", "redis")
+    monkeypatch.setattr(settings, "websocket_backend", "mqtt")
 
     assert await device_keys.verify(key) == 5
     assert await device_keys.verify(key) == 5
@@ -360,7 +360,7 @@ async def test_lookups_are_rate_limited_per_robot(monkeypatch):
         return None
 
     monkeypatch.setattr(device_keys, "_fetch_hash", fetch)
-    monkeypatch.setattr(settings, "websocket_backend", "redis")
+    monkeypatch.setattr(settings, "websocket_backend", "mqtt")
 
     for _ in range(5):
         assert await device_keys.verify(device_keys.generate(5)) is None

@@ -5,7 +5,7 @@ With one API process (``websocket_backend=direct``) a broadcast fans out to
 this process's sockets directly. With several (``mqtt``), each broadcast is
 published once to the broker's ``fleetops/live`` topic and every process fans
 out what it receives there (``fan_out_relayed``), so a dashboard connected to
-any instance sees every update. ``redis`` relays through Redis Streams.
+any instance sees every update.
 
 Fan-out model
 -------------
@@ -26,16 +26,12 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
-from app.redis_pool import get_redis
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Max frames buffered per client before we start dropping the oldest.
 CLIENT_QUEUE_MAXSIZE = 256
-
-# Max entries kept in each fan-out stream; listeners only read new entries.
-STREAM_MAXLEN = settings.telemetry_stream_maxlen
 
 
 class ConnectionManager:
@@ -46,10 +42,6 @@ class ConnectionManager:
         # Per-connection outbound queue + dedicated sender task.
         self._queues: dict[WebSocket, asyncio.Queue] = {}
         self._senders: dict[WebSocket, asyncio.Task] = {}
-        self.redis = get_redis()
-        self.telemetry_stream = "telemetry_stream"
-        self.event_stream = "event_stream"
-        self._listener_task: asyncio.Task | None = None
         # Set by the lifespan in mqtt mode: publishes one relay message.
         self.relay = None
 
@@ -97,97 +89,19 @@ class ConnectionManager:
         except asyncio.CancelledError:
             pass
 
-    async def broadcast(self, data: dict, stream: str = None) -> None:
-        """Fan out data to connected clients - directly, or via Redis Streams.
+    async def broadcast(self, data: dict) -> None:
+        """Fan out one message to dashboards."""
+        await self.broadcast_batch([data])
 
-        ``websocket_backend=direct`` calls ``_fan_out`` immediately; there's
-        no other instance that needs this message relayed to it. The default
-        publishes to Redis instead, for the listener task (``listen_to_redis``)
-        on every instance - including this one - to pick up and fan out.
-        """
-        if settings.websocket_backend == "direct":
-            self._fan_out(data)
-            return
-        if settings.websocket_backend == "mqtt":
-            self._relay([data])
-            return
-
-        target_stream = stream or self.telemetry_stream
-        try:
-            await self.redis.xadd(
-                target_stream,
-                {"payload": orjson.dumps(data).decode("utf-8")},
-                maxlen=STREAM_MAXLEN,
-            )
-        except Exception:
-            logger.exception("Failed to publish to Redis Stream")
-
-    async def broadcast_batch(self, data_list: list[dict], stream: str = None) -> None:
-        """Fan out multiple messages - directly, or via one Redis pipeline."""
+    async def broadcast_batch(self, data_list: list[dict]) -> None:
+        """Fan out several messages: in-process, or as one relay message."""
         if not data_list:
-            return
-
-        if settings.websocket_backend == "direct":
-            for data in data_list:
-                self._fan_out(data)
             return
         if settings.websocket_backend == "mqtt":
             self._relay(data_list)
             return
-
-        target_stream = stream or self.telemetry_stream
-        try:
-            pipeline = self.redis.pipeline()
-            for data in data_list:
-                pipeline.xadd(
-                    target_stream,
-                    {"payload": orjson.dumps(data).decode("utf-8")},
-                    maxlen=STREAM_MAXLEN,
-                )
-            await pipeline.execute()
-        except Exception:
-            logger.exception("Failed to publish batch to Redis Stream")
-
-    async def listen_to_redis(self) -> None:
-        """Background task that reads from Redis Streams and forwards to WebSockets."""
-        last_ids = {self.telemetry_stream: "$", self.event_stream: "$"}
-        logger.info(
-            "Subscribed to Redis Streams: %s, %s",
-            self.telemetry_stream,
-            self.event_stream,
-        )
-
-        retry_delay = 2.0
-        max_retry_delay = 30.0
-
-        while True:
-            try:
-                streams = await self.redis.xread(last_ids, count=100, block=1000)
-                if streams:
-                    for stream_name_bytes, messages in streams:
-                        stream_name = (
-                            stream_name_bytes.decode("utf-8")
-                            if isinstance(stream_name_bytes, bytes)
-                            else stream_name_bytes
-                        )
-                        for message_id, message_data in messages:
-                            last_ids[stream_name] = message_id
-                            if "payload" in message_data:
-                                try:
-                                    data = orjson.loads(message_data["payload"])
-                                    self._fan_out(data)
-                                except orjson.JSONDecodeError:
-                                    logger.warning("Failed to decode Redis payload in broadcast")
-
-                retry_delay = 2.0
-                await asyncio.sleep(0.001)  # Yield to event loop
-            except asyncio.CancelledError:
-                logger.info("Unsubscribed from Redis Stream")
-                break
-            except Exception:
-                logger.exception("Redis Stream listener error, retrying in %s seconds", retry_delay)
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(max_retry_delay, retry_delay * 2.0)
+        for data in data_list:
+            self._fan_out(data)
 
     def _relay(self, data_list: list[dict]) -> None:
         """One broker message per broadcast, however many updates it holds."""

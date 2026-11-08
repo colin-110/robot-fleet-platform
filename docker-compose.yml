@@ -18,8 +18,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       mqtt:
         condition: service_started
     healthcheck:
@@ -84,18 +82,6 @@ services:
       - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
       # Owned by the broker's user in the image, so a new volume is writable.
       - mosquitto_data:/var/lib/mosquitto
-    networks:
-      - fleet_net
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --save "" --appendonly no
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
     networks:
       - fleet_net
 

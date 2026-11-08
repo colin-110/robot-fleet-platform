@@ -101,8 +101,7 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_CREATED"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        # Command updates use the event stream, not the capped telemetry one.
-        await manager.broadcast(broadcast_payload, stream=manager.event_stream)
+        await manager.broadcast(broadcast_payload)
 
         # Robots on MQTT get the command pushed; HTTP robots claim it by polling.
         from app.mqtt import commands
@@ -185,7 +184,7 @@ class CommandService:
         broadcast_payload = payload.copy()
         broadcast_payload["type"] = "COMMAND_UPDATE"
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
-        await manager.broadcast(broadcast_payload, stream=manager.event_stream)
+        await manager.broadcast(broadcast_payload)
 
         return payload
 

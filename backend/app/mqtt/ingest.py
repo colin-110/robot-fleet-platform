@@ -151,7 +151,7 @@ async def broadcast_presence(robot_id: int) -> None:
         "online": state.online,
         "since": state.since.isoformat().replace("+00:00", "Z"),
     }
-    await manager.broadcast(payload, stream=manager.event_stream)
+    await manager.broadcast(payload)
 
 
 def relay_publisher(client):

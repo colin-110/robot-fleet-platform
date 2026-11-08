@@ -32,14 +32,12 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports: [ "6379:6379" ]
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s
-          --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      # An anonymous broker for the MQTT integration tests. Not a service
+      # container: those cannot pass the config file the broker needs.
+      - name: Start MQTT broker
+        run: docker run -d --name mqtt -p 1883:1883 eclipse-mosquitto:2.0.22 mosquitto -c /mosquitto-no-auth.conf
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -69,7 +67,7 @@ jobs:
       - name: Run Pytest
         env:
           DATABASE_URL: postgresql://test_user:test_password@localhost:5432/fleet_test_db
-          REDIS_URL: redis://localhost:6379/0
+          MQTT_TEST_HOST: localhost
           TELEMETRY_API_KEY: ci-test-key-not-a-real-secret
           PYTHONPATH: .
         run: cd backend && pytest tests/ -v --cov=app --cov-report=term-missing
