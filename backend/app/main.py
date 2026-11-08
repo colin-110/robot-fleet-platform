@@ -28,7 +28,7 @@ from app.database import engine
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.mqtt import commands as mqtt_commands
-from app.mqtt.ingest import IngestConsumer
+from app.mqtt.ingest import IngestConsumer, relay_publisher
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
         # Commands go out on the same connection.
         mqtt_commands.publisher = mqtt_commands.CommandPublisher(app.state.mqtt.client)
         app.state.mqtt.on_robot_online.append(mqtt_commands.publisher.push_pending_soon)
+        if settings.websocket_backend == "mqtt":
+            manager.relay = relay_publisher(app.state.mqtt.client)
         mqtt_task = asyncio.create_task(app.state.mqtt.run())
 
     yield
@@ -103,6 +105,7 @@ async def lifespan(app: FastAPI):
     # delivers it again after the restart.
     if mqtt_task:
         mqtt_commands.publisher = None
+        manager.relay = None
         mqtt_task.cancel()
         await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()

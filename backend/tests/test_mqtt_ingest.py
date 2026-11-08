@@ -363,3 +363,44 @@ async def test_unacked_messages_survive_a_crash_and_queued_ones_a_restart(broadc
 
 async def _count_is(n):
     return await stored_count() == n
+
+
+@broker
+@pytest.mark.asyncio
+async def test_broadcasts_are_relayed_to_every_instance(monkeypatch):
+    """Two API instances: a broadcast on one reaches a dashboard on the other."""
+    from app.config import get_settings
+    from app.mqtt.ingest import relay_publisher
+    from app.websocket_manager import ConnectionManager
+
+    monkeypatch.setattr(get_settings(), "websocket_backend", "mqtt")
+    other_instance = ConnectionManager()
+    monkeypatch.setattr(ingest, "manager", other_instance)  # what the receiving side fans out to
+
+    received = []
+
+    class Socket:
+        async def accept(self):
+            pass
+
+        async def send_json(self, data):
+            received.append(data)
+
+    await other_instance.connect(Socket())
+    task = await start(live_consumer(f"relay-{uuid.uuid4().hex[:8]}"))
+    sender = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+    sender.connect(MQTT_HOST, 1883)
+    sender.loop_start()
+    try:
+        sending_instance = ConnectionManager()
+        sending_instance.relay = relay_publisher(sender)
+        await sending_instance.broadcast_batch([{"robot_id": 1, "battery": 50.0}])
+
+        async def arrived():
+            return received == [{"robot_id": 1, "battery": 50.0}]
+
+        assert await wait_for(arrived, timeout=5)
+    finally:
+        sender.disconnect()
+        sender.loop_stop()
+        await stop(task)

@@ -154,6 +154,15 @@ async def broadcast_presence(robot_id: int) -> None:
     await manager.broadcast(payload, stream=manager.event_stream)
 
 
+def relay_publisher(client):
+    """Callable the WebSocket manager uses to relay one broadcast."""
+
+    def publish(payload: bytes) -> None:
+        client.publish(topics.LIVE, payload, qos=0)
+
+    return publish
+
+
 class IngestConsumer:
     def __init__(
         self,
@@ -213,6 +222,8 @@ class IngestConsumer:
         # which MQTT 5 never delivers on shared subscriptions. Every process
         # subscribes to it directly.
         subscriptions.append((f"{topics.ROOT}/+/{topics.PRESENCE}", 1))
+        if settings.websocket_backend == "mqtt":
+            subscriptions.append((topics.LIVE, 0))
         client.subscribe(subscriptions)
         logger.info(
             "MQTT connected to %s:%d (session present: %s)",
@@ -227,6 +238,10 @@ class IngestConsumer:
         self._loop.call_soon_threadsafe(self.connected.clear)
 
     def _on_message(self, client, userdata, message) -> None:
+        if message.topic == topics.LIVE:
+            # QoS 0 and not stored: straight to this process's dashboards.
+            self._loop.call_soon_threadsafe(manager.fan_out_relayed, message.payload)
+            return
         parsed = topics.parse(message.topic)
         robot_id, channel = parsed if parsed else (0, "")
         delivery = Delivery(

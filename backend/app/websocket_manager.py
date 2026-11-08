@@ -1,6 +1,11 @@
 """
 WebSocket connection manager for real-time telemetry broadcast.
-Uses Redis Streams to sync across multiple API instances.
+
+With one API process (``websocket_backend=direct``) a broadcast fans out to
+this process's sockets directly. With several (``mqtt``), each broadcast is
+published once to the broker's ``fleetops/live`` topic and every process fans
+out what it receives there (``fan_out_relayed``), so a dashboard connected to
+any instance sees every update. ``redis`` relays through Redis Streams.
 
 Fan-out model
 -------------
@@ -45,6 +50,8 @@ class ConnectionManager:
         self.telemetry_stream = "telemetry_stream"
         self.event_stream = "event_stream"
         self._listener_task: asyncio.Task | None = None
+        # Set by the lifespan in mqtt mode: publishes one relay message.
+        self.relay = None
 
     @property
     def connection_count(self) -> int:
@@ -101,6 +108,9 @@ class ConnectionManager:
         if settings.websocket_backend == "direct":
             self._fan_out(data)
             return
+        if settings.websocket_backend == "mqtt":
+            self._relay([data])
+            return
 
         target_stream = stream or self.telemetry_stream
         try:
@@ -120,6 +130,9 @@ class ConnectionManager:
         if settings.websocket_backend == "direct":
             for data in data_list:
                 self._fan_out(data)
+            return
+        if settings.websocket_backend == "mqtt":
+            self._relay(data_list)
             return
 
         target_stream = stream or self.telemetry_stream
@@ -175,6 +188,28 @@ class ConnectionManager:
                 logger.exception("Redis Stream listener error, retrying in %s seconds", retry_delay)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(max_retry_delay, retry_delay * 2.0)
+
+    def _relay(self, data_list: list[dict]) -> None:
+        """One broker message per broadcast, however many updates it holds."""
+        if self.relay is None:
+            # Not connected yet: serve this process's own clients at least.
+            for data in data_list:
+                self._fan_out(data)
+            return
+        try:
+            self.relay(orjson.dumps(data_list))
+        except Exception:
+            logger.exception("Failed to relay a broadcast through the broker")
+
+    def fan_out_relayed(self, payload: bytes) -> None:
+        """Fan out a relay message received from the broker."""
+        try:
+            items = orjson.loads(payload)
+        except orjson.JSONDecodeError:
+            logger.warning("Ignoring a malformed relay message")
+            return
+        for data in items if isinstance(items, list) else [items]:
+            self._fan_out(data)
 
     def _fan_out(self, data: dict) -> None:
         """Fan a message onto every client queue without blocking or spawning tasks.

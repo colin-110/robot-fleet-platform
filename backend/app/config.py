@@ -93,9 +93,10 @@ class Settings(BaseSettings):
     mqtt_batch_wait_ms: int = 250
 
     # ── Realtime fan-out ────────────────────────────────────────────
-    # "redis" relays broadcasts through a Redis Stream so every API instance
-    # sees every message. "direct" fans out in-process: correct for a single
-    # instance, lower latency, and no Redis commands per reading.
+    # "direct" fans out in-process: correct for a single instance and the
+    # cheapest. "mqtt" relays every broadcast through the broker so several
+    # API instances all see every update (needs MQTT_ENABLED). "redis" relays
+    # through a Redis Stream.
     websocket_backend: str = "redis"
 
     # ── Rate Limiting ───────────────────────────────────────────────

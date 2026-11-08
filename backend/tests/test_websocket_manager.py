@@ -341,3 +341,46 @@ async def test_broadcast_batch_pipelines_and_skips_empty(manager):
 
     await manager.broadcast_batch([{"robot_id": 1}, {"robot_id": 2}])
     pipeline.execute.assert_awaited_once()
+
+
+# ── Relay through the broker (websocket_backend=mqtt) ───────────────
+
+
+@pytest.fixture
+def mqtt_mode(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "websocket_backend", "mqtt")
+
+
+@pytest.mark.asyncio
+async def test_relay_sends_one_message_per_batch(manager, mqtt_mode):
+    sent = []
+    manager.relay = sent.append
+    await manager.broadcast_batch([{"robot_id": 1}, {"robot_id": 2}])
+    await manager.broadcast({"type": "EVENT"})
+    assert [orjson.loads(m) for m in sent] == [
+        [{"robot_id": 1}, {"robot_id": 2}],
+        [{"type": "EVENT"}],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relayed_messages_reach_local_sockets(manager):
+    ws = FakeWebSocket()
+    await manager.connect(ws)
+    manager.fan_out_relayed(orjson.dumps([{"robot_id": 1}, {"robot_id": 2}]))
+    manager.fan_out_relayed(b"not json")
+    await _settle()
+    assert ws.sent == [{"robot_id": 1}, {"robot_id": 2}]
+    manager.disconnect(ws)
+
+
+@pytest.mark.asyncio
+async def test_without_a_broker_connection_local_clients_still_get_updates(manager, mqtt_mode):
+    ws = FakeWebSocket()
+    await manager.connect(ws)
+    await manager.broadcast({"robot_id": 3})
+    await _settle()
+    assert ws.sent == [{"robot_id": 3}]
+    manager.disconnect(ws)

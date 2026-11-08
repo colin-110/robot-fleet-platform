@@ -35,6 +35,10 @@ ROBOT_RECEIVES = frozenset({COMMANDS, CONFIG})
 
 USERNAME_PREFIX = "robot-"
 
+# Live dashboard updates relayed between API instances. Outside the fleet/
+# tree, so no robot can read it.
+LIVE = "fleetops/live"
+
 
 class Access(IntEnum):
     """Access levels as mosquitto-go-auth sends them."""
