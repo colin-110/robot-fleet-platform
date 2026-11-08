@@ -18,34 +18,45 @@ emergency stop.
 ## Architecture
 
 ~~~text
-Robot simulator ──HTTP──► FastAPI ──► TimescaleDB
-  (per-robot keys,          │          telemetry   (hypertable, compressed)
-   outbox + retries)        │          robot_state (latest reading per robot)
-                            │          robots, commands, events, users
-                            ▼
-                   WebSocket fan-out ──► Dashboard (React, Vercel)
+Robots ──MQTT (QoS 1, device keys, last will)──► Mosquitto ──► FastAPI ──► TimescaleDB
+  ▲                                                 │  ack after    │      telemetry (hypertable)
+  └──────────── commands pushed ◄───────────────────┘  commit       │      robot_state, commands,
+                                                                    ▼      events, robots, users
+                                                         WebSocket ──► Dashboard (React, Vercel)
 ~~~
 
-Every reading goes through one write path that inserts it, registers the
-robot and updates its current state in a single transaction.
+The broker is the queue: the API acknowledges a message only after it is
+committed, so a crash of the API or the broker loses nothing (measured, with
+the remaining gaps listed in [the architecture doc](docs/architecture.md#measured-durability)). Every reading
+goes through one write path that inserts it, registers the robot and updates
+its current state in a single transaction. There is no Redis and no worker
+process.
 
-The system is partway through a redesign toward MQTT transport and
-error-budgeted telemetry, aimed at running a fleet on the smallest possible
-server. See [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
+This is step 2 of a redesign aimed at running a fleet on the smallest possible
+server; next is error-budgeted telemetry. See
+[ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
 ## Engineering decisions
 
+- **No data loss, measured.** Messages are acknowledged only after commit. In
+  a chaos test (20 robots, `kill -9` of the API or the broker mid-stream),
+  five runs stored every reading exactly once.
 - **Idempotent writes.** A reading is identified by `(robot_id, timestamp)`,
-  the table's primary key, so a retried upload is never stored twice.
+  the table's primary key, so a redelivered message is never stored twice.
+- **Presence from the last will.** A robot whose connection drops is shown
+  offline within a second, not after a minute of silence.
+- **Pushed commands.** Commands go into the robot's persistent session, so one
+  sent while the robot is offline is delivered when it reconnects.
 - **Current state on write.** `robot_state` holds one row per robot, updated
   only by newer readings, so fleet status never scans history.
 - **TimescaleDB.** One-day chunks, compression after a day, and a 30-day
   retention policy that drops whole chunks instead of deleting rows.
-- **Per-robot device keys.** Random keys stored only as hashes; a key can only
-  report as its own robot, and checking one does no database work.
-- **Compare-and-set command transitions.** Concurrent pollers or status
-  updates cannot both win a transition.
+- **Per-robot device keys.** Random keys stored only as hashes. They are the
+  robots' broker credentials: a robot can only use its own topics and cannot
+  take over another robot's session.
+- **Compare-and-set command transitions.** Concurrent status updates cannot
+  both win a transition.
 - **Bounded WebSocket queues.** A slow client drops its oldest frames instead of
   stalling fan-out for everyone else.
 - **Short-lived console tickets.** The browser never holds the master API key.
@@ -55,6 +66,8 @@ server. See [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 Tests cover:
 
 - telemetry ingestion, idempotency and fleet-state derivation
+- the MQTT consumer, presence, command push and broker auth, partly against a
+  real broker (set `MQTT_TEST_HOST`)
 - device keys, rotation and revocation
 - command concurrency, idempotency and timeouts
 - WebSocket lifecycle and reconnect behavior
@@ -65,7 +78,9 @@ Backend:
 
 ~~~bash
 cd backend
-DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db pytest tests/ -v --cov=app
+docker run -d -p 1883:1883 eclipse-mosquitto:2.0.22 mosquitto -c /mosquitto-no-auth.conf
+DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db \
+  MQTT_TEST_HOST=localhost pytest tests/ -v --cov=app
 ~~~
 
 Frontend:
@@ -87,14 +102,15 @@ cp backend/.env.example backend/.env
 docker compose up --build -d
 ~~~
 
-The stack starts the API, dashboard, simulator, TimescaleDB and Redis (used for WebSocket fan-out until the MQTT phase).
+The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleDB and the Mosquitto broker.
 
 ## Repository structure
 
 - `backend/app/` - API routes, services, repositories and authentication
 - `backend/tests/` - backend test suite
 - `frontend/robot-fleet-dashboard/` - React dashboard
-- `simulator/` - asynchronous robot simulator
+- `simulator/` - asynchronous robot simulator, one MQTT connection per robot
+- `mosquitto/` - broker configuration
 - `scripts/` - EC2 provisioning and CI deploy-role setup
 - `docs/` - architecture, operations, and design decisions (`docs/adr/`)
 - `docker-compose.yml` - full local stack; `docker-compose.ec2.yml` - production
