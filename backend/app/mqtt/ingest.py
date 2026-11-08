@@ -30,7 +30,7 @@ from pydantic import ValidationError
 from app import presence
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.mqtt import topics
+from app.mqtt import topics, wire
 from app.repositories.event_repo import insert_events
 from app.schemas import CommandStatusUpdate, EventCreate, TelemetryCreate
 from app.services.command_service import CommandService
@@ -65,6 +65,9 @@ class Delivery:
     # on the connection that delivered it, so acks for an older connection are
     # skipped; the broker redelivers those messages anyway.
     epoch: int
+    # MQTT 5 content type: wire.CONTENT_TYPE for the agent's CBOR envelopes,
+    # anything else (usually nothing) for plain JSON.
+    content_type: str | None = None
 
 
 SUBSCRIBED_CHANNELS = (topics.TELEMETRY, topics.EVENTS, topics.COMMAND_STATUS)
@@ -128,6 +131,30 @@ def decode_command_status(robot_id: int, payload: bytes) -> StatusReport:
     except ValidationError as exc:
         raise BadMessage(str(exc)) from None
     return StatusReport(robot_id, body["id"], update)
+
+
+ENVELOPE_CHANNELS = frozenset(wire.CHANNELS)
+
+
+def _validated(model, values: dict):
+    try:
+        return model.model_validate(values)
+    except ValidationError as exc:
+        raise BadMessage(str(exc)) from None
+
+
+def _from_envelope(robot_id: int, channel: str, values: dict):
+    """One unpacked envelope item as the model its channel stores."""
+    if channel == topics.TELEMETRY:
+        return _validated(TelemetryCreate, {**values, "robot_id": robot_id})
+    if channel == topics.EVENTS:
+        if "timestamp" not in values:
+            raise BadMessage("events sent over MQTT need a timestamp")
+        return _validated(EventCreate, {**values, "robot_id": robot_id})
+    command_id = values.pop("id", None)
+    if not isinstance(command_id, str):
+        raise BadMessage("a command status needs the command id")
+    return StatusReport(robot_id, command_id, _validated(CommandStatusUpdate, values))
 
 
 @dataclass
@@ -254,8 +281,15 @@ class IngestConsumer:
             return
         parsed = topics.parse(message.topic)
         robot_id, channel = parsed if parsed else (0, "")
+        content_type = getattr(message.properties, "ContentType", None)
         delivery = Delivery(
-            robot_id, channel, message.payload, message.mid, message.qos, self.epoch
+            robot_id,
+            channel,
+            message.payload,
+            message.mid,
+            message.qos,
+            self.epoch,
+            content_type,
         )
         self._loop.call_soon_threadsafe(self._queue.put_nowait, delivery)
 
@@ -300,7 +334,9 @@ class IngestConsumer:
         decoded = Decoded()
         for delivery in batch:
             try:
-                if delivery.channel == topics.TELEMETRY:
+                if delivery.content_type == wire.CONTENT_TYPE:
+                    self._decode_envelope(delivery, decoded)
+                elif delivery.channel == topics.TELEMETRY:
                     decoded.readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
                     decoded.presence.append((delivery.robot_id, None))
                 elif delivery.channel == topics.EVENTS:
@@ -349,6 +385,35 @@ class IngestConsumer:
                 for callback in self.on_robot_online:
                     callback(robot_id)
         self.ack(batch)
+
+    def _decode_envelope(self, delivery: Delivery, decoded: Decoded) -> None:
+        """Unpack an agent envelope into ``decoded``.
+
+        A malformed envelope is dropped whole; within a valid one, only the
+        items that fail validation are.
+        """
+        if delivery.channel not in ENVELOPE_CHANNELS:
+            raise BadMessage(f"no envelope format for channel {delivery.channel!r}")
+        try:
+            envelope = wire.decode_envelope(delivery.channel, delivery.payload)
+        except wire.WireError as exc:
+            raise BadMessage(str(exc)) from None
+        for packed in envelope.items:
+            try:
+                values = wire.unpack_item(delivery.channel, packed)
+                item = _from_envelope(delivery.robot_id, delivery.channel, values)
+            except (wire.WireError, BadMessage) as exc:
+                self.stats["rejected"] += 1
+                logger.warning("Dropping an item from robot %d: %s", delivery.robot_id, exc)
+                continue
+            if delivery.channel == topics.TELEMETRY:
+                decoded.readings.append(item)
+            elif delivery.channel == topics.EVENTS:
+                decoded.events.append(item)
+            else:
+                decoded.statuses.append(item)
+        if delivery.channel == topics.TELEMETRY:
+            decoded.presence.append((delivery.robot_id, None))
 
     async def _store(self, decoded: Decoded):
         """Write in one transaction until it succeeds. Nothing is acknowledged

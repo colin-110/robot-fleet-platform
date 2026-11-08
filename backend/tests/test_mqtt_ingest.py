@@ -16,11 +16,13 @@ from datetime import datetime, timedelta, timezone
 import orjson
 import paho.mqtt.client as mqtt
 import pytest
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 from sqlalchemy import func, select
 
 from app import presence
 from app.models import Event, Telemetry
-from app.mqtt import ingest
+from app.mqtt import ingest, wire
 from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
 from app.websocket_manager import manager
 from tests.conftest import TestSessionLocal
@@ -190,6 +192,66 @@ async def test_events_and_readings_share_a_batch(consumer, broadcasts, event_bro
 
 
 @pytest.mark.asyncio
+# ── agent envelopes ─────────────────────────────────────────────────
+
+
+def envelope(channel, items, seq=1, floor=1, sent=None, stream="s1"):
+    """A CBOR envelope as the agent sends it."""
+    sent_ms = wire.epoch_ms(sent or datetime.now(timezone.utc))
+    packed = [wire.pack_item(channel, i) for i in items]
+    return wire.encode_envelope(channel, wire.Envelope(stream, seq, floor, sent_ms, packed))
+
+
+def env_delivery(robot_id, channel, items, mid, **kwargs):
+    raw = envelope(channel, items, **kwargs)
+    return Delivery(robot_id, channel, raw, mid, 1, 1, wire.CONTENT_TYPE)
+
+
+def agent_reading(seconds=0, **overrides):
+    values = {
+        "timestamp": T0 + timedelta(seconds=seconds),
+        "battery": 80.0,
+        "temperature": 35.0,
+        "speed": 1.0,
+    }
+    return values | overrides
+
+
+async def test_envelopes_are_stored_like_json(consumer, broadcasts, event_broadcasts):
+    batch = [
+        env_delivery(3, "telemetry", [agent_reading(0), agent_reading(1, status="CHARGING")], 1),
+        env_delivery(3, "events", [{"timestamp": T0, "message": "Docked"}], 2),
+    ]
+    await consumer.process(batch)
+    assert await stored_count() == 2
+    assert await event_count() == 1
+    assert [r["status"] for r in broadcasts] == [None, "CHARGING"]
+    assert broadcasts[1]["battery"] == 80.0
+    assert consumer.client.acked == [1, 2]
+
+
+async def test_a_bad_item_does_not_sink_its_envelope(consumer, broadcasts):
+    # A reading without a battery fails validation; its neighbours are kept.
+    items = [agent_reading(0), {"timestamp": T0 + timedelta(seconds=1)}, agent_reading(2)]
+    await consumer.process([env_delivery(3, "telemetry", items, 1)])
+    assert await stored_count() == 2
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.acked == [1]
+
+
+async def test_a_malformed_envelope_is_dropped(consumer, broadcasts):
+    bad = Delivery(3, "telemetry", b"\xff\x00", 1, 1, 1, wire.CONTENT_TYPE)
+    await consumer.process([bad])
+    assert await stored_count() == 0
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.acked == [1]
+
+
+async def test_command_status_envelopes_need_an_id(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "commands/status", [{"status": "ACKNOWLEDGED"}], 1)])
+    assert consumer.stats["rejected"] == 1
+
+
 async def test_presence_changes_are_broadcast(consumer, broadcasts, event_broadcasts):
     await consumer.process(
         [
@@ -352,6 +414,26 @@ async def test_end_to_end_through_the_broker(broadcasts):
     try:
         publish(3, [reading(seconds=i) for i in range(50)])
         assert await wait_for(lambda: _count_is(50))
+    finally:
+        await stop(task)
+
+
+@broker
+@pytest.mark.asyncio
+async def test_envelopes_are_recognised_by_their_content_type(broadcasts):
+    name = f"ingest-{uuid.uuid4().hex[:8]}"
+    task = await start(live_consumer(name))
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        client.connect(MQTT_HOST, 1883)
+        client.loop_start()
+        props = Properties(PacketTypes.PUBLISH)
+        props.ContentType = wire.CONTENT_TYPE
+        body = envelope("telemetry", [agent_reading(i) for i in range(20)])
+        client.publish("fleet/3/telemetry", body, qos=1, properties=props).wait_for_publish(5)
+        client.disconnect()
+        client.loop_stop()
+        assert await wait_for(lambda: _count_is(20))
     finally:
         await stop(task)
 
