@@ -168,7 +168,7 @@ def summarize_state(state, applied: dict | None = None, peer=None) -> dict:
         "mission_start_time": _iso(_as_utc(state.mission_start_time)),
         "last_seen": _iso(ts),
         **_runtime(state, battery),
-        "suspicion": _rounded(fleet.suspicion(state.robot_id), 1),
+        "suspicion": _rounded(fleet.suspicion(state.robot_id, heartbeat_s=tol["heartbeat_s"]), 1),
         "anomaly": (
             {"score": round(peer.score, 1), "feature": peer.feature, "z": round(peer.z, 1)}
             if peer

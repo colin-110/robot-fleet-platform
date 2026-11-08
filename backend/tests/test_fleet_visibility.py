@@ -253,3 +253,38 @@ def test_naive_timestamp_is_treated_as_utc():
     resolved = resolve_timestamp(naive, now)
     assert resolved.tzinfo is not None
     assert abs((resolved - (now - timedelta(minutes=5))).total_seconds()) < 1
+
+
+async def test_a_fast_clock_keeps_its_readings_apart(client, db):
+    """A batch from a clock an hour fast is moved back as a whole, not
+    clamped reading by reading (which collapsed it onto one timestamp)."""
+    now = datetime.now(timezone.utc)
+    ahead = now + timedelta(hours=1)
+    batch = [
+        {
+            "robot_id": 23,
+            "battery": 80.0 - i,
+            "temperature": 30.0,
+            "speed": 1.0,
+            "timestamp": (ahead + timedelta(seconds=i)).isoformat(),
+        }
+        for i in range(5)
+    ]
+    response = await client.post("/api/v1/telemetry/batch", json=batch)
+    assert response.status_code == 200
+
+    rows = (
+        (
+            await db.execute(
+                select(Telemetry).where(Telemetry.robot_id == 23).order_by(Telemetry.timestamp)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 5
+    gaps = [
+        (b.timestamp - a.timestamp).total_seconds() for a, b in zip(rows, rows[1:], strict=False)
+    ]
+    assert gaps == [1.0] * 4
+    assert abs((rows[-1].timestamp - now).total_seconds()) < 5

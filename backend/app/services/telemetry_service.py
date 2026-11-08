@@ -6,7 +6,7 @@ readings already stored, then broadcast to dashboards.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,10 +99,39 @@ async def persist_readings(db: AsyncSession, data: list[TelemetryCreate]) -> lis
     if not data:
         return []
     received_at = datetime.now(timezone.utc)
-    # Resolved per reading: stamping a whole batch with one time would
-    # collapse readings taken seconds apart onto a single instant.
-    rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
-    return await persist(db, rows)
+    return await persist(db, device_times(data, received_at))
+
+
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def device_times(
+    data: list[TelemetryCreate], received_at: datetime
+) -> list[tuple[TelemetryCreate, datetime]]:
+    """Each reading with the time to store it under.
+
+    Device time, as reported. But when a robot's newest reading in the batch
+    is further in the future than ``max_clock_skew_seconds``, its clock is
+    fast, and every one of its readings moves back by the same amount, so the
+    newest lands on the receive time. Clamping each reading to the receive
+    time instead collapsed a batch taken seconds apart onto one instant, and
+    all but one were then dropped as duplicates.
+    """
+    ahead: dict[int, float] = {}
+    for d in data:
+        skew = (_utc(d.timestamp) - received_at).total_seconds()
+        ahead[d.robot_id] = max(ahead.get(d.robot_id, skew), skew)
+    rows = []
+    for d in data:
+        if ahead[d.robot_id] > settings.max_clock_skew_seconds:
+            fast_by = timedelta(seconds=ahead[d.robot_id])
+            rows.append((d, _utc(d.timestamp) - fast_by))
+        else:
+            rows.append((d, resolve_timestamp(d.timestamp, received_at)))
+    return rows
 
 
 async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[Telemetry]:

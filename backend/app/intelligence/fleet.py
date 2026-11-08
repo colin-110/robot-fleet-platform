@@ -66,6 +66,7 @@ def observe(rows, now: float | None = None) -> None:
                 "t": t,
                 "temperature": row.temperature,
                 "battery": row.battery,
+                "speed": row.speed,
                 "health": min(
                     (
                         h
@@ -82,9 +83,31 @@ def observe(rows, now: float | None = None) -> None:
             }
 
 
-def suspicion(robot_id: int, now: float | None = None) -> float | None:
+# Silence up to this many heartbeats is the robot keeping its word: under dual
+# prediction it sends only when it must, and at least once per heartbeat.
+HEARTBEAT_GRACE = 1.5
+
+
+def suspicion(
+    robot_id: int, now: float | None = None, heartbeat_s: float | None = None
+) -> float | None:
+    """Phi accrual for the robot's current silence (None until learned).
+
+    With ``heartbeat_s``, silence within the heartbeat (and some grace for
+    batching and the network) scores 0: a robot under dual prediction is
+    quiet by design until then, however short its gaps were while it moved.
+    """
     model = _robots.get(robot_id)
-    return model.arrivals.phi(time.time() if now is None else now) if model else None
+    if model is None:
+        return None
+    now = time.time() if now is None else now
+    phi = model.arrivals.phi(now)
+    if phi is None:
+        return None
+    last = model.arrivals.last
+    if heartbeat_s is not None and last is not None and now - last <= heartbeat_s * HEARTBEAT_GRACE:
+        return 0.0
+    return phi
 
 
 def total_rate(now: float, window: float = 120.0) -> float:

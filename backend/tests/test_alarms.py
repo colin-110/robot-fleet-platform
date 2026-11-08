@@ -148,3 +148,19 @@ async def test_the_api_lists_and_acknowledges(client, engine):
     assert (await client.get("/api/v1/alarms")).json() == []
     everything = (await client.get("/api/v1/alarms", params={"state": "all"})).json()
     assert {a["state"] for a in everything} == {"CLEARED"}
+
+
+async def test_quiet_within_the_heartbeat_raises_nothing(engine):
+    model = fleet.robots().setdefault(11, RobotModel())
+    for i in range(10):
+        model.arrivals.heartbeat(at(i).timestamp())
+    set_robot(11, at(9))
+    presence.apply(11, True, "c1", now=at(0))
+    # 25 s and 40 s of silence: within 1.5 heartbeats of 30 s.
+    await engine.evaluate(at(34))
+    await engine.evaluate(at(49))
+    assert await open_alarms("SILENT") == 0
+    # Two minutes of silence while connected: raised once held for 10 s.
+    await engine.evaluate(at(129))
+    await engine.evaluate(at(140))
+    assert await open_alarms("SILENT") == 1

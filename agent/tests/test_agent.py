@@ -316,3 +316,28 @@ def test_settings_are_applied_reported_and_kept(robot_id, outbox_path):
     offline = Agent(robot_id, "key", "127.0.0.1", 1, outbox_path=outbox_path)
     assert (offline.config_version, offline.config) == (4, {"report_interval_s": 1.0})
     offline.outbox.close()
+
+
+@broker
+def test_a_dropped_link_shows_offline_and_loses_nothing(robot_id, outbox_path):
+    server = FakeServer(robot_id)
+    agent = make_agent(robot_id, outbox_path)
+    try:
+        assert wait_until(lambda: server.presence and server.presence[-1]["online"])
+        agent.drop_link()
+        # The broker published the will: the robot is offline at once.
+        assert wait_until(lambda: server.presence[-1]["online"] is False)
+        for i in range(5):
+            agent.send_telemetry(reading(i))
+        time.sleep(0.5)
+        assert server.readings == {}
+        assert agent.pending() == 5
+
+        agent.restore_link()
+        assert wait_until(lambda: agent.connected)
+        assert agent.flush()
+        assert sorted(server.readings) == [1, 2, 3, 4, 5]
+        assert server.presence[-1]["online"] is True
+    finally:
+        agent.stop()
+        server.close()

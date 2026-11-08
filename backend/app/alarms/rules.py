@@ -54,7 +54,7 @@ RULES = (
         60,
         "Unusual {feature} compared with the fleet (z {value:.1f})",
     ),
-    Rule("SILENT", "warning", "suspicion", True, 8.0, 3.0, 0, "Connected but not sending"),
+    Rule("SILENT", "warning", "suspicion", True, 8.0, 3.0, 10, "Connected but not sending"),
     Rule("OFFLINE", "critical", "offline", True, 0.5, 0.5, 30, "Disconnected from the broker"),
     Rule(
         "DUPLICATE_SESSION",
