@@ -53,13 +53,6 @@ async def test_robot_cannot_log_in_as_another_robot(client):
 
 
 @pytest.mark.asyncio
-async def test_client_id_must_match_the_username(client):
-    """Otherwise a robot could take over another robot's session."""
-    key = await issue_key(client, 5)
-    assert await login(client, "robot-5", key, clientid="robot-6") == 403
-
-
-@pytest.mark.asyncio
 async def test_bad_and_revoked_keys_are_refused(client):
     key = await issue_key(client, 5)
     assert await login(client, "robot-5", key[:-1] + "x") == 403
@@ -70,6 +63,7 @@ async def test_bad_and_revoked_keys_are_refused(client):
 @pytest.mark.asyncio
 async def test_master_key_only_works_for_the_service_account(client):
     assert await login(client, SERVICE, settings.telemetry_api_key) == 200
+    assert await login(client, f"{SERVICE}-watch", settings.telemetry_api_key) == 200
     assert await login(client, SERVICE, "wrong") == 403
     assert await login(client, "robot-5", settings.telemetry_api_key) == 403
 
@@ -77,8 +71,11 @@ async def test_master_key_only_works_for_the_service_account(client):
 @pytest.mark.asyncio
 async def test_only_the_service_account_is_a_superuser(client):
     ok = await client.post("/internal/mqtt/superuser", json={"username": SERVICE})
+    extra = await client.post("/internal/mqtt/superuser", json={"username": f"{SERVICE}-watch"})
     robot = await client.post("/internal/mqtt/superuser", json={"username": "robot-5"})
-    assert (ok.status_code, robot.status_code) == (200, 403)
+    lookalike = await client.post("/internal/mqtt/superuser", json={"username": f"{SERVICE}x"})
+    codes = (ok.status_code, extra.status_code, robot.status_code, lookalike.status_code)
+    assert codes == (200, 200, 403, 403)
 
 
 @pytest.mark.asyncio

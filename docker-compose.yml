@@ -68,6 +68,20 @@ services:
     networks:
       - fleet_net
 
+  mqtt:
+    # Mosquitto with mosquitto-go-auth: robots log in with their device keys,
+    # and every login and ACL decision is delegated to the API.
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    ports:
+      - "1883:1883"
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      # Owned by the broker's user in the image, so a new volume is writable.
+      - mosquitto_data:/var/lib/mosquitto
+    networks:
+      - fleet_net
+
   redis:
     image: redis:7-alpine
     command: redis-server --save "" --appendonly no
@@ -82,6 +96,7 @@ services:
 
 volumes:
   timescale_data:
+  mosquitto_data:
 
 networks:
   fleet_net:
