@@ -17,3 +17,20 @@ export function readingTime(item) {
 export function isNewerReading(incoming, current) {
   return !current || readingTime(incoming) >= readingTime(current);
 }
+
+/**
+ * Apply presence changes from the broker. A robot whose connection dropped is
+ * shown OFFLINE at once; coming back online needs no action here, because the
+ * robot's next reading carries its real status.
+ */
+export function applyPresence(robots, presence) {
+  const offline = new Set(
+    Object.entries(presence)
+      .filter(([, online]) => online === false)
+      .map(([id]) => String(id)),
+  );
+  if (offline.size === 0) return robots;
+  return robots.map((robot) =>
+    offline.has(String(robot.robot_id)) ? { ...robot, status: "OFFLINE" } : robot,
+  );
+}

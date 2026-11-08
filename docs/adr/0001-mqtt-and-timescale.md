@@ -1,6 +1,6 @@
 # ADR 0001: MQTT transport and TimescaleDB storage
 
-Status: accepted, in progress (phase 1 done)
+Status: accepted, in progress (phases 1 and 2 done)
 
 ## Context
 
@@ -68,13 +68,32 @@ Commands ──MQTT QoS 1──► robot                continuous aggregates
 - `robot_state` table; fleet status reads from it; read cache removed
 - Remove the ingest flags, Redis stream path, deferred buffer, acks and viewer gating
 
-**Phase 2, MQTT**
+**Phase 2, MQTT** (done)
 - Mosquitto with go-auth against device keys and per-robot topic ACLs
-- Ingest consumer: shared subscription, persistent session, ack after commit
-- Commands and command status over MQTT; polling endpoints removed
+- Ingest consumer: persistent session, ack after commit
+- Commands and command status over MQTT
 - Presence from last-will messages
-- WebSocket fan-out from the broker; Redis removed
-- Simulator rebuilt on a small reusable robot agent
+- WebSocket fan-out in-process, or relayed through the broker for several
+  processes; Redis removed
+- Simulator sends over MQTT (rebuilt on a reusable robot agent in ADR 0002,
+  step 3)
+
+Where phase 2 departed from the plan, and why:
+
+- **Plain subscriptions, not shared.** A chaos test killing the broker lost
+  18% of the readings: Mosquitto does not restore shared subscriptions after a
+  restart, so messages published before the API resubscribed were dropped
+  although robots had received a PUBACK. Plain persistent subscriptions keep
+  queueing across the restart. Shared ones remain opt-in for several processes.
+- **The broker pins client ids.** go-auth caches logins by username and
+  password only, so a client id check at login could be skipped by logging in
+  twice. `use_username_as_clientid` makes a session takeover impossible
+  instead.
+- **The HTTP endpoints stay.** Telemetry, events, command claim and status
+  over HTTP remain as a thin adapter onto the same functions, for simple
+  clients and tests; MQTT robots never poll.
+- **Presence carries a connection id**, so a late will from an older
+  connection cannot mark a reconnected robot offline.
 
 **Phase 3, smarter**
 - Report-by-exception on the robot (swinging-door compression plus a heartbeat)

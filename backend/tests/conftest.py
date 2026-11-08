@@ -15,7 +15,6 @@ export ``DATABASE_URL`` to a throwaway Postgres database whose name contains
 """
 
 import os
-from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
@@ -23,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from app import device_keys
+from app import device_keys, presence
 from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.config import get_settings
 from app.database import Base, get_db
@@ -47,25 +46,6 @@ if "test" not in _DB_NAME.lower():
     )
 
 TEST_DATABASE_URL = _RAW_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-# ── Resolve the Redis test instance ─────────────────────────────────
-
-# The same guard, for the same reason. ``setup_database`` calls ``cache.clear()``,
-# which is ``FLUSHDB`` - it does not remove only cache keys. Pointed at a real
-# instance it would drop the telemetry stream, unacknowledged entries included,
-# along with every rate-limit bucket. Without this, the Postgres guard above
-# would refuse to touch a production schema while the Redis flush went ahead
-# anyway, which is the worse half of the pair to leave unguarded.
-_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-_REDIS_HOST = urlparse(_REDIS_URL).hostname or ""
-# "redis" covers running the suite inside the compose network, where the
-# service name is the hostname. A managed endpoint matches none of these.
-if _REDIS_HOST not in {"localhost", "127.0.0.1", "::1", "redis"}:
-    raise RuntimeError(
-        f"Refusing to run the test suite against Redis host {_REDIS_HOST!r}: the "
-        "suite calls FLUSHDB between tests. Point REDIS_URL at a local or "
-        "throwaway Redis."
-    )
 
 # NullPool: each test recreates the schema, so we don't want connections held
 # open across the create/drop cycle.
@@ -109,6 +89,7 @@ def setup_database():
             await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
         device_keys.reset()
+        presence.reset()
 
     async def drop_db():
         async with test_engine.begin() as conn:
@@ -120,16 +101,16 @@ def setup_database():
 
 
 @pytest.fixture(autouse=True)
-def mock_redis(monkeypatch):
-    """Mock Redis so tests don't need a live broadcast backend."""
-    from app import middleware
+def quiet_broadcasts(monkeypatch):
+    """Drop single-message broadcasts and start each test with fresh rate limits."""
+    from app.middleware import reset_rate_limits
     from app.websocket_manager import manager
 
-    async def mock_broadcast(*args, **kwargs):
+    async def drop(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(manager, "broadcast", mock_broadcast)
-    monkeypatch.setattr(middleware, "get_redis", lambda: None)
+    monkeypatch.setattr(manager, "broadcast", drop)
+    reset_rate_limits()
 
 
 @pytest_asyncio.fixture

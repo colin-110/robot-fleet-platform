@@ -114,14 +114,12 @@ class RobotRepository:
     async def mark_seen(self, last_seen_by_robot: dict[int, datetime]) -> None:
         """Register robots and advance their ``last_seen`` in one statement.
 
-        Called by the worker as it persists each telemetry batch, not from the
-        request path: with the Redis buffer, an ingest request does no
-        database work, and a per-request roster upsert would
-        put it straight back.
+        Called by ``persist`` once per batch, in the same transaction as the
+        readings.
 
-        ``last_seen`` only moves forward. A worker restart replays its pending
-        list, so batches can be drained out of order, and a late batch of older
-        readings must not rewind a robot's last-seen time. ``GREATEST`` ignores
+        ``last_seen`` only moves forward. Redelivered and store-and-forward
+        readings can arrive out of order, and a late batch of older readings
+        must not rewind a robot's last-seen time. ``GREATEST`` ignores
         NULLs but returns NULL if *every* argument is NULL, hence the COALESCE
         for a robot being registered for the first time.
         """

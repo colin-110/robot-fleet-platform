@@ -90,7 +90,7 @@ async def scan_for_timeouts(session: AsyncSession):
             "command_id": cmd.id,
             "timestamp": now.isoformat().replace("+00:00", "Z"),
         }
-        await manager.broadcast(payload, stream="event_stream")
+        await manager.broadcast(payload)
 
 
 async def run_once(session_factory=AsyncSessionLocal) -> bool:

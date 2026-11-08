@@ -28,10 +28,15 @@ class CommandStatusUpdate(BaseModel):
 
 
 class EventCreate(BaseModel):
-    """Incoming event payload from a robot."""
+    """Incoming event payload from a robot.
+
+    ``timestamp`` is when the event happened on the device. Sending it makes a
+    retried event idempotent; without it the server's receive time is used.
+    """
 
     robot_id: int
-    message: str
+    message: str = Field(max_length=512)
+    timestamp: datetime | None = None
 
 
 class EventResponse(BaseModel):
@@ -218,6 +223,8 @@ class HealthResponse(BaseModel):
 
     status: str
     database: str
+    # "connected", "disconnected", or "disabled" when MQTT_ENABLED is off.
+    mqtt: str = "disabled"
     version: str = "1.0.0"
 
 

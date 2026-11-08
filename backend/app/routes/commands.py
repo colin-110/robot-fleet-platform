@@ -13,8 +13,7 @@ from app.database import get_db
 from app.repositories.command_repo import CommandRepository
 from app.schemas import CommandCreate, CommandStatusUpdate
 from app.security import OPERATOR
-from app.services.command_service import CommandService
-from app.websocket_manager import manager
+from app.services.command_service import CommandService, broadcast_dispatched
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +71,7 @@ async def _claim_pending_commands(robot_id: int, db: AsyncSession) -> list[dict]
             }
         )
 
-        await manager.broadcast(
-            {
-                "type": "COMMAND_UPDATE",
-                "robot_id": robot_id,
-                "command_type": record.command_type,
-                "status": "DISPATCHED",
-                "command_id": record.id,
-                "timestamp": now.isoformat().replace("+00:00", "Z"),
-            }
-        )
+        await broadcast_dispatched(robot_id, record.command_type, record.id, now)
 
     return claimed
 

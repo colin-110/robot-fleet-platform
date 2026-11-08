@@ -1,14 +1,11 @@
 """Tests for the WebSocket fan-out tier.
 
 The manager's pure helpers were already reachable from the API tests, but its
-long-running pieces - the per-client sender loop and the Redis listener - were
-not, which is why the module sat at 26 percent. These drive those paths
-directly: a fake socket, a fake Redis, and a single iteration of each loop
-before cancellation.
+long-running piece - the per-client sender loop - was not. These drive it
+directly with a fake socket, plus the in-process and broker-relay fan-out.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
 
 import orjson
 import pytest
@@ -35,10 +32,8 @@ class FakeWebSocket:
 
 @pytest.fixture
 def manager():
-    """A manager with a mocked Redis, isolated from the module-level singleton."""
-    mgr = ConnectionManager()
-    mgr.redis = AsyncMock()
-    return mgr
+    """A manager isolated from the module-level singleton."""
+    return ConnectionManager()
 
 
 async def _settle():
@@ -174,170 +169,63 @@ async def test_fan_out_skips_a_client_with_no_queue(manager):
     manager.disconnect(ws)
 
 
-# ── Redis listener ──────────────────────────────────────────────────
-
-
-def _entry(msg_id: str, payload: dict):
-    """One XREAD entry as redis-py returns it with decode_responses on."""
-    return (msg_id, {"payload": orjson.dumps(payload).decode("utf-8")})
+# ── Broadcasting (websocket_backend=direct) ─────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_listener_decodes_a_payload_and_fans_it_out(manager):
+async def test_broadcast_fans_out_in_process(manager):
     ws = FakeWebSocket()
     await manager.connect(ws)
-
-    delivered = asyncio.Event()
-
-    async def fake_xread(*_args, **_kwargs):
-        if delivered.is_set():
-            await asyncio.sleep(0.05)
-            return []
-        delivered.set()
-        return [("telemetry_stream", [_entry("1-0", {"robot_id": 3, "battery": 55.0})])]
-
-    manager.redis.xread = fake_xread
-
-    task = asyncio.create_task(manager.listen_to_redis())
-    await asyncio.wait_for(delivered.wait(), timeout=2)
-    await _settle()
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    assert ws.sent == [{"robot_id": 3, "battery": 55.0}]
-    manager.disconnect(ws)
-
-
-@pytest.mark.asyncio
-async def test_listener_survives_an_undecodable_payload(manager):
-    """One corrupt frame must not kill the listener for every client."""
-    ws = FakeWebSocket()
-    await manager.connect(ws)
-
-    seen = asyncio.Event()
-
-    async def fake_xread(*_args, **_kwargs):
-        if seen.is_set():
-            await asyncio.sleep(0.05)
-            return []
-        seen.set()
-        return [
-            (
-                "telemetry_stream",
-                [("1-0", {"payload": "not-json{"}), _entry("1-1", {"robot_id": 9})],
-            )
-        ]
-
-    manager.redis.xread = fake_xread
-
-    task = asyncio.create_task(manager.listen_to_redis())
-    await asyncio.wait_for(seen.wait(), timeout=2)
-    await _settle()
-    assert task.done() is False  # still listening
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    # The good frame that followed the corrupt one still arrived.
-    assert ws.sent == [{"robot_id": 9}]
-    manager.disconnect(ws)
-
-
-@pytest.mark.asyncio
-async def test_listener_advances_the_cursor_past_delivered_ids(manager):
-    """Without this the listener re-reads the same entries forever."""
-    calls: list[dict] = []
-    second_read = asyncio.Event()
-
-    async def fake_xread(last_ids, *_args, **_kwargs):
-        calls.append(dict(last_ids))
-        if len(calls) == 1:
-            return [("telemetry_stream", [_entry("1700-5", {"robot_id": 1})])]
-        second_read.set()
-        await asyncio.sleep(0.05)
-        return []
-
-    manager.redis.xread = fake_xread
-
-    task = asyncio.create_task(manager.listen_to_redis())
-    await asyncio.wait_for(second_read.wait(), timeout=2)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    assert calls[0]["telemetry_stream"] == "$"  # only new entries on start
-    assert calls[1]["telemetry_stream"] == "1700-5"
-
-
-@pytest.mark.asyncio
-async def test_listener_backs_off_and_recovers_from_a_redis_outage(manager):
-    """A Redis blip must not terminate the listener."""
-    attempts = 0
-    recovered = asyncio.Event()
-
-    async def flaky_xread(*_args, **_kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise ConnectionError("redis is gone")
-        recovered.set()
-        await asyncio.sleep(0.05)
-        return []
-
-    manager.redis.xread = flaky_xread
-
-    task = asyncio.create_task(manager.listen_to_redis())
-    await asyncio.wait_for(recovered.wait(), timeout=5)
-    assert task.done() is False
-
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    assert attempts >= 2
-
-
-@pytest.mark.asyncio
-async def test_listener_exits_cleanly_on_cancellation(manager):
-    async def idle_xread(*_args, **_kwargs):
-        await asyncio.sleep(0.05)
-        return []
-
-    manager.redis.xread = idle_xread
-
-    task = asyncio.create_task(manager.listen_to_redis())
-    await asyncio.sleep(0.05)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-
-    # Swallowed internally rather than propagating as a CancelledError.
-    assert task.cancelled() or task.done()
-
-
-# ── Publishing ──────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_broadcast_publishes_to_the_named_stream(manager):
-    await manager.broadcast({"type": "EVENT", "message": "zone breach"}, stream="event_stream")
-
-    manager.redis.xadd.assert_awaited_once()
-    stream_arg = manager.redis.xadd.await_args.args[0]
-    assert stream_arg == "event_stream"
-
-
-@pytest.mark.asyncio
-async def test_broadcast_swallows_a_redis_failure(manager):
-    """Ingestion must not fail because the fan-out bus is down."""
-    manager.redis.xadd.side_effect = ConnectionError("redis down")
-
-    await manager.broadcast({"robot_id": 1})  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_broadcast_batch_pipelines_and_skips_empty(manager):
-    pipeline = AsyncMock()
-    pipeline.xadd = lambda *a, **k: None
-    manager.redis.pipeline = lambda: pipeline
-
-    await manager.broadcast_batch([])
-    pipeline.execute.assert_not_awaited()
-
+    await manager.broadcast({"type": "EVENT", "message": "zone breach"})
     await manager.broadcast_batch([{"robot_id": 1}, {"robot_id": 2}])
-    pipeline.execute.assert_awaited_once()
+    await manager.broadcast_batch([])
+    await _settle()
+    assert ws.sent == [
+        {"type": "EVENT", "message": "zone breach"},
+        {"robot_id": 1},
+        {"robot_id": 2},
+    ]
+    manager.disconnect(ws)
+
+
+# ── Relay through the broker (websocket_backend=mqtt) ───────────────
+
+
+@pytest.fixture
+def mqtt_mode(monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "websocket_backend", "mqtt")
+
+
+@pytest.mark.asyncio
+async def test_relay_sends_one_message_per_batch(manager, mqtt_mode):
+    sent = []
+    manager.relay = sent.append
+    await manager.broadcast_batch([{"robot_id": 1}, {"robot_id": 2}])
+    await manager.broadcast({"type": "EVENT"})
+    assert [orjson.loads(m) for m in sent] == [
+        [{"robot_id": 1}, {"robot_id": 2}],
+        [{"type": "EVENT"}],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relayed_messages_reach_local_sockets(manager):
+    ws = FakeWebSocket()
+    await manager.connect(ws)
+    manager.fan_out_relayed(orjson.dumps([{"robot_id": 1}, {"robot_id": 2}]))
+    manager.fan_out_relayed(b"not json")
+    await _settle()
+    assert ws.sent == [{"robot_id": 1}, {"robot_id": 2}]
+    manager.disconnect(ws)
+
+
+@pytest.mark.asyncio
+async def test_without_a_broker_connection_local_clients_still_get_updates(manager, mqtt_mode):
+    ws = FakeWebSocket()
+    await manager.connect(ws)
+    await manager.broadcast({"robot_id": 3})
+    await _settle()
+    assert ws.sent == [{"robot_id": 3}]
+    manager.disconnect(ws)

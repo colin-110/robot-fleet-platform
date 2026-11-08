@@ -2,47 +2,91 @@
 
 [← Back to README](../README.md)
 
-Robots send telemetry over HTTP. Every reading goes through one write path into
-TimescaleDB, and dashboards get updates over WebSocket. The planned move to
-MQTT is described in [ADR 0001](adr/0001-mqtt-and-timescale.md) and
+Robots talk to an MQTT broker; the API consumes from it, writes every reading
+through one function into TimescaleDB, and pushes commands back through the
+broker. Dashboards get updates over WebSocket. The design is in
+[ADR 0001](adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
 ```mermaid
 graph TB
-  subgraph Clients["Clients"]
-    SIM["Robot simulator<br/>(per-robot keys, outbox)"]
-    DASH["Dashboard<br/>(React + Leaflet)"]
+  subgraph Robots["Robots (one MQTT connection each)"]
+    SIM["Simulator / robot agent<br/>device key, persistent session,<br/>last will"]
   end
 
+  BROKER["Mosquitto + go-auth<br/>QoS 1 queues, retained presence"]
+
   subgraph API["FastAPI (one process)"]
-    ROUTES["Routes -> Services -> Repositories"]
+    AUTH["/internal/mqtt/*<br/>login + ACL callbacks"]
+    INGEST["Ingest consumer<br/>micro-batches, ack after commit"]
     PERSIST["persist()<br/>insert + roster + robot_state"]
+    CMDS["Command publisher"]
+    PRES["Presence (in memory)"]
     WS["WebSocket manager<br/>(bounded per-client queues)"]
     TIMEOUTS["Command timeout sweep"]
   end
 
-  subgraph Data["Data"]
-    PG["TimescaleDB<br/>telemetry hypertable, robot_state,<br/>robots, commands, events, users"]
-    REDIS["Redis streams<br/>(WebSocket fan-out only)"]
-  end
+  PG["TimescaleDB<br/>telemetry hypertable, robot_state,<br/>robots, commands, events, users"]
+  DASH["Dashboard<br/>(React + Leaflet)"]
 
-  SIM -->|"POST telemetry, claim commands"| ROUTES
-  ROUTES --> PERSIST --> PG
-  ROUTES -->|"XADD"| REDIS -->|"XREAD"| WS
+  SIM <-->|"MQTT"| BROKER
+  BROKER -->|"login / ACL checks"| AUTH
+  BROKER -->|"telemetry, events,<br/>command status, presence"| INGEST
+  INGEST --> PERSIST --> PG
+  INGEST --> PRES
+  CMDS -->|"fleet/&lt;id&gt;/commands"| BROKER
+  INGEST --> WS
   DASH <-->|"WebSocket"| WS
-  DASH -->|"REST"| ROUTES
+  DASH -->|"REST"| API
   TIMEOUTS --> PG
 ```
 
-## Request flow
+## Topics
 
-1. A robot `POST`s a batch of readings with its device key. The key must belong
-   to the robot each reading is for.
-2. `persist()` inserts the readings (skipping any already stored), registers the
-   robot and upserts its `robot_state`, all in one transaction.
-3. Only newly stored readings are published for WebSocket fan-out.
-4. The dashboard reads fleet status from `robot_state`: one row per robot,
-   whatever the size of the history.
+| Topic | Direction | Notes |
+| :--- | :--- | :--- |
+| `fleet/<id>/telemetry` | robot to server | One reading or a JSON array of them, QoS 1 |
+| `fleet/<id>/events` | robot to server | Must carry the device timestamp |
+| `fleet/<id>/commands/status` | robot to server | `{"id", "status", ...}`, same state machine as the HTTP `PATCH` |
+| `fleet/<id>/presence` | robot to server | Retained `online`; the last will is a retained `offline` |
+| `fleet/<id>/commands` | server to robot | Pushed with QoS 1 into the robot's persistent session |
+| `fleetops/live` | server to server | Dashboard updates relayed between API processes (`WEBSOCKET_BACKEND=mqtt`) |
+
+A robot may only publish its own uplink topics and subscribe to its own
+commands. The broker replaces every client id with the username, so a robot
+cannot connect as another robot's client id and take over its session.
+
+## Message flow
+
+1. A robot publishes readings with QoS 1. The broker queues them in the API's
+   persistent session.
+2. The consumer collects up to 200 messages or 250 ms, then `persist()` inserts
+   the readings (skipping any already stored), registers the robot and upserts
+   its `robot_state`, all in one transaction.
+3. Only after the commit are the messages acknowledged. If the API dies first,
+   the broker delivers them again and the duplicate insert is skipped.
+4. Only newly stored readings are broadcast to dashboards.
+5. When a robot's connection drops, the broker publishes its last will and the
+   robot is shown offline within a second.
+6. A new command is published to the robot. The broker's acknowledgement moves
+   it to `DISPATCHED`; if the robot has never subscribed, the command waits as
+   `PENDING` and is pushed again when the robot comes online.
+
+The HTTP endpoints (`POST /telemetry`, `/events`, command claim and status)
+remain as a thin adapter onto the same functions, for simple clients and tests.
+
+## Measured durability
+
+A chaos test runs 20 robots at 10 readings per second each and `kill -9`s the
+API or the broker mid-stream. In five runs, every reading was stored exactly
+once (for example 7,640 sent, 7,640 stored, 7,640 distinct). The first run
+against the broker lost 18%: Mosquitto does not restore shared subscriptions
+after a restart, so ingest now uses plain persistent subscriptions.
+
+What is not covered yet: if the robot itself crashes, readings in its MQTT
+client's memory are lost (the on-disk outbox in ADR 0002, step 3, fixes this),
+and a crash of the whole host can lose what the broker accepted in its last
+autosave interval (5 seconds) before delivering it.
 
 ---
 
@@ -58,11 +102,13 @@ disagree.
 
 **Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. Future-dated readings beyond a configurable skew are clamped, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
 
-**Idempotent writes.** A reading is identified by its robot and device timestamp, so the timestamp is required and `(robot_id, timestamp)` is the primary key. Inserts use `ON CONFLICT DO NOTHING`, so a retried upload cannot create duplicate rows, and only newly stored readings are broadcast.
+**Idempotent writes.** A reading is identified by its robot and device timestamp, so the timestamp is required and `(robot_id, timestamp)` is the primary key. Events are unique by robot, time and message. Inserts use `ON CONFLICT DO NOTHING`, so a redelivered message cannot create duplicate rows, and only newly stored rows are broadcast.
 
-**Retries are safe.** A successful response means the readings are committed. The simulator keeps each reading in an outbox until a POST containing it succeeds and retries failed uploads with backoff; because writes are idempotent, a retry never creates duplicates. The dashboard ignores a reading older than what it already shows, so a late retry does not move a robot backwards.
+**Acknowledged only after commit.** The broker is the queue: QoS 1 on persistent sessions, and the consumer acknowledges a message only once its batch is committed. A failed write is retried without acknowledging, so the broker keeps queueing; a malformed message is acknowledged and dropped so it is not redelivered forever. Acks for a connection that has since been replaced are skipped, because a packet id only means something on the connection that delivered it. The dashboard ignores a reading older than what it already shows, so a late redelivery does not move a robot backwards.
 
-**Idempotent command dispatch with compare-and-set transitions.** Commands move through an explicit state machine (`PENDING` to `DISPATCHED` to `ACKNOWLEDGED` to `EXECUTING` to `COMPLETED`). Both claiming a command and advancing its status are performed as a single conditional `UPDATE ... WHERE status = :expected`, so when two pollers or two status updates race, exactly one matches a row and the loser receives a `409`. Doing the validation in application code and writing afterwards would allow both writers to observe the same state and both commit. Expired commands are swept to `TIMEOUT` by the API, with a Postgres advisory lock so several processes do not scan at once.
+**Presence from the last will.** Each robot registers a retained `offline` will and publishes a retained `online` on connect, so a fresh subscription receives every robot's presence with no query. Both carry a connection id: when a robot reconnects before the broker notices its old connection died, the old will can arrive after the new `online`, and is ignored. Presence and readings are applied in arrival order, since a robot's last reading and its will often share a batch.
+
+**Pushed commands with compare-and-set transitions.** Commands move through an explicit state machine (`PENDING` to `DISPATCHED` to `ACKNOWLEDGED` to `EXECUTING` to `COMPLETED`). Dispatching a command and advancing its status are each a single conditional `UPDATE ... WHERE status = :expected`, so when two writers race, exactly one matches a row and the loser receives a `409`. A command is dispatched when the broker acknowledges it into the robot's session; a robot may acknowledge straight from `PENDING`, since the push can reach it before the server processes that acknowledgement. Doing the validation in application code and writing afterwards would allow both writers to observe the same state and both commit. Expired commands are swept to `TIMEOUT` by the API, with a Postgres advisory lock so several processes do not scan at once.
 
 ---
 
@@ -73,7 +119,8 @@ disagree.
 | [`backend/`](../backend) | FastAPI application (routes, services, repositories), SQLAlchemy async models and Alembic migrations. |
 | [`backend/tests/`](../backend/tests) | Pytest suite running against real TimescaleDB. |
 | [`frontend/robot-fleet-dashboard/`](../frontend/robot-fleet-dashboard) | React 19 and Vite dashboard (Leaflet map, Recharts, WebSocket hooks), served by nginx. |
-| [`simulator/`](../simulator) | Async Python simulator with physics-based robot agents. |
+| [`simulator/`](../simulator) | Async Python simulator with physics-based robot agents, one MQTT connection per robot. |
+| [`mosquitto/`](../mosquitto) | Broker configuration (go-auth against the API, persistence, queues). |
 | [`scripts/`](../scripts) | EC2 provisioning and the CI deploy role. |
 | [`docs/`](.) | Architecture, operations, and design decisions ([`adr/`](adr)). |
 | [`.github/workflows/`](../.github/workflows) | CI/CD pipeline. |

@@ -3,7 +3,7 @@ services:
   backend:
     build: ./backend
     image: robot-fleet-platform-backend:latest
-    command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --no-access-log" ]
+    command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --no-access-log" ]
     ports:
       - "8000:8000"
     env_file:
@@ -11,12 +11,15 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       - PYTHONPATH=.
+      # One process: it owns the broker session that ingest runs on.
+      - MQTT_ENABLED=true
+      - MQTT_HOST=mqtt
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      mqtt:
+        condition: service_started
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
@@ -41,7 +44,7 @@ services:
     # No --api-key: a command-line secret is visible in `ps aux` and
     # `docker inspect`. The simulator reads TELEMETRY_API_KEY from the
     # environment, which env_file already provides.
-    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "4", "--robots", "40", "--device-keys" ]
+    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "40", "--mqtt-host", "mqtt" ]
     env_file:
       - ./backend/.env
     restart: unless-stopped
@@ -68,20 +71,23 @@ services:
     networks:
       - fleet_net
 
-  redis:
-    image: redis:7-alpine
-    command: redis-server --save "" --appendonly no
+  mqtt:
+    # Mosquitto with mosquitto-go-auth: robots log in with their device keys,
+    # and every login and ACL decision is delegated to the API.
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    ports:
+      - "1883:1883"
     restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      # Owned by the broker's user in the image, so a new volume is writable.
+      - mosquitto_data:/var/lib/mosquitto
     networks:
       - fleet_net
 
 volumes:
   timescale_data:
+  mosquitto_data:
 
 networks:
   fleet_net:

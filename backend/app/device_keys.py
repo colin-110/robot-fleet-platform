@@ -39,7 +39,7 @@ settings = get_settings()
 PREFIX = "rk"
 
 # Minimum seconds between database checks for the same robot. Only used when
-# several instances share the database (websocket_backend=redis).
+# several instances share the database (websocket_backend=mqtt).
 RECHECK_INTERVAL_SECONDS = 30.0
 
 _hashes: dict[int, str] = {}
@@ -82,7 +82,7 @@ async def verify(candidate: str | None) -> int | None:
     # A single instance updates its own cache on every issue and revoke, so
     # the cache is authoritative. With several instances, another one may have
     # issued this key since our last refresh.
-    if settings.websocket_backend == "redis" and _may_recheck(robot_id):
+    if settings.websocket_backend == "mqtt" and _may_recheck(robot_id):
         current = await _fetch_hash(robot_id)
         set_hash(robot_id, current)
         if _matches(current, digest):
@@ -99,6 +99,11 @@ def set_hash(robot_id: int, key_hash: str | None) -> None:
         _hashes[robot_id] = key_hash
     else:
         _hashes.pop(robot_id, None)
+
+
+def has_key(robot_id: int) -> bool:
+    """Whether the robot currently holds a key (it has not been revoked)."""
+    return robot_id in _hashes
 
 
 def reset() -> None:

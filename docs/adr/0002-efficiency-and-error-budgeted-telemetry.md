@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build step 1 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 and 2 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -172,7 +172,22 @@ Each step ships with tests and a measurement, and is committed separately.
 - **A wrong motion model.** It only costs bandwidth: the error bound still
   holds, because the robot sends as soon as reality diverges.
 - **Lost keyframes.** QoS 1 plus the on-disk outbox; a per-robot sequence
-  number exposes any gap.
+  number exposes any gap. Measured in step 2: with `kill -9` of the API or the
+  broker mid-stream, every reading was stored exactly once (five runs, 20
+  robots at 10 readings per second). Two gaps remain for step 3: a robot crash
+  loses what its MQTT client held in memory, and a host crash can lose what the
+  broker accepted within its 5-second autosave interval but had not delivered.
+  The fix for both is end to end: the robot keeps readings on disk until the
+  server reports them stored (a per-robot stored-up-to watermark), not merely
+  until the broker's PUBACK.
+- **A robot clock far in the future.** Readings more than 300 seconds ahead
+  are clamped to the receive time, so several from one batch collapse onto one
+  timestamp and all but one are dropped as duplicates. Step 3 should shift
+  such a robot's readings by its measured offset instead of clamping each one.
+- **A robot running twice.** Two processes with the same device key share one
+  client id, so each connection takes over the other's in a loop. The broker
+  log shows it; the API should detect repeated takeovers and raise an alarm
+  (step 5).
 - **Unbounded rates from a misbehaving robot.** The broker enforces per-client
   rate limits; the allocator's tolerances are a request, not a guarantee.
 - **512 MB is tight.** Step 9 measures it before deployment commits to it;

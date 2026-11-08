@@ -30,7 +30,3 @@ services:
   db:
     ports:
       - "5432:5432"  # Expose DB for local tools (pgAdmin, DBeaver, etc.)
-
-  redis:
-    ports:
-      - "6379:6379"  # Expose Redis for local debugging

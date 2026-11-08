@@ -15,8 +15,12 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
-| `TELEMETRY_API_KEY` | *required* | Master key for the `X-API-Key` header (ingest, robot-facing command polling) and the signing key that console tickets are derived from |
+| `TELEMETRY_API_KEY` | *required* | Master key: the API's broker password, accepted on robot HTTP endpoints while `ALLOW_SHARED_INGEST_KEY` is on, and the signing key that console tickets are derived from |
+| `MQTT_ENABLED` | `false` (`true` in Compose) | Run the ingest consumer and command publisher in the API |
+| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker address |
+| `MQTT_SERVICE_USERNAME` | `fleetops` | The API's broker account (it and `fleetops-<name>` are the only superusers) |
+| `MQTT_BATCH_SIZE` / `MQTT_BATCH_WAIT_MS` | `200` / `250` | A batch is written when it reaches this size or age |
+| `MQTT_INGEST_GROUP` | unset | Use shared subscriptions in this group, for several API processes. Mosquitto does not restore shared subscriptions after a restart, so leave unset unless you need it |
 | `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
 | `ALLOW_SHARED_INGEST_KEY` | `true` | Whether the master key still works on robot endpoints. Set `false` once every robot has a device key |
 | `DEVICE_KEY_REFRESH_SECONDS` | `60` | How often each instance reloads device keys (multi-instance only), which bounds how long a revoked key keeps working on other instances |
@@ -33,15 +37,17 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
 | `MAX_CLOCK_SKEW_SECONDS` | `300` | Future-dated device timestamps beyond this are clamped to server time |
-| `TELEMETRY_STREAM_MAXLEN` | `1000` | Entries kept in the Redis streams used for live WebSocket fan-out |
 | `LOG_FORMAT` | `text` (`json` in production) | `json` emits one object per line with the request id and structured fields, for a log aggregator |
 | `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/health/live` are excluded so health polls do not bury real traffic |
-| `WEBSOCKET_BACKEND` | `redis` | `direct` fans out in-process - correct for exactly one API instance, and saves Redis commands |
-| `RATE_LIMIT_BACKEND` | `redis` | `memory` keeps the sliding window in-process - same one-instance reasoning |
+| `WEBSOCKET_BACKEND` | `direct` | `direct` fans out in-process (one API process). `mqtt` relays every update through the broker so several processes all see everything |
+
+The API runs as **one process**. The broker replaces each client id with the username, so two processes logging in as the service account would keep disconnecting each other.
 
 ---
 
 ## Deployment
+
+> This section describes the deployment that is live today, which still runs the version before the MQTT redesign. Step 10 of ADR 0002 replaces it with a single small instance running the Compose stack.
 
 Production is one free-tier EC2 instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): just the backend and the simulator. Everything else is a managed free tier - **Neon** (Postgres), **Upstash** (Redis), **Vercel** (the static frontend build). nginx and Let's Encrypt run directly on the host, not in Compose, and proxy HTTPS to the backend on `127.0.0.1:8000`.
 
@@ -88,7 +94,7 @@ Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env`
 
 On every push and pull request to `main`:
 
-1. **`backend-test`** - `ruff check` across `backend/` and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against real PostgreSQL and Redis service containers.
+1. **`backend-test`** - `ruff check` across `backend/` and `simulator/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against a real TimescaleDB service container and an anonymous Mosquitto broker for the MQTT integration tests.
 2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
 3. **`publish-images`** - builds and pushes the `backend` and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance. The frontend is deployed by Vercel, not from an image.
 4. **`deploy-aws`** - gated SSM-based rollout, opt-in via a repository variable. The AWS identity it assumes is created by [`scripts/setup_oidc_role.ps1`](../scripts/setup_oidc_role.ps1): a GitHub OIDC provider and a role trusted only by this repository on `main`, so the pipeline holds no long-lived key. Its one permission is `ssm:SendCommand`, conditioned on `ssm:resourceTag/role = fleet-app` - without that condition the role could run shell on every instance in the account. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget, so without this a deploy that ran nowhere would still report success. The host is reset to the deployed SHA rather than to `origin/main`, then runs `docker-compose.ec2.yml`, so the compose file on the box comes from the same commit as the images `IMAGE_TAG` pins.
@@ -112,7 +118,7 @@ Each request also produces a structured access line (`http_method`, `http_path`,
 There is no metrics stack. The signals that exist are:
 
 - `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
-- `GET /health` - checks the database. Use it by hand; Docker polls `/health/live`.
+- `GET /health` - checks the database and reports the broker connection (`mqtt`: `connected`, `disconnected` or `disabled`); status is `degraded` if either is down. Use it by hand; Docker polls `/health/live`.
 - Structured logs (above).
 
 Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
@@ -126,12 +132,13 @@ Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
 | Operator identity | `AUTH_MODE=required` puts every console action behind a bcrypt-verified sign-in and an HS256 JWT carrying a signed role. Three roles, ranked: `viewer` reads, `operator` dispatches commands, `admin` covers both. Production defaults to required; the public demo sets `open` explicitly, which resolves every caller to an anonymous operator through the *same* dependency rather than skipping it - so the authenticated path is one code path, not a branch nobody runs. Login returns one message and one timing profile for both "no such user" and "wrong password", so it cannot enumerate accounts. |
 | Browser credentials | The dashboard is never built with the master key. It requests a short-lived console ticket at runtime (`POST /api/v1/auth/ticket`) - HMAC-signed over its own scope and expiry, so a holder can neither widen its permissions nor extend its life. Ingest still requires the master key, which now stays server-side, so reading the bundle no longer yields a credential that can forge telemetry for the fleet. Rotating the API key revokes every outstanding ticket, since the signing key is derived from it. |
 | Robot credentials | Each robot can have its own device key, `rk_<robot>_<random>`, issued with `POST /api/v1/robots/{id}/key` (master key or an admin account) and revoked with `DELETE` on the same path. A device key can only send telemetry and events for its own robot and only claim or update that robot's commands; anything else is a 403. Keys are random and only their SHA-256 hash is stored, so a revoked key can never become valid again, a database leak exposes no usable keys, and rotating the master key leaves device keys alone. Hashes are cached in memory, so checking a key does no database work. |
+| Broker | Mosquitto with mosquitto-go-auth, which delegates every login and ACL decision to the API (`/internal/mqtt/*`) and caches them for 60 seconds. Robots log in as `robot-<id>` with their device key; a robot may publish only its own uplink topics and subscribe only to its own commands, and no wildcard is ever granted. `use_username_as_clientid` stops a robot from connecting under another robot's client id, which would take over that session and its queued commands. After a key is revoked the robot can no longer log in, and a connection it already holds loses its topics once the cached ACL results expire. |
 | API key comparison | `secrets.compare_digest`. A plain `!=` short-circuits at the first differing byte, leaking key prefixes through response timing. |
 | Secret defaults | None. `TELEMETRY_API_KEY` has no fallback value; the application fails at startup if it is missing. |
 | Production guards | `APP_ENV=production` rejects wildcard CORS origins and API keys shorter than 16 characters at configuration load. |
 | CORS | Credentials are dropped automatically when the origin list is a wildcard, since the specification forbids that combination and browsers reject the response. |
 | Client IP resolution | The rate limiter reads `X-Forwarded-For` using a configured trusted-proxy count, taking the Nth entry from the right. Trusting the leftmost entry would let a client spoof its own address; trusting the socket peer would collapse the entire fleet into one bucket behind a proxy. |
-| Rate limiting | Redis sorted-set sliding window on ingest endpoints. Fails open, so a Redis outage degrades rate limiting rather than halting ingestion. |
+| Rate limiting | In-process sliding window per client IP on the HTTP ingest and console endpoints, exact for one process. Idle clients are pruned once 10,000 are tracked. The broker has no per-client rate limit yet. |
 | State transitions | Atomic compare-and-set `UPDATE` statements, so concurrent writers cannot both commit a transition. |
 | Read endpoints | Fleet status, analytics, and events are public by default so the hosted demo works without shipping a key to every browser. This is a setting (`REQUIRE_AUTH_FOR_READS`), not a hardcoded exemption; it is the wrong default for real fleet positions. |
 | Secret hygiene | `.env`, `*.pem`, `*.key`, and `*.tfvars` are gitignored |
@@ -142,10 +149,10 @@ Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
 
 In priority order, if this needed to handle a genuinely large fleet:
 
-1. **Scale the API horizontally.** The tier is already stateless. Place it behind an ALB in an Auto Scaling Group; every instance drains the same shared Redis stream, so ingest and fan-out capacity grow close to linearly with node count. This is the single largest win and the code supports it today.
+1. **Scale the API horizontally.** Give each process its own service username, set `WEBSOCKET_BACKEND=mqtt` so dashboard updates reach every process, and split ingest with `MQTT_INGEST_GROUP`, after solving shared subscriptions not surviving a broker restart (for example by having each process own a fixed range of robots with plain subscriptions).
 2. **Telemetry storage (done).** `telemetry` is a TimescaleDB hypertable with one-day chunks, compression after a day (segmented by robot) and a 30-day retention policy that drops whole chunks. See ADR 0001.
-3. **Replace Redis Streams with Kafka** if throughput reaches millions of messages per second, or if multiple independent consumer groups and long replay windows become necessary.
+3. **A clustered broker** (EMQX or a Mosquitto bridge pair) once one broker is a single point of failure that matters, or Kafka behind it if long replay windows become necessary.
 4. **Multi-tenancy.** Per-fleet isolation, OIDC for operators, and per-key rate limiting.
-5. **Managed high-availability data tier.** Multi-AZ RDS with read replicas and PgBouncer for the read path, plus a clustered or replicated Redis.
+5. **Managed high-availability data tier.** Multi-AZ Postgres with read replicas and PgBouncer for the read path.
 6. **Dedicated realtime gateway.** Move WebSocket fan-out to its own horizontally scaled tier so it scales independently of the ingest API.
 7. **Observability.** Metrics (Prometheus or a hosted equivalent), alerting, and distributed tracing (OpenTelemetry) across the ingest and database path.

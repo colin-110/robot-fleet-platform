@@ -38,6 +38,15 @@ class CommandRepository:
 
     # ── Atomic Dispatch ─────────────────────────────────────────────
 
+    async def list_pending(self, robot_id: int) -> list[RobotCommand]:
+        """PENDING commands for a robot, oldest first."""
+        stmt = (
+            select(RobotCommand)
+            .where(RobotCommand.robot_id == robot_id, RobotCommand.status == "PENDING")
+            .order_by(RobotCommand.created_at)
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
     async def try_dispatch(self, command_id: str, now: datetime | None = None) -> bool:
         """
         Atomically update a PENDING command to DISPATCHED.

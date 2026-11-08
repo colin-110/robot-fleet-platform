@@ -12,8 +12,10 @@ from sqlalchemy.future import select
 from app.auth import FleetCaller, verify_fleet_key, verify_read_access
 from app.database import get_db
 from app.models import Event
+from app.repositories.event_repo import insert_events
 from app.schemas import EventCreate, EventResponse
-from app.websocket_manager import manager
+from app.services.event_service import broadcast_events
+from app.services.telemetry_service import resolve_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -26,27 +28,15 @@ async def create_event(
     db: AsyncSession = Depends(get_db),
     caller: FleetCaller = Depends(verify_fleet_key),
 ):
-    """Ingest a generic event from a robot, persist it, and broadcast it."""
+    """Store an event from a robot and broadcast it. Resending it is harmless."""
     caller.ensure_robot(event.robot_id)
-    new_event = Event(
-        robot_id=event.robot_id, message=event.message, timestamp=datetime.now(timezone.utc)
-    )
-    db.add(new_event)
+    ts = resolve_timestamp(event.timestamp, datetime.now(timezone.utc))
+    inserted = await insert_events(db, [(event, ts)])
     await db.commit()
-    await db.refresh(new_event)
-
-    payload = {
-        "type": "EVENT",
-        "robot_id": new_event.robot_id,
-        "message": new_event.message,
-        "timestamp": new_event.timestamp.isoformat().replace("+00:00", "Z")
-        if new_event.timestamp
-        else None,
-    }
-    # Events get their own stream so a burst of telemetry cannot push them
-    # out of the capped telemetry stream before listeners read them.
-    await manager.broadcast(payload, stream=manager.event_stream)
-    return {"message": "Event logged", "id": new_event.id}
+    if not inserted:
+        return {"message": "Event already received"}
+    await broadcast_events(inserted)
+    return {"message": "Event logged", "id": inserted[0].id}
 
 
 @router.get("/events", response_model=list[EventResponse])

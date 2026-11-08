@@ -4,7 +4,8 @@ FleetOps - FastAPI application entry point.
 Features:
   - Versioned API routes under /api/v1/
   - WebSocket endpoint for real-time telemetry
-  - Health check endpoint (reports active optimization flags)
+  - MQTT ingest consumer (when MQTT_ENABLED is on)
+  - Health check endpoint
   - Structured logging
   - Rate limiting and request tracing middleware
   - CORS configuration from environment
@@ -26,11 +27,14 @@ from app.config import get_settings
 from app.database import engine
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, RequestIDMiddleware
+from app.mqtt import commands as mqtt_commands
+from app.mqtt.ingest import IngestConsumer, relay_publisher
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
+from app.routes.mqtt_auth import router as mqtt_auth_router
 from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
@@ -71,22 +75,35 @@ async def lifespan(app: FastAPI):
     # instances need a periodic reload so a revocation reaches all of them.
     key_refresh_task = (
         asyncio.create_task(device_keys.refresh_loop(settings.device_key_refresh_seconds))
-        if settings.websocket_backend == "redis"
+        if settings.websocket_backend == "mqtt"
         else None
     )
 
-    # Nothing to consume in direct mode: broadcast() already fanned out
-    # in-process, so a Redis listener here would just poll an empty stream.
-    if settings.websocket_backend == "redis":
-        manager._listener_task = asyncio.create_task(manager.listen_to_redis())
-
     timeout_task = asyncio.create_task(timeout_loop())
+
+    # One consumer per process. The broker pins each client id to its
+    # username, so this process must be the only one logging in as
+    # MQTT_SERVICE_USERNAME: run a single worker.
+    app.state.mqtt = IngestConsumer() if settings.mqtt_enabled else None
+    mqtt_task = None
+    if app.state.mqtt:
+        # Commands go out on the same connection.
+        mqtt_commands.publisher = mqtt_commands.CommandPublisher(app.state.mqtt.client)
+        app.state.mqtt.on_robot_online.append(mqtt_commands.publisher.push_pending_soon)
+        if settings.websocket_backend == "mqtt":
+            manager.relay = relay_publisher(app.state.mqtt.client)
+        mqtt_task = asyncio.create_task(app.state.mqtt.run())
 
     yield
 
+    # Anything consumed but not yet committed is unacknowledged, so the broker
+    # delivers it again after the restart.
+    if mqtt_task:
+        mqtt_commands.publisher = None
+        manager.relay = None
+        mqtt_task.cancel()
+        await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()
-    if manager._listener_task:
-        manager._listener_task.cancel()
     if key_refresh_task:
         key_refresh_task.cancel()
 
@@ -133,6 +150,7 @@ app.include_router(robots_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
 app.include_router(auth_router)
+app.include_router(mqtt_auth_router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["root"])
@@ -170,9 +188,17 @@ async def health_check():
         db_status = "unhealthy"
         logger.exception("Health check: database connection failed")
 
+    consumer = getattr(app.state, "mqtt", None)
+    if consumer is None:
+        mqtt_status = "disabled"
+    else:
+        mqtt_status = "connected" if consumer.connected.is_set() else "disconnected"
+
+    healthy = db_status == "healthy" and mqtt_status != "disconnected"
     return HealthResponse(
-        status="ok" if db_status == "healthy" else "degraded",
+        status="ok" if healthy else "degraded",
         database=db_status,
+        mqtt=mqtt_status,
     )
 
 
