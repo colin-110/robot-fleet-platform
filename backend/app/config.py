@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # The API's own broker account. It logs in with the master key and is a
     # superuser; robots log in as robot-<id> with their device key.
     mqtt_service_username: str = "fleetops"
+    mqtt_host: str = "localhost"
+    mqtt_port: int = 1883
+    # Shared-subscription group for the ingest consumer. Several API processes
+    # in the same group split the robots' messages between them.
+    mqtt_ingest_group: str = "ingest"
+    # A batch is written when it reaches this many messages or this age.
+    mqtt_batch_size: int = 200
+    mqtt_batch_wait_ms: int = 250
 
     # ── Realtime fan-out ────────────────────────────────────────────
     # "redis" relays broadcasts through a Redis Stream so every API instance

@@ -85,6 +85,25 @@ def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
     }
 
 
+async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[Telemetry]:
+    """Store readings in one transaction and commit. The one write path.
+
+    Returns the rows actually inserted; readings already stored are skipped,
+    so a redelivered or retried reading is harmless.
+    """
+    received_at = datetime.now(timezone.utc)
+    # Resolved per reading: stamping a whole batch with one time would
+    # collapse readings taken seconds apart onto a single instant.
+    rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
+    inserted = await persist(db, rows)
+    await db.commit()
+    return inserted
+
+
+def broadcast_payloads(rows: list[Telemetry]) -> list[dict]:
+    return [_telemetry_to_broadcast_dict(t) for t in rows]
+
+
 class TelemetryService:
     """Handles telemetry ingestion, broadcast, and retrieval."""
 
@@ -109,20 +128,10 @@ class TelemetryService:
     async def _ingest(
         self, data: list[TelemetryCreate], background_tasks: BackgroundTasks | None
     ) -> list[Telemetry]:
-        """Store readings in one transaction and broadcast the new ones.
-
-        Returns the rows actually inserted; readings already stored are skipped.
-        """
-        received_at = datetime.now(timezone.utc)
-        # Resolved per reading: stamping a whole batch with one time would
-        # collapse readings taken seconds apart onto a single instant.
-        rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
-
-        inserted = await persist(self.repo.db, rows)
-        await self.repo.db.commit()
-
+        """Store readings and broadcast the new ones."""
+        inserted = await store_readings(self.repo.db, data)
         # Only new rows are broadcast, so a retried upload is not shown twice.
-        await self._broadcast([_telemetry_to_broadcast_dict(t) for t in inserted], background_tasks)
+        await self._broadcast(broadcast_payloads(inserted), background_tasks)
         return inserted
 
     @staticmethod
