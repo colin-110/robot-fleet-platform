@@ -270,6 +270,23 @@ async def test_a_bad_item_does_not_sink_its_envelope(consumer, broadcasts):
     assert consumer.client.acked == [1]
 
 
+@pytest.mark.parametrize(
+    "overrides", [{"status": "X" * 33}, {"mission_id": "M" * 65}, {"mission_type": "P" * 33}]
+)
+async def test_a_value_too_long_for_its_column_is_rejected_alone(consumer, broadcasts, overrides):
+    # Left to the database it would fail the whole batch on every retry.
+    items = [agent_reading(0), agent_reading(1, **overrides)]
+    await asyncio.wait_for(consumer.process([env_delivery(3, "telemetry", items, 1)]), 10)
+    assert await stored_count() == 1
+    assert consumer.stats["rejected"] == 1
+
+
+async def test_an_overlong_command_status_is_rejected(consumer, broadcasts):
+    report = {"id": "c-1", "status": "FAILED", "error_message": "e" * 256}
+    await asyncio.wait_for(consumer.process([env_delivery(3, "commands/status", [report], 1)]), 10)
+    assert consumer.stats["rejected"] == 1
+
+
 async def test_a_malformed_envelope_is_dropped(consumer, broadcasts):
     bad = Delivery(3, "telemetry", b"\xff\x00", 1, 1, 1, wire.CONTENT_TYPE)
     await consumer.process([bad])
