@@ -26,6 +26,7 @@ from app import device_keys, presence
 from app.auth import FleetCaller, verify_api_key, verify_console_access, verify_fleet_key
 from app.config import get_settings
 from app.database import Base, get_db
+from app.intelligence import fleet
 from app.main import app
 
 # ── Resolve the Postgres test database ──────────────────────────────
@@ -111,6 +112,8 @@ def quiet_broadcasts(monkeypatch):
 
     monkeypatch.setattr(manager, "broadcast", drop)
     reset_rate_limits()
+    # The in-memory fleet model is per process; each test starts without one.
+    fleet.reset()
 
 
 @pytest_asyncio.fixture

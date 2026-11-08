@@ -70,3 +70,18 @@ def test_traffic_repairs_a_wrong_offline():
 def test_traffic_from_an_unknown_robot_is_not_news():
     assert presence.saw_traffic(9) is False
     assert presence.get(9).online
+
+
+def test_connections_are_counted_to_spot_a_robot_running_twice():
+    from datetime import datetime, timedelta, timezone
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Two processes taking over each other's session: online, online, online...
+    for i in range(6):
+        presence.apply(77, True, f"conn-{i % 2}-{i}", now=t0 + timedelta(seconds=5 * i))
+    assert presence.connections_within(77, 60, now=t0 + timedelta(seconds=30)) == 6
+    assert presence.connections_within(77, 60, now=t0 + timedelta(seconds=120)) == 0
+    # The same connection announcing itself again is not a new connection.
+    presence.apply(78, True, "a", now=t0)
+    presence.apply(78, True, "a", now=t0)
+    assert presence.connections_within(78, 60, now=t0) == 1

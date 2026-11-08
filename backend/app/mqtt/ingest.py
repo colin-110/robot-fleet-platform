@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from app import presence
 from app.config import get_settings
 from app.database import AsyncSessionLocal
+from app.intelligence import fleet
 from app.mqtt import topics, wire
 from app.repositories.config_repo import set_reported
 from app.repositories.event_repo import insert_events
@@ -548,6 +549,7 @@ class IngestConsumer:
                         db, [(e, resolve_timestamp(e.timestamp, now)) for e in decoded.events]
                     )
                     await db.commit()
+                    fleet.observe(readings)
                     return readings, events
             except asyncio.CancelledError:
                 raise

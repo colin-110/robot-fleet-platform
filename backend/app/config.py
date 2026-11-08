@@ -140,6 +140,16 @@ class Settings(BaseSettings):
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
 
+    # ── Alarms ──────────────────────────────────────────────────────
+    # How often every robot is checked against the alarm rules (in memory).
+    alarm_interval_seconds: float = 2.0
+    # POST every alarm change here, signed with the secret (app/alarms/webhook.py).
+    alarm_webhook_url: str | None = None
+    alarm_webhook_secret: str | None = None
+    # POST every alarm change here, signed with the secret (app/alarms/webhook.py).
+    alarm_webhook_url: str | None = None
+    alarm_webhook_secret: str | None = None
+
     # ── Access control ──────────────────────────────────────────────
 
     # Whether the read-only endpoints (fleet status, analytics, events) require
