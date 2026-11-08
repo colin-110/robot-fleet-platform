@@ -45,6 +45,7 @@ from collections.abc import Callable
 import paho.mqtt.client as mqtt
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
 from fleetops_agent import predict, wire
 from fleetops_agent.outbox import Outbox
@@ -125,6 +126,7 @@ class Agent:
 
         self._lock = threading.Lock()
         self._connected = False
+        self._link_down = False  # drop_link() in force
         self._stored = 0  # the server's watermark for this outbox's stream
         self._sent_upto = 0  # highest number handed to the broker
         self._last_progress = time.monotonic()
@@ -253,7 +255,7 @@ class Agent:
 
     # ── lifecycle ───────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def _connect(self) -> None:
         props = Properties(PacketTypes.CONNECT)
         props.SessionExpiryInterval = SESSION_EXPIRY_SECONDS
         # clean_start=False on the first connection too, or the commands
@@ -262,10 +264,40 @@ class Agent:
             self.host, self.port, keepalive=self.keepalive, clean_start=False, properties=props
         )
         self.client.loop_start()
+
+    def start(self) -> None:
+        self._connect()
         self._sender = threading.Thread(
             target=self._send_loop, name=f"agent-{self.robot_id}", daemon=True
         )
         self._sender.start()
+
+    def drop_link(self) -> None:
+        """Lose the network, as the broker sees it: the connection ends and
+        the broker publishes the last will, so the robot shows offline. The
+        robot keeps working; whatever it sends meanwhile waits in the outbox
+        and goes out after ``restore_link``. For simulators and tests.
+        """
+        with self._lock:
+            if self._link_down:
+                return
+            self._link_down = True
+        self.client.disconnect(
+            reasoncode=ReasonCode(PacketTypes.DISCONNECT, "Disconnect with will message")
+        )
+        self.client.loop_stop()
+
+    def restore_link(self) -> None:
+        """Reconnect after ``drop_link``."""
+        with self._lock:
+            if not self._link_down:
+                return
+            self._link_down = False
+        self._connect()
+
+    @property
+    def link_down(self) -> bool:
+        return self._link_down
 
     def stop(self, timeout: float = 5.0) -> None:
         """Say offline and disconnect. Unconfirmed items stay in the outbox."""
