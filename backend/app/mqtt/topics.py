@@ -9,6 +9,8 @@ Every robot owns the topics under ``fleet/<robot_id>/``::
                       fleet/<id>/config/reported   the config the robot applied
     server -> robot   fleet/<id>/commands          commands to run
                       fleet/<id>/config            desired config (retained)
+                      fleet/<id>/stored            how far the robot's outbox is
+                                                   committed (retained)
 
 A robot may publish only to its own robot -> server topics and subscribe only
 to its own server -> robot topics. Wildcards are never granted to robots, so a
@@ -29,9 +31,10 @@ COMMAND_STATUS = "commands/status"
 CONFIG_REPORTED = "config/reported"
 COMMANDS = "commands"
 CONFIG = "config"
+STORED = "stored"
 
 ROBOT_PUBLISHES = frozenset({TELEMETRY, EVENTS, PRESENCE, COMMAND_STATUS, CONFIG_REPORTED})
-ROBOT_RECEIVES = frozenset({COMMANDS, CONFIG})
+ROBOT_RECEIVES = frozenset({COMMANDS, CONFIG, STORED})
 
 USERNAME_PREFIX = "robot-"
 

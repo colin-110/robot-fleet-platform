@@ -8,6 +8,14 @@ across its own restart, but not for a shared one. Anything not yet
 committed when the process dies stays in the broker and is delivered again,
 and because writes skip readings already stored, a redelivery is harmless.
 
+Robots running the agent keep what they send in an on-disk outbox until the
+server confirms it is stored. The consumer tracks, per robot, how far each
+outbox stream is committed (``advance``), saves that after the batch, and
+publishes it to the robot's retained ``fleet/<id>/stored`` topic before
+acknowledging. A broker that accepted messages and then lost them (a host
+crash inside its autosave interval) leaves a gap in the sequence, the
+watermark stops short of it, and the robot sends the missing items again.
+
 paho runs its network loop in a background thread. Messages are handed to the
 asyncio loop through a queue; the number of unacknowledged messages, and so
 the queue, is bounded by the receive maximum sent to the broker.
@@ -32,6 +40,7 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.mqtt import topics, wire
 from app.repositories.event_repo import insert_events
+from app.repositories.watermark_repo import load_watermarks, save_watermarks
 from app.schemas import CommandStatusUpdate, EventCreate, TelemetryCreate
 from app.services.command_service import CommandService
 from app.services.event_service import broadcast_events
@@ -161,6 +170,34 @@ def _from_envelope(robot_id: int, channel: str, values: dict):
     return StatusReport(robot_id, command_id, _validated(CommandStatusUpdate, values))
 
 
+@dataclass(frozen=True)
+class Progress:
+    """The sequence numbers one envelope covered."""
+
+    robot_id: int
+    stream: str
+    first: int
+    last: int
+    floor: int
+
+
+def advance(current: tuple[str, int] | None, progress: Progress) -> tuple[str, int]:
+    """The robot's watermark once ``progress`` has been processed.
+
+    The watermark only moves contiguously. Everything below the robot's floor
+    is settled (the robot no longer has it), and an envelope extends the
+    watermark only if it starts at or before the next number. An envelope
+    beyond a gap is stored but does not move the watermark; the robot, seeing
+    no progress, resends from the watermark, which fills the gap. A new
+    stream (a new outbox) starts from zero.
+    """
+    stream, seq = current if current and current[0] == progress.stream else (progress.stream, 0)
+    seq = max(seq, progress.floor - 1)
+    if progress.first <= seq + 1:
+        seq = max(seq, progress.last)
+    return stream, seq
+
+
 @dataclass
 class Decoded:
     readings: list[TelemetryCreate] = field(default_factory=list)
@@ -170,6 +207,7 @@ class Decoded:
     # and applying the reading after the will would bring it back online.
     presence: list[tuple[int, tuple[bool, str | None] | None]] = field(default_factory=list)
     statuses: list[StatusReport] = field(default_factory=list)
+    progress: list[Progress] = field(default_factory=list)
 
 
 def decode_presence(payload: bytes) -> tuple[bool, str | None]:
@@ -226,12 +264,18 @@ class IngestConsumer:
             "duplicates": 0,
             "rejected": 0,
             "batches": 0,
+            # Envelopes that arrived after a gap in their robot's sequence.
+            "gaps": 0,
+            # Items a robot's outbox dropped before they were stored (it was full).
+            "given_up": 0,
         }
         self._queue: asyncio.Queue[Delivery] = asyncio.Queue()
         # Called with a robot id whenever a robot is seen coming online.
         self.on_robot_online: list = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._clock_warned: dict[int, float] = {}
+        # Committed watermarks, loaded from the database on first use per robot.
+        self._watermarks: dict[int, tuple[str, int]] = {}
 
         self.client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -384,6 +428,7 @@ class IngestConsumer:
             await broadcast_events(events)
         for report in decoded.statuses:
             await self._apply_status(report)
+        await self._confirm(decoded.progress)
         for robot_id in dict.fromkeys(changed):
             await broadcast_presence(robot_id)
             if presence.get(robot_id).online:
@@ -413,6 +458,17 @@ class IngestConsumer:
             envelope = wire.decode_envelope(delivery.channel, delivery.payload)
         except wire.WireError as exc:
             raise BadMessage(str(exc)) from None
+        # Counted as processed whatever happens to its items: a robot must not
+        # keep resending an item the server will never accept.
+        decoded.progress.append(
+            Progress(
+                delivery.robot_id,
+                envelope.stream,
+                envelope.seq,
+                envelope.last_seq,
+                envelope.floor,
+            )
+        )
         items = envelope.items
         ahead_ms = envelope.sent_ms - wire.epoch_ms(datetime.now(timezone.utc))
         if ahead_ms > CLOCK_AHEAD_TOLERANCE_MS:
@@ -500,6 +556,69 @@ class IngestConsumer:
                 logger.exception("Applying a command status failed; retrying in %.1fs", delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
+
+    async def _confirm(self, progress: list[Progress]) -> None:
+        """Save and publish the watermarks this batch moved.
+
+        Runs after everything in the batch is committed, statuses included,
+        and before the batch is acknowledged: if the process dies in between,
+        the broker redelivers and the robot keeps its items a little longer.
+        """
+        if not progress:
+            return
+        delay = 0.5
+        while True:
+            try:
+                async with self.session_factory() as db:
+                    known = dict(self._watermarks)
+                    missing = {p.robot_id for p in progress} - known.keys()
+                    if missing:
+                        known.update(await load_watermarks(db, missing))
+                    before = dict(known)
+                    for p in progress:
+                        known[p.robot_id] = advance(known.get(p.robot_id), p)
+                    touched = {p.robot_id: known[p.robot_id] for p in progress}
+                    changed = {r: m for r, m in touched.items() if before.get(r) != m}
+                    if changed:
+                        await save_watermarks(db, changed)
+                        await db.commit()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Saving watermarks failed; retrying in %.1fs", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
+
+        self._count_progress(before, progress)
+        self._watermarks.update(known)
+        for robot_id, (stream, seq) in touched.items():
+            self.client.publish(
+                topics.topic(robot_id, topics.STORED),
+                wire.encode_stored(stream, seq),
+                qos=0,
+                retain=True,
+            )
+
+    def _count_progress(self, before: dict, progress: list[Progress]) -> None:
+        marks = dict(before)
+        for p in progress:
+            current = marks.get(p.robot_id)
+            held = current[1] if current and current[0] == p.stream else None
+            if held is not None and p.floor - 1 > held:
+                given_up = p.floor - 1 - held
+                self.stats["given_up"] += given_up
+                logger.warning(
+                    "Robot %d's outbox dropped %d items (sequence %d to %d) before they "
+                    "were stored",
+                    p.robot_id,
+                    given_up,
+                    held + 1,
+                    p.floor - 1,
+                )
+            if p.first > max(held or 0, p.floor - 1) + 1:
+                self.stats["gaps"] += 1
+            marks[p.robot_id] = advance(current, p)
 
     def ack(self, batch: list[Delivery]) -> None:
         for delivery in batch:

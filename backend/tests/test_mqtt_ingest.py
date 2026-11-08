@@ -21,7 +21,7 @@ from paho.mqtt.properties import Properties
 from sqlalchemy import func, select
 
 from app import presence
-from app.models import Event, Telemetry
+from app.models import Event, StoredWatermark, Telemetry
 from app.mqtt import ingest, wire
 from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
 from app.websocket_manager import manager
@@ -49,9 +49,17 @@ def payload(body) -> bytes:
 class FakeClient:
     def __init__(self):
         self.acked = []
+        self.published = []
 
     def ack(self, mid, qos):
         self.acked.append(mid)
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, qos, retain))
+
+    def stored(self):
+        """The watermarks published, as (topic, stream, seq)."""
+        return [(t, *wire.decode_stored(p)) for t, p, _, retain in self.published if retain]
 
 
 @pytest.fixture
@@ -272,6 +280,103 @@ async def test_a_slow_clock_is_left_alone(consumer, broadcasts):
     async with TestSessionLocal() as db:
         stored = (await db.execute(select(Telemetry.timestamp))).scalar_one()
     assert stored == T0 + timedelta(seconds=5)
+
+
+# ── stored watermarks ──────────────────────────────────────────────
+
+
+def progress(first, last, floor=1, stream="s1"):
+    return ingest.Progress(3, stream, first, last, floor)
+
+
+@pytest.mark.parametrize(
+    "current, p, expected",
+    [
+        (None, progress(1, 3), ("s1", 3)),
+        (("s1", 3), progress(4, 6), ("s1", 6)),
+        # Beyond a gap: stored, but the watermark waits for the gap to fill.
+        (("s1", 3), progress(6, 8), ("s1", 3)),
+        # A resend that overlaps what is stored.
+        (("s1", 5), progress(2, 9), ("s1", 9)),
+        # Pure duplicates change nothing.
+        (("s1", 9), progress(2, 4), ("s1", 9)),
+        # The robot no longer has anything below its floor.
+        (("s1", 3), progress(10, 12, floor=10), ("s1", 12)),
+        # A new outbox starts from zero.
+        (("s1", 50), progress(1, 2, stream="s2"), ("s2", 2)),
+        (("s1", 50), progress(3, 4, stream="s2"), ("s2", 0)),
+    ],
+)
+def test_advance(current, p, expected):
+    assert ingest.advance(current, p) == expected
+
+
+def items(n, start=0):
+    return [agent_reading(start + i) for i in range(n)]
+
+
+async def test_the_watermark_is_saved_and_published_before_the_ack(consumer, broadcasts):
+    await consumer.process(
+        [
+            env_delivery(3, "telemetry", items(3), 1, seq=1),
+            env_delivery(3, "telemetry", items(2, 3), 2, seq=4),
+        ]
+    )
+    assert consumer.client.stored() == [("fleet/3/stored", "s1", 5)]
+    async with TestSessionLocal() as db:
+        mark = await db.get(StoredWatermark, 3)
+    assert (mark.stream, mark.seq) == ("s1", 5)
+    assert consumer.client.acked == [1, 2]
+
+
+async def test_a_gap_holds_the_watermark_until_it_is_filled(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(2), 1, seq=1)])
+    await consumer.process([env_delivery(3, "telemetry", items(2, 4), 2, seq=5)])
+    assert consumer.client.stored()[-1][2] == 2
+    assert consumer.stats["gaps"] == 1
+    # The readings beyond the gap were stored all the same.
+    assert await stored_count() == 4
+
+    # The robot resends everything above 2.
+    await consumer.process([env_delivery(3, "telemetry", items(4, 2), 3, seq=3)])
+    assert consumer.client.stored()[-1][2] == 6
+    assert await stored_count() == 6
+
+
+async def test_the_watermark_survives_a_restart(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(3), 1, seq=1)])
+
+    restarted = IngestConsumer(session_factory=TestSessionLocal)
+    restarted.client = FakeClient()
+    restarted.epoch = 1
+    await restarted.process([env_delivery(3, "telemetry", items(1, 3), 1, seq=4)])
+    assert restarted.client.stored() == [("fleet/3/stored", "s1", 4)]
+
+
+async def test_duplicates_are_confirmed_again(consumer, broadcasts):
+    # The robot resends because it missed the confirmation; it must hear again.
+    batch = [env_delivery(3, "telemetry", items(3), 1, seq=1)]
+    await consumer.process(batch)
+    await consumer.process(batch)
+    assert [seq for _, _, seq in consumer.client.stored()] == [3, 3]
+
+
+async def test_items_the_robot_gave_up_are_counted(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(2), 1, seq=1)])
+    await consumer.process([env_delivery(3, "telemetry", items(2, 9), 2, seq=10, floor=10)])
+    assert consumer.stats["given_up"] == 7
+    assert consumer.client.stored()[-1][2] == 11
+
+
+async def test_rejected_items_still_count_as_processed(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", [{"timestamp": T0}], 1, seq=1)])
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.stored() == [("fleet/3/stored", "s1", 1)]
+
+
+async def test_json_messages_publish_no_watermark(consumer, broadcasts):
+    await consumer.process([delivery(3, reading(), 1)])
+    assert consumer.client.published == []
 
 
 async def test_command_status_envelopes_need_an_id(consumer, broadcasts):
