@@ -29,6 +29,7 @@ def test_a_keyframe_is_carried_forward_to_now():
     assert summary["y"] == pytest.approx(-5.0, abs=0.1)
     assert summary["battery"] == pytest.approx(99.0, abs=0.05)
     assert summary["bounds"]["position_m"] == 0.5
+    assert (summary["keyframe_x"], summary["keyframe_battery"]) == (10.0, 100.0)
     # The robot's own drain rate (6 %/min) gives the runtime.
     assert summary["runtime_remaining_minutes"] == pytest.approx(99.0 / 6, abs=0.2)
 

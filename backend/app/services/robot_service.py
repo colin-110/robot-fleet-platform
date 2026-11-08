@@ -154,6 +154,11 @@ def summarize_state(state, applied: dict | None = None) -> dict:
         "battery_rate": getattr(state, "battery_rate", None),
         "predicted": carried is not None,
         "keyframe_at": _iso(ts),
+        # The keyframe itself, for clients that run the predictor themselves
+        # (the dashboard): x, y and battery above are already carried forward.
+        "keyframe_x": state.x,
+        "keyframe_y": state.y,
+        "keyframe_battery": state.battery,
         "bounds": predict.bounds(tol) if carried else None,
         "battery_health": _health(state.battery_health),
         "motor_health": _health(state.motor_health),

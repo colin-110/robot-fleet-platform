@@ -163,6 +163,9 @@ class RobotStatusResponse(BaseModel):
     battery_rate: float | None = None
     predicted: bool = False
     keyframe_at: str | None = None
+    keyframe_x: float | None = None
+    keyframe_y: float | None = None
+    keyframe_battery: float | None = None
     bounds: dict | None = None
 
 
