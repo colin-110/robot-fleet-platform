@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isNewerReading, readingTime } from "./telemetry";
+import { applyPresence, isNewerReading, readingTime } from "./telemetry";
 
 describe("readingTime", () => {
   it("prefers the live timestamp over last_seen", () => {
@@ -41,5 +41,26 @@ describe("isNewerReading", () => {
   it("compares a live reading against a snapshot's last_seen", () => {
     const snapshot = { last_seen: "2026-11-01T12:00:05Z" };
     expect(isNewerReading(at("2026-11-01T12:00:00Z"), snapshot)).toBe(false);
+  });
+});
+
+describe("applyPresence", () => {
+  const robots = [
+    { robot_id: 1, status: "ACTIVE" },
+    { robot_id: 2, status: "CHARGING" },
+  ];
+
+  it("marks a disconnected robot offline at once", () => {
+    const next = applyPresence(robots, { 2: false });
+    expect(next.map((r) => r.status)).toEqual(["ACTIVE", "OFFLINE"]);
+  });
+
+  it("leaves robots alone when they come online", () => {
+    expect(applyPresence(robots, { 1: true })).toBe(robots);
+  });
+
+  it("does not mutate the input", () => {
+    applyPresence(robots, { 1: false });
+    expect(robots[0].status).toBe("ACTIVE");
   });
 });

@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useState, useCallback, useRef } from "react"
 import axios from "axios";
 import { useWebSocket } from "./useWebSocket";
 import { EVENT_BUFFER_LIMIT } from "../utils/constants";
-import { isNewerReading } from "../utils/telemetry";
+import { applyPresence, isNewerReading } from "../utils/telemetry";
 
 /**
  * Merge event lists into one newest-first buffer of bounded length.
@@ -132,7 +132,7 @@ export default function useFleetData() {
 
   // ── WebSocket + Polling ──────────────────────────────────────────
 
-  const pendingUpdates = useRef({ robots: {}, events: [] });
+  const pendingUpdates = useRef({ robots: {}, events: [], presence: {} });
   const updateTimer = useRef(null);
 
   // Plain handler (not useEffectEvent): useWebSocket keeps it in a ref, so the
@@ -148,6 +148,9 @@ export default function useFleetData() {
           // would flood the log with blank rows.
           if (lastMessage.type === "EVENT" && lastMessage.message) {
             pendingUpdates.current.events.unshift(lastMessage);
+          } else if (lastMessage.type === "PRESENCE") {
+            // The broker saw the robot connect or drop (its last will).
+            pendingUpdates.current.presence[lastMessage.robot_id] = lastMessage.online;
           }
         } else if (lastMessage.robot_id && lastMessage.battery !== undefined) {
           // Buffer the live telemetry update, keeping the newest per robot.
@@ -163,7 +166,7 @@ export default function useFleetData() {
       if (!updateTimer.current) {
         updateTimer.current = setTimeout(() => {
           const updates = pendingUpdates.current;
-          pendingUpdates.current = { robots: {}, events: [] };
+          pendingUpdates.current = { robots: {}, events: [], presence: {} };
           updateTimer.current = null;
           
           const robotIds = Object.keys(updates.robots);
@@ -182,8 +185,10 @@ export default function useFleetData() {
                   newRobots.push(msg);
                 }
               }
-              return newRobots;
+              return applyPresence(newRobots, updates.presence);
             });
+          } else if (Object.keys(updates.presence).length > 0) {
+            setRobots(prevRobots => applyPresence(prevRobots, updates.presence));
           }
           
           if (updates.events.length > 0) {
