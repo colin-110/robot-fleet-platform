@@ -39,6 +39,8 @@ class RobotModel:
 
 
 _robots: dict[int, RobotModel] = {}
+# Server arrival time of every recent keyframe from any robot.
+_arrivals: deque = deque(maxlen=100_000)
 
 
 def observe(rows, now: float | None = None) -> None:
@@ -54,6 +56,7 @@ def observe(rows, now: float | None = None) -> None:
             model.first_seen = now
     for row in rows:
         _robots[row.robot_id].keyframes.append(now)
+        _arrivals.append(now)
     for row in sorted(rows, key=lambda r: r.timestamp):
         model = _robots.setdefault(row.robot_id, RobotModel())
         t = row.timestamp.timestamp()
@@ -84,6 +87,11 @@ def suspicion(robot_id: int, now: float | None = None) -> float | None:
     return model.arrivals.phi(time.time() if now is None else now) if model else None
 
 
+def total_rate(now: float, window: float = 120.0) -> float:
+    """Keyframes per minute from the whole fleet over the last ``window`` seconds."""
+    return sum(1 for t in _arrivals if t > now - window) * 60 / window
+
+
 def get(robot_id: int) -> RobotModel | None:
     return _robots.get(robot_id)
 
@@ -94,3 +102,4 @@ def robots() -> dict[int, RobotModel]:
 
 def reset() -> None:
     _robots.clear()
+    _arrivals.clear()

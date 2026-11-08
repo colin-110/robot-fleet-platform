@@ -167,3 +167,44 @@ async def test_what_is_published_is_what_was_stored(client, publisher):
     [(_, (version, values), _, _)] = publisher.sent()
     assert (version, values) == (stored.version, stored.desired) == (2, stored.desired)
     assert values["tol_position_m"] != 0.5
+
+
+@pytest.mark.parametrize(
+    "true_rate",
+    [
+        # Falls as 1/scale over a floor: steeper than the model says.
+        lambda scale, step: 4.0 + 16.0 / scale,
+        # Falls as 1/sqrt(scale), which c/s**2 + h cannot fit; and the fleet
+        # gets 25 % busier halfway through (still within reach at the
+        # loosest tolerances).
+        lambda scale, step: (1.0 + 19.0 / scale**0.5) * (1.25 if step >= 30 else 1.0),
+    ],
+    ids=["steeper", "shallower-then-busier"],
+)
+async def test_the_fleet_settles_on_the_budget_when_the_model_is_wrong(
+    client, publisher, true_rate
+):
+    """Closed loop against robots that do not follow the allocator's model."""
+    robots = range(1, 11)
+    scale = dict.fromkeys(robots, 1.0)
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 100})
+    controller = BudgetController(TestSessionLocal)
+    totals = []
+    for step in range(60):
+        now = NOW + 30 * step
+        fleet._arrivals.clear()
+        for r in robots:
+            model = fleet.robots().setdefault(r, RobotModel())
+            model.last = {"t": now - 1, "temperature": 35.0, "battery": 80.0}
+            rate = true_rate(scale[r], step)
+            count = round(rate * 2)  # keyframes in the 120 s window
+            stamps = [now - 120 + (i + 0.5) * 120 / count for i in range(count)]
+            if model.first_seen is None or now - model.first_seen >= 60:
+                model.keyframes.clear()
+                model.keyframes.extend(stamps)
+                model.first_seen = min(model.first_seen or now - 300, now - 300)
+            fleet._arrivals.extend(stamps)
+        totals.append(sum(true_rate(scale[r], step) for r in robots))
+        for r, s in (await controller.step(now)).items():
+            scale[r] = s
+    assert all(abs(t - 100) <= 10 for t in totals[-10:]), " ".join(str(round(t)) for t in totals)

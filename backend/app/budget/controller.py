@@ -5,6 +5,13 @@ then it is not reallocated, but it still uses its share: its expected rate,
 from the demand last learned and the scale just assigned, is taken off the
 budget before the measured robots divide the rest.
 
+The model behind the allocation is only approximately right for any real
+robot, and the errors add up across a fleet. So the budget handed to the
+allocator is corrected by feedback on what the fleet actually sends: every
+step it is multiplied by ``(budget / measured) ** FEEDBACK_GAIN``, within
+limits. The allocator still decides who gets which share; the feedback makes
+the total come out right.
+
 Weights: an open alarm makes a robot matter four times as much, an anomaly
 score above 2 twice as much. A robot's new tolerances are pushed as desired
 config only when its scale moves by more than ``HYSTERESIS``, so a steady
@@ -33,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 INTERVAL = 30.0
 HYSTERESIS = 0.15
+FEEDBACK_GAIN = 0.5
+# Within this of the budget the correction is left alone, or it keeps
+# nudging tolerances back and forth across the hysteresis.
+FEEDBACK_DEADBAND = 0.05
+# The corrected budget stays within these multiples of the real one.
+CORRECTION_LIMITS = (0.2, 3.0)
 BUDGET_KEY = "budget"
 TOLERANCE_KEYS = tuple(k for k in predict.DEFAULTS if k.startswith("tol_"))
 
@@ -124,6 +137,9 @@ class BudgetController:
         self.known: dict[int, Demand] = {}
         self.assigned: dict[int, float] = {}
         self.points: dict[int, list[tuple[float, float]]] = {}
+        self.correction = 1.0  # multiplies the budget given to the allocator
+        self.weights: dict[int, float] = {}
+        self.enabled_since: float | None = None
 
     async def step(self, now: float | None = None) -> dict[int, float]:
         """One allocation. Returns the robots whose tolerances were changed."""
@@ -131,7 +147,20 @@ class BudgetController:
         async with self.session_factory() as db:
             budget = await get_budget(db)
             if not budget.get("enabled") or not budget.get("messages_per_minute"):
+                self.enabled_since = None
+                self.correction = 1.0
                 return {}
+            target = float(budget["messages_per_minute"])
+            if self.enabled_since is None:
+                self.enabled_since = now
+            measured_total = fleet.total_rate(now)
+            # Feedback only once the window holds traffic sent under the budget.
+            settled = abs(measured_total / target - 1) <= FEEDBACK_DEADBAND
+            if now - self.enabled_since >= 120 and measured_total > 0 and not settled:
+                lo, hi = CORRECTION_LIMITS
+                self.correction = min(
+                    hi, max(lo, self.correction * (target / measured_total) ** FEEDBACK_GAIN)
+                )
             applied = await config_repo.applied_settings(db)
             wanted = demands(applied, now, self.assigned, self.points)
             for d in wanted:
@@ -147,12 +176,18 @@ class BudgetController:
             fixed = sum(
                 d.c / self.assigned.get(d.robot_id, d.scale) ** 2 + d.floor_per_min for d in waiting
             )
-            available = float(budget["messages_per_minute"]) - fixed
+            available = target * self.correction - fixed
             scales = allocate(wanted, available)
+            weights = {d.robot_id: d.weight for d in wanted}
+            # On budget and nobody's importance changed: leave the fleet alone.
+            # Re-fitting each robot as it is remeasured would otherwise keep
+            # moving tolerances around a total that is already right.
+            hold = settled and all(self.weights.get(r, w) == w for r, w in weights.items())
+            self.weights.update(weights)
             changed = {}
             for d in wanted:
                 new = scales[d.robot_id]
-                if abs(new / d.scale - 1) <= HYSTERESIS:
+                if hold or abs(new / d.scale - 1) <= HYSTERESIS:
                     continue
                 current = await config_repo.get_config(db, d.robot_id)
                 desired = {
@@ -179,6 +214,8 @@ class BudgetController:
             "measured": len(wanted),
             "observed_per_min": round(sum(d.rate_per_min for d in wanted), 1),
             "planned_per_min": round(planned, 1),
+            "measured_per_min": round(measured_total, 1),
+            "correction": round(self.correction, 2),
             # False when even the loosest tolerances cannot get under the
             # budget: the rest of the rate does not depend on tolerance.
             "feasible": feasible(wanted, available) if wanted else True,
