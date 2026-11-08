@@ -73,7 +73,10 @@ function RobotCard({ robot }) {
       <div>
         <div className="rowLabel">
           <span className="k">Battery</span>
-          <span className="v" style={{ color: healthTone(robot.battery) }}>{robot.battery}%</span>
+          <span className="v" style={{ color: healthTone(robot.battery) }}>
+            {robot.battery}%
+            {robot.bounds && <span className="bound">±{robot.bounds.battery_pct}</span>}
+          </span>
         </div>
         <div className="progress-bar-container">
           <div className="progress-bar-fill" style={{ width: `${batteryPct}%`, background: healthTone(robot.battery) }} />
@@ -84,7 +87,15 @@ function RobotCard({ robot }) {
       <div className="metricRow">
         <div className="metricTile"><div className="k">Temp</div><div className="v">{robot.temperature}°C</div></div>
         <div className="metricTile"><div className="k">Speed</div><div className="v">{robot.speed} m/s</div></div>
-        <div className="metricTile"><div className="k">Runtime</div><div className="v">{formatRuntime(robot.runtime_remaining_minutes)}</div></div>
+        <div className="metricTile">
+          <div className="k">Runtime</div>
+          <div className="v">{formatRuntime(robot.runtime_remaining_minutes)}</div>
+          {robot.runtime_range_minutes && (
+            <div className="bound" style={{ marginLeft: 0 }} title="Two-sigma range from the battery's Kalman filter">
+              {formatRuntime(robot.runtime_range_minutes[0])} to {formatRuntime(robot.runtime_range_minutes[1])}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Mission + last seen */}
