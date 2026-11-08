@@ -32,7 +32,7 @@ const ANALYTICS = {
 };
 
 /** Route axios.get by URL so tests control each endpoint independently. */
-function mockEndpoints({ robots = [], analytics = ANALYTICS, events = [] } = {}) {
+function mockEndpoints({ robots = [], analytics = ANALYTICS, events = [], alarms = [] } = {}) {
   axios.get.mockImplementation((url) => {
     if (url.endsWith("/robots/status")) {
       return typeof robots === "function"
@@ -43,6 +43,9 @@ function mockEndpoints({ robots = [], analytics = ANALYTICS, events = [] } = {})
       return typeof analytics === "function"
         ? analytics()
         : Promise.resolve({ data: analytics });
+    }
+    if (url.endsWith("/alarms")) {
+      return Promise.resolve({ data: alarms });
     }
     if (url.endsWith("/events")) {
       return typeof events === "function"
@@ -260,5 +263,32 @@ describe("useFleetData", () => {
 
     await waitFor(() => expect(result.current.error).toBe(""));
     expect(result.current.robots).toEqual([]);
+  });
+});
+
+
+describe("alarms and keyframes", () => {
+  it("loads open alarms and follows them over the socket", async () => {
+    const raised = { id: 1, robot_id: 3, kind: "BATTERY_LOW", severity: "warning", state: "ACTIVE", raised_at: "2026-11-01T12:00:00Z" };
+    mockEndpoints({ robots: [robot(3)], alarms: [raised] });
+    const { result } = renderHook(() => useFleetData());
+    await waitFor(() => expect(result.current.alarms).toHaveLength(1));
+
+    act(() => pushMessage({ type: "ALARM", event: "acknowledged", alarm: { ...raised, state: "ACKNOWLEDGED" } }));
+    expect(result.current.alarms[0].state).toBe("ACKNOWLEDGED");
+    act(() => pushMessage({ type: "ALARM", event: "cleared", alarm: { ...raised, state: "CLEARED" } }));
+    expect(result.current.alarms).toEqual([]);
+  });
+
+  it("makes a live reading the robot's new keyframe", async () => {
+    mockEndpoints({
+      robots: [robot(3, { x: 1, keyframe_x: 0, keyframe_at: "2026-11-01T12:00:00Z", timestamp: "2026-11-01T12:00:00Z" })],
+    });
+    const { result } = renderHook(() => useFleetData());
+    await waitFor(() => expect(result.current.robots).toHaveLength(1));
+
+    act(() => pushMessage({ robot_id: 3, battery: 80, x: 5, y: 2, timestamp: "2026-11-01T12:00:09Z" }));
+    await waitFor(() => expect(result.current.robots[0].keyframe_x).toBe(5));
+    expect(result.current.robots[0].keyframe_at).toBe("2026-11-01T12:00:09Z");
   });
 });

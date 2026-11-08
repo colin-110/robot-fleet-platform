@@ -258,6 +258,29 @@
 .eventRow__msg { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.35; }
 .eventRow__meta { display: flex; gap: 8px; margin-top: 3px; font-size: 11px; color: var(--muted); }
 
+/* ── Alarms ───────────────────────────────────────────────────────── */
+.alarmsPanel { padding: 0; display: flex; flex-direction: column; min-height: 0; }
+.alarmsPanel__empty { padding: 4px 16px 16px; margin: 0; }
+.alarmsPanel__list {
+  list-style: none; margin: 0; padding: 0 12px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 260px; overflow-y: auto;
+}
+.alarmRow {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--bg-2); border: 1px solid var(--line);
+}
+.alarmRow[data-state="ACKNOWLEDGED"] { opacity: 0.7; }
+.alarmRow__accent { width: 3px; align-self: stretch; border-radius: 3px; flex-shrink: 0; }
+.alarmRow__body { min-width: 0; flex: 1; }
+.alarmRow__msg { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.alarmRow__meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--muted); }
+.alarmRow .btn { flex-shrink: 0; }
+
+/* An error bound next to a value: the value is within this of the truth. */
+.bound { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+
 /* ── Roster grid + robot card ─────────────────────────────────────── */
 .robotGridPro {
   display: grid;

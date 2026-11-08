@@ -2,7 +2,8 @@ import { useEffect, useEffectEvent, useState, useCallback, useRef } from "react"
 import axios from "axios";
 import { useWebSocket } from "./useWebSocket";
 import { EVENT_BUFFER_LIMIT } from "../utils/constants";
-import { applyPresence, isNewerReading } from "../utils/telemetry";
+import { applyPresence, asKeyframe, isNewerReading } from "../utils/telemetry";
+import { mergeAlarm } from "../utils/alarms";
 
 /**
  * Merge event lists into one newest-first buffer of bounded length.
@@ -59,6 +60,9 @@ export default function useFleetData() {
   const [lastFetchAt, setLastFetchAt] = useState(0);
   const [lastWsAt, setLastWsAt] = useState(0);
   const [events, setEvents] = useState([]);
+  const [alarms, setAlarms] = useState([]);
+  // What this dashboard wants sent and is looking at, resent on reconnect.
+  const control = useRef({ subscribe: null, watch: [] });
 
   const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
   const WS_BASE = import.meta.env.VITE_API_BASE_URL
@@ -82,6 +86,11 @@ export default function useFleetData() {
       setRobots(Array.isArray(response.data) ? response.data : []);
     };
 
+    const fetchAlarms = async () => {
+      const response = await axios.get(`${API_PREFIX}/alarms`);
+      setAlarms(Array.isArray(response.data) ? response.data : []);
+    };
+
     const fetchAnalytics = async () => {
       const response = await axios.get(`${API_PREFIX}/analytics/fleet`);
       setAnalytics(response.data || {});
@@ -99,6 +108,7 @@ export default function useFleetData() {
       setError("Backend is unreachable.");
     }
     fetchAnalytics().catch(console.error);
+    fetchAlarms().catch(console.error);
   }, [API_PREFIX]);
 
   /**
@@ -148,6 +158,8 @@ export default function useFleetData() {
           // would flood the log with blank rows.
           if (lastMessage.type === "EVENT" && lastMessage.message) {
             pendingUpdates.current.events.unshift(lastMessage);
+          } else if (lastMessage.type === "ALARM" && lastMessage.alarm) {
+            setAlarms((current) => mergeAlarm(current, lastMessage.alarm));
           } else if (lastMessage.type === "PRESENCE") {
             // The broker saw the robot connect or drop (its last will).
             pendingUpdates.current.presence[lastMessage.robot_id] = lastMessage.online;
@@ -156,7 +168,7 @@ export default function useFleetData() {
           // Buffer the live telemetry update, keeping the newest per robot.
           const queued = pendingUpdates.current.robots[lastMessage.robot_id];
           if (isNewerReading(lastMessage, queued)) {
-            pendingUpdates.current.robots[lastMessage.robot_id] = lastMessage;
+            pendingUpdates.current.robots[lastMessage.robot_id] = asKeyframe(lastMessage);
           }
         }
       } catch {
@@ -199,7 +211,27 @@ export default function useFleetData() {
     }
   };
 
-  const { isConnected: socketConnected } = useWebSocket(`${WS_BASE}/ws`, handleMessage);
+  const resendControl = (sendNow) => {
+    const { subscribe, watch } = control.current;
+    sendNow({ type: "subscribe", robots: subscribe });
+    sendNow({ type: "watch", robots: watch });
+  };
+
+  const { isConnected: socketConnected, send } = useWebSocket(
+    `${WS_BASE}/ws`,
+    handleMessage,
+    resendControl,
+  );
+
+  // The robots on screen (null: all) and the ones looked at closely.
+  const subscribe = useCallback((ids) => {
+    control.current.subscribe = ids;
+    send({ type: "subscribe", robots: ids });
+  }, [send]);
+  const watch = useCallback((ids) => {
+    control.current.watch = ids;
+    send({ type: "watch", robots: ids });
+  }, [send]);
 
 
 
@@ -225,6 +257,10 @@ export default function useFleetData() {
 
   return {
     robots,
+    alarms,
+    setAlarms,
+    subscribe,
+    watch,
 
     analytics,
     isLoading: lastFetchAt === 0 && robots.length === 0 && !error,
