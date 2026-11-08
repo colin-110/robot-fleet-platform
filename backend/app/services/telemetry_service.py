@@ -12,6 +12,7 @@ from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.intelligence import fleet
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository, persist
 from app.schemas import TelemetryCreate
@@ -107,6 +108,7 @@ async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[
     """``persist_readings`` and commit."""
     inserted = await persist_readings(db, data)
     await db.commit()
+    fleet.observe(inserted)
     return inserted
 
 

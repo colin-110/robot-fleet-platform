@@ -149,6 +149,8 @@ class RobotStatusResponse(BaseModel):
     mission_start_time: str | None = None
     last_seen: str | None = None
     runtime_remaining_minutes: float | None = None
+    # Two-sigma range of the runtime, from the battery's Kalman filter.
+    runtime_range_minutes: list[float] | None = None
     x: float = 0.0
     y: float = 0.0
     battery_health: float = 100.0

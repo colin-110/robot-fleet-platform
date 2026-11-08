@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import presence
 from app.config import get_settings
+from app.intelligence import fleet
 from app.models import Robot
 from app.mqtt import predict
 from app.repositories.config_repo import applied_settings
@@ -92,6 +93,21 @@ def _estimate_runtime_minutes(state, battery: float | None = None) -> float | No
     return round(effective_battery / drain, 1)
 
 
+def _runtime(state, battery: float) -> dict:
+    """Remaining runtime, from the robot's Kalman filter when there is one."""
+    model = fleet.get(state.robot_id)
+    estimate = model.battery.runtime() if model else None
+    if estimate is not None:
+        return {
+            "runtime_remaining_minutes": estimate.minutes,
+            "runtime_range_minutes": [estimate.low, estimate.high],
+        }
+    return {
+        "runtime_remaining_minutes": _estimate_runtime_minutes(state, battery),
+        "runtime_range_minutes": None,
+    }
+
+
 def _carried_forward(state, ts: datetime, now: datetime, tol: dict) -> dict | None:
     """x, y and battery predicted for now from the keyframe in ``state``.
 
@@ -146,7 +162,7 @@ def summarize_state(state, applied: dict | None = None) -> dict:
         else None,
         "mission_start_time": _iso(_as_utc(state.mission_start_time)),
         "last_seen": _iso(ts),
-        "runtime_remaining_minutes": _estimate_runtime_minutes(state, battery),
+        **_runtime(state, battery),
         "x": round(x, 2) if x is not None else 0.0,
         "y": round(y, 2) if y is not None else 0.0,
         "vx": getattr(state, "vx", None),
