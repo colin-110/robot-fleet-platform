@@ -48,6 +48,10 @@ settings = get_settings()
 SESSION_EXPIRY_SECONDS = 7 * 24 * 3600
 RECEIVE_MAXIMUM = 1000
 MAX_RETRY_DELAY_SECONDS = 10.0
+# A message sent more than this far in the future, by the robot's clock, has
+# its times moved back by the difference (see _decode_envelope).
+CLOCK_AHEAD_TOLERANCE_MS = 2_000
+CLOCK_WARNING_INTERVAL_SECONDS = 60.0
 
 
 class BadMessage(ValueError):
@@ -227,6 +231,7 @@ class IngestConsumer:
         # Called with a robot id whenever a robot is seen coming online.
         self.on_robot_online: list = []
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._clock_warned: dict[int, float] = {}
 
         self.client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -391,6 +396,16 @@ class IngestConsumer:
 
         A malformed envelope is dropped whole; within a valid one, only the
         items that fail validation are.
+
+        A robot whose clock runs fast would store readings in the future,
+        where they look like the latest state forever. The envelope says when
+        it was sent by the robot's clock, and it cannot really have been sent
+        after it arrived, so anything beyond that is the clock's error: every
+        time in the message moves back by it. Readings keep their spacing,
+        unlike clamping each one to the receive time, which collapsed a batch
+        onto one timestamp and dropped all but one reading as duplicates. A
+        slow clock is left alone, because an old send time is also what a
+        message that waited in the broker looks like.
         """
         if delivery.channel not in ENVELOPE_CHANNELS:
             raise BadMessage(f"no envelope format for channel {delivery.channel!r}")
@@ -398,7 +413,12 @@ class IngestConsumer:
             envelope = wire.decode_envelope(delivery.channel, delivery.payload)
         except wire.WireError as exc:
             raise BadMessage(str(exc)) from None
-        for packed in envelope.items:
+        items = envelope.items
+        ahead_ms = envelope.sent_ms - wire.epoch_ms(datetime.now(timezone.utc))
+        if ahead_ms > CLOCK_AHEAD_TOLERANCE_MS:
+            items = wire.shift_times(delivery.channel, items, -ahead_ms)
+            self._warn_clock(delivery.robot_id, ahead_ms)
+        for packed in items:
             try:
                 values = wire.unpack_item(delivery.channel, packed)
                 item = _from_envelope(delivery.robot_id, delivery.channel, values)
@@ -414,6 +434,17 @@ class IngestConsumer:
                 decoded.statuses.append(item)
         if delivery.channel == topics.TELEMETRY:
             decoded.presence.append((delivery.robot_id, None))
+
+    def _warn_clock(self, robot_id: int, ahead_ms: int) -> None:
+        now = asyncio.get_running_loop().time()
+        if now - self._clock_warned.get(robot_id, -1e9) >= CLOCK_WARNING_INTERVAL_SECONDS:
+            self._clock_warned[robot_id] = now
+            logger.warning(
+                "Robot %d's clock is %.1fs fast; correcting its timestamps. "
+                "Check the robot's time sync.",
+                robot_id,
+                ahead_ms / 1000,
+            )
 
     async def _store(self, decoded: Decoded):
         """Write in one transaction until it succeeds. Nothing is acknowledged

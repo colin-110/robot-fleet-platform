@@ -247,6 +247,33 @@ async def test_a_malformed_envelope_is_dropped(consumer, broadcasts):
     assert consumer.client.acked == [1]
 
 
+async def test_a_fast_clock_is_corrected_without_collapsing_readings(consumer, broadcasts):
+    now = datetime.now(timezone.utc)
+    robot_now = now + timedelta(hours=1)
+    items = [agent_reading(0, timestamp=robot_now - timedelta(seconds=s)) for s in (3, 2, 1)]
+    await consumer.process([env_delivery(3, "telemetry", items, 1, sent=robot_now)])
+
+    async with TestSessionLocal() as db:
+        stamps = (
+            (await db.execute(select(Telemetry.timestamp).order_by(Telemetry.timestamp)))
+            .scalars()
+            .all()
+        )
+    assert len(stamps) == 3
+    assert [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:], strict=False)] == [1.0, 1.0]
+    # Shifted to the receive time, not left an hour ahead.
+    assert abs((stamps[-1] - (now - timedelta(seconds=1))).total_seconds()) < 2
+
+
+async def test_a_slow_clock_is_left_alone(consumer, broadcasts):
+    # An old send time is also what a message that waited in the broker looks like.
+    sent = T0 + timedelta(seconds=10)
+    await consumer.process([env_delivery(3, "telemetry", [agent_reading(5)], 1, sent=sent)])
+    async with TestSessionLocal() as db:
+        stored = (await db.execute(select(Telemetry.timestamp))).scalar_one()
+    assert stored == T0 + timedelta(seconds=5)
+
+
 async def test_command_status_envelopes_need_an_id(consumer, broadcasts):
     await consumer.process([env_delivery(3, "commands/status", [{"status": "ACKNOWLEDGED"}], 1)])
     assert consumer.stats["rejected"] == 1
