@@ -151,6 +151,8 @@ class IngestConsumer:
         self.connected = asyncio.Event()
         self.stats = {"stored": 0, "events": 0, "duplicates": 0, "rejected": 0, "batches": 0}
         self._queue: asyncio.Queue[Delivery] = asyncio.Queue()
+        # Called with a robot id whenever a robot is seen coming online.
+        self.on_robot_online: list = []
         self._loop: asyncio.AbstractEventLoop | None = None
 
         self.client = mqtt.Client(
@@ -277,6 +279,9 @@ class IngestConsumer:
             await broadcast_events(events)
         for robot_id in dict.fromkeys(changed):
             await broadcast_presence(robot_id)
+            if presence.get(robot_id).online:
+                for callback in self.on_robot_online:
+                    callback(robot_id)
         self.ack(batch)
 
     async def _store(self, decoded: Decoded):

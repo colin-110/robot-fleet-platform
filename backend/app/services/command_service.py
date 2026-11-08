@@ -22,12 +22,29 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
 
 # Explicit state machine. Anything not listed is rejected.
+#
+# PENDING may go straight to ACKNOWLEDGED or FAILED: a command pushed over MQTT
+# can reach the robot before the server has processed the broker's PUBACK
+# that marks it DISPATCHED.
 VALID_TRANSITIONS: dict[str, frozenset[str]] = {
-    "PENDING": frozenset({"DISPATCHED", "CANCELLED", "TIMEOUT"}),
+    "PENDING": frozenset({"DISPATCHED", "ACKNOWLEDGED", "FAILED", "CANCELLED", "TIMEOUT"}),
     "DISPATCHED": frozenset({"ACKNOWLEDGED", "FAILED", "CANCELLED", "TIMEOUT"}),
     "ACKNOWLEDGED": frozenset({"EXECUTING", "FAILED", "TIMEOUT", "COMPLETED"}),
     "EXECUTING": frozenset({"COMPLETED", "FAILED", "TIMEOUT"}),
 }
+
+
+async def broadcast_dispatched(robot_id: int, command_type: str, command_id: str, now: datetime):
+    await manager.broadcast(
+        {
+            "type": "COMMAND_UPDATE",
+            "robot_id": robot_id,
+            "command_type": command_type,
+            "status": "DISPATCHED",
+            "command_id": command_id,
+            "timestamp": now.isoformat().replace("+00:00", "Z"),
+        }
+    )
 
 
 class CommandService:
@@ -86,6 +103,12 @@ class CommandService:
         broadcast_payload["timestamp"] = now.isoformat().replace("+00:00", "Z")
         # Command updates use the event stream, not the capped telemetry one.
         await manager.broadcast(broadcast_payload, stream=manager.event_stream)
+
+        # Robots on MQTT get the command pushed; HTTP robots claim it by polling.
+        from app.mqtt import commands
+
+        if commands.publisher is not None:
+            commands.publisher.push_soon(payload)
 
         return payload
 
