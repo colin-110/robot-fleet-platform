@@ -8,13 +8,13 @@ Run a real fleet on the smallest server possible, with zero data loss, and make
 every number on the dashboard honest about how accurate it is. Everything here
 is measured by one headline metric: **cost per robot per month**.
 
-Targets, and what step 9 measured ([benchmark](../benchmark.md)):
+Targets, and what step 9 measured (24 simulated robots, ten minutes, the stack capped at 480 MB):
 
 | Metric | Target | Measured |
 | :--- | :--- | :--- |
 | Server | 512 MB RAM, ARM (t4g.nano or a 512 MB Lightsail plan) | 261 MB peak for the containers |
 | Fleet on that server | 24 robots with headroom | 24, with headroom |
-| Average uplink | under one message per robot every 10 s while healthy | 18 a minute (missed; see the benchmark) |
+| Average uplink | under one message per robot every 10 s while healthy | 18 a minute (missed) |
 | Bytes per robot per day | under 1 MB | 3.9 MB (missed) |
 | Data loss under `kill -9` of the app or broker | zero | zero |
 | Cost per robot per month | about $0.20 | $0.33 |
@@ -209,11 +209,11 @@ Each step ships with tests and a measurement, and is committed separately.
    map asks the server to watch it more closely. The WebSocket accepts
    per-robot subscriptions, but the dashboard keeps all robots, because its
    roster shows every one.
-9. **Benchmark and the 512 MB test** (done). `bench/run.py`; the stack
-   peaks at 261 MB for 24 robots. The simulator misses the uplink and byte
-   targets: it is a stress case whose robots stop and start every few
+9. **Benchmark and the 512 MB test** (measured, harness since removed). The
+   stack peaked at 261 MB for 24 robots. The simulator missed the uplink and
+   byte targets: it is a stress case whose robots stop and start every few
    seconds, and its keyframe floor is about five a minute even at the
-   loosest tolerances. See the benchmark for what that means for cost.
+   loosest tolerances.
 10. **Deployment.** Removed from the repository, to be rebuilt from scratch:
     the smallest instance, TLS on MQTT, backups to S3, budget alerts.
 

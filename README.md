@@ -91,10 +91,6 @@ See
 - **Bounded WebSocket queues.** A slow client drops its oldest frames instead of
   stalling fan-out for everyone else.
 - **Short-lived console tickets.** The browser never holds the master API key.
-- **Measured, including the misses.** `bench/run.py` runs the whole stack
-  inside 480 MB: 24 robots peak at 261 MB, about $0.33 a robot a month on a
-  t4g.nano. The simulator sends more than the targets allow, and
-  [the benchmark](docs/benchmark.md) says why.
 
 ## Testing
 
