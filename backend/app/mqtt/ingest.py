@@ -132,7 +132,10 @@ def decode_command_status(robot_id: int, payload: bytes) -> StatusReport:
 class Decoded:
     readings: list[TelemetryCreate] = field(default_factory=list)
     events: list[EventCreate] = field(default_factory=list)
-    presence: list[tuple[int, tuple[bool, str | None]]] = field(default_factory=list)
+    # Presence messages and "this robot sent something", in arrival order.
+    # Order matters: a robot's last reading and its will often share a batch,
+    # and applying the reading after the will would bring it back online.
+    presence: list[tuple[int, tuple[bool, str | None] | None]] = field(default_factory=list)
     statuses: list[StatusReport] = field(default_factory=list)
 
 
@@ -292,6 +295,7 @@ class IngestConsumer:
             try:
                 if delivery.channel == topics.TELEMETRY:
                     decoded.readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
+                    decoded.presence.append((delivery.robot_id, None))
                 elif delivery.channel == topics.EVENTS:
                     decoded.events.extend(decode_events(delivery.robot_id, delivery.payload))
                 elif delivery.channel == topics.COMMAND_STATUS:
@@ -316,13 +320,15 @@ class IngestConsumer:
             len(decoded.readings) + len(decoded.events) - len(readings) - len(events)
         )
 
-        changed = [
-            rid for rid, (online, conn) in decoded.presence if presence.apply(rid, online, conn)
-        ]
-        # A robot that is sending is connected, whatever an older will said.
-        changed += [
-            rid for rid in {r.robot_id for r in decoded.readings} if presence.saw_traffic(rid)
-        ]
+        changed = []
+        for robot_id, message in decoded.presence:
+            if message is None:
+                # A robot that is sending is connected, whatever an older will said.
+                news = presence.saw_traffic(robot_id)
+            else:
+                news = presence.apply(robot_id, *message)
+            if news:
+                changed.append(robot_id)
 
         if readings:
             await manager.broadcast_batch(broadcast_payloads(readings))

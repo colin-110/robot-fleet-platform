@@ -215,6 +215,31 @@ async def test_presence_changes_are_broadcast(consumer, broadcasts, event_broadc
 
 
 @pytest.mark.asyncio
+async def test_a_will_after_the_last_reading_in_one_batch_wins(
+    consumer, broadcasts, event_broadcasts
+):
+    """A robot that dies sends its last reading and then its will, often within
+    one batch. Presence follows arrival order, so the robot ends up offline."""
+    await consumer.process([delivery(1, b"online", mid=1, channel="presence")])
+    await consumer.process(
+        [
+            delivery(1, reading(), mid=2),
+            delivery(1, b"offline", mid=3, channel="presence"),
+        ]
+    )
+    assert presence.is_offline(1)
+
+    # The other way round, a reading after the will means it is back.
+    await consumer.process(
+        [
+            delivery(1, b"offline", mid=4, channel="presence"),
+            delivery(1, reading(seconds=1), mid=5),
+        ]
+    )
+    assert not presence.is_offline(1)
+
+
+@pytest.mark.asyncio
 async def test_acks_from_an_older_connection_are_skipped(consumer, broadcasts):
     await consumer.process([delivery(1, reading(), mid=7, epoch=0)])
     assert consumer.client.acked == []
