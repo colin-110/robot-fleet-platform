@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 to 4 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 5 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -169,8 +169,20 @@ Each step ships with tests and a measurement, and is committed separately.
    noise spikes; the tolerances are the lever, which step 6 sets. A unit test
    drives a robot along a patrol and checks that what the server shows is
    within tolerance at every tick.
-5. **Streaming intelligence and alarms.** Kalman battery, peer anomalies, phi
-   accrual, alarm lifecycle, webhooks.
+5. **Streaming intelligence and alarms** (done). In `app/intelligence/`: a
+   two-state Kalman filter per battery giving runtime with a two-sigma range,
+   phi accrual over each robot's own message gaps, robust z-scores against
+   fleet peers for temperature and drain. In `app/alarms/`: eight rules with
+   separate raise and clear thresholds and hold times, one open alarm per
+   robot and kind (a partial unique index), ACTIVE to ACKNOWLEDGED to CLEARED,
+   WebSocket broadcasts and signed webhooks with retries, and a rule for a
+   robot running twice (four new connections in a minute). Measured live (20
+   simulated robots, 5 minutes): 15 battery alarms raised, 8 cleared on
+   recharging, and the simulator's network blackouts caught as `SILENT`
+   within seconds and cleared when the robot resumed. The first tuning of the
+   battery filter assumed a near-constant drain and reported ranges far
+   narrower than its error when a robot started a mission; the drain is now
+   allowed to drift, faster when the robot reports its own rate.
 6. **Budget allocator.** Online `c_i` estimates, weights, the closed-form
    allocation, desired config.
 7. **Storage tiers.** Exact rollups from segments and the retention tiers.
@@ -211,9 +223,8 @@ Each step ships with tests and a measurement, and is committed separately.
   and readings keep their spacing. Plain JSON readings are still clamped one by
   one, which collapses a batch onto one timestamp.
 - **A robot running twice.** Two processes with the same device key share one
-  client id, so each connection takes over the other's in a loop. The broker
-  log shows it; the API should detect repeated takeovers and raise an alarm
-  (step 5).
+  client id, so each connection takes over the other's in a loop. Each new
+  connection id is counted, and four in a minute raise `DUPLICATE_SESSION`.
 - **Unbounded rates from a misbehaving robot.** The broker enforces per-client
   rate limits; the allocator's tolerances are a request, not a guarantee.
 - **One robot must not stop ingest for everyone.** A batch that fails to write

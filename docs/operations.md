@@ -41,6 +41,18 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `ACCESS_LOG` | `true` | One structured line per HTTP request; `/health` and `/health/live` are excluded so health polls do not bury real traffic |
 | `WEBSOCKET_BACKEND` | `direct` | `direct` fans out in-process (one API process). `mqtt` relays every update through the broker so several processes all see everything |
 
+### Alarms
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `ALARM_INTERVAL_SECONDS` | `2` | How often the alarm rules run (in memory) |
+| `ALARM_WEBHOOK_URL` | unset | POST every alarm change here |
+| `ALARM_WEBHOOK_SECRET` | unset | Signs webhook bodies; required with the URL, and never the master key, since receivers hold it |
+
+A webhook body is `{"event": "raised" | "acknowledged" | "cleared", "alarm": {...}}`, with `X-FleetOps-Event` and `X-FleetOps-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw body under the secret. Compare it in constant time before trusting the body. Deliveries are retried four times over about 20 seconds, then dropped and counted; the queue holds 1,000.
+
+The rules (`backend/app/alarms/rules.py`): `BATTERY_CRITICAL` below 10 %, `BATTERY_LOW` below 20 % for 10 s, `OVERHEATING` above 75 C for 10 s, `COMPONENT_FAILING` below 30 % health for 30 s, `ANOMALY` beyond 4 robust standard deviations from the fleet for 60 s, `SILENT` at phi 8 while connected, `OFFLINE` after 30 s disconnected, and `DUPLICATE_SESSION` at four new connections in a minute. Each clears at its own, safer threshold.
+
 ### Robot settings
 
 `PUT /api/v1/robots/<id>/config` with `{"values": {"report_interval_s": 5}}` (operator role) replaces a robot's desired settings, bumps their version and publishes them to the robot's retained `fleet/<id>/config` topic. `GET` the same path to see the desired settings next to what the robot last reported applying; `in_sync` is true once the versions match. Unknown settings and out-of-range values are refused with `422`, using the same table the agent checks (`CONFIG_FIELDS` in `wire.py`). The API republishes every desired config when it starts, in case the broker lost its retained messages.
