@@ -78,6 +78,11 @@ TELEMETRY_FIELDS = (
     Field("hn", "network_health", NUM, 100),
     Field("x", "x", NUM, 100),
     Field("y", "y", NUM, 100),
+    # Rates, per second, that the shared predictor carries values forward with
+    # (fleetops_agent/predict.py). A drain of 0.05 % per minute is 833 here.
+    Field("vx", "vx", NUM, 1000),
+    Field("vy", "vy", NUM, 1000),
+    Field("br", "battery_rate", NUM, 1_000_000),
 )
 
 EVENT_FIELDS = (
@@ -315,8 +320,17 @@ def decode_stored(payload: bytes) -> tuple[str, int]:
 
 # What the server may set on a robot, with the allowed range of each.
 CONFIG_FIELDS = {
-    # Seconds between readings.
+    # Seconds between sensor ticks (readings the robot takes, not sends).
     "report_interval_s": (0.1, 3600.0),
+    # Dual prediction (predict.py): a keyframe is sent when a value strays
+    # further than this from the shared prediction, or after heartbeat_s.
+    "tol_position_m": (0.01, 100.0),
+    "tol_battery_pct": (0.05, 50.0),
+    "tol_temperature_c": (0.05, 50.0),
+    "tol_speed": (0.01, 10.0),
+    "tol_progress_pct": (0.1, 100.0),
+    "tol_health_pct": (0.1, 100.0),
+    "heartbeat_s": (1.0, 3600.0),
 }
 
 

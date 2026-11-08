@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import presence
 from app.config import get_settings
 from app.models import Robot
+from app.mqtt import predict
+from app.repositories.config_repo import applied_settings
 from app.repositories.robot_repo import RobotRepository
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,7 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat().replace("+00:00", "Z") if value else None
 
 
-def _derive_status(latest, age_seconds: float) -> str:
+def _derive_status(latest, age_seconds: float, silent_after: float | None = None) -> str:
     """Report the robot's own status, unless it has gone quiet.
 
     One threshold, from configuration. This previously checked three different
@@ -53,7 +55,8 @@ def _derive_status(latest, age_seconds: float) -> str:
     """
     # The broker's last will is immediate; silence is the fallback for robots
     # on HTTP or when the broker is unreachable.
-    if presence.is_offline(latest.robot_id) or age_seconds > settings.offline_after_seconds:
+    limit = settings.offline_after_seconds if silent_after is None else silent_after
+    if presence.is_offline(latest.robot_id) or age_seconds > limit:
         return OFFLINE
     return latest.status.upper() if latest.status else "ACTIVE"
 
@@ -73,31 +76,69 @@ def _health(value: float | None) -> float:
     return round(value, 2) if value is not None else 100.0
 
 
-def _estimate_runtime_minutes(state) -> float | None:
-    """Remaining runtime from the smoothed drain rate.
+def _estimate_runtime_minutes(state, battery: float | None = None) -> float | None:
+    """Remaining runtime from the drain rate.
 
-    None when there is no rate yet or the battery is not falling: a flat or
-    charging battery has no meaningful time-to-empty.
+    The robot's own rate from its keyframe when it sent one, else the
+    server's smoothed estimate. None when there is no rate yet or the battery
+    is not falling: a flat or charging battery has no meaningful time-to-empty.
     """
-    drain = getattr(state, "battery_drain_per_min", None)
+    rate = getattr(state, "battery_rate", None)
+    drain = -rate * 60 if rate is not None else getattr(state, "battery_drain_per_min", None)
     if drain is None or drain <= 0:
         return None
-    effective_battery = state.battery * ((state.battery_health or 100.0) / 100.0)
+    battery = state.battery if battery is None else battery
+    effective_battery = battery * ((state.battery_health or 100.0) / 100.0)
     return round(effective_battery / drain, 1)
 
 
-def summarize_state(state) -> dict:
-    """Turn a robot's latest state into a status payload."""
+def _carried_forward(state, ts: datetime, now: datetime, tol: dict) -> dict | None:
+    """x, y and battery predicted for now from the keyframe in ``state``.
+
+    None when the keyframe has no rates (a robot that sends every reading).
+    Prediction stops at the heartbeat: by then a keyframe is overdue, the
+    robot may be gone, and the bound no longer holds.
+    """
+    rates = {name: getattr(state, name, None) for name in ("vx", "vy", "battery_rate")}
+    if all(value is None for value in rates.values()):
+        return None
+    keyframe = {
+        "timestamp": ts.timestamp(),
+        "x": state.x,
+        "y": state.y,
+        "battery": state.battery,
+        **rates,
+    }
+    until = min(now.timestamp(), ts.timestamp() + tol["heartbeat_s"])
+    return predict.predict(keyframe, until)
+
+
+def summarize_state(state, applied: dict | None = None) -> dict:
+    """Turn a robot's latest state into a status payload.
+
+    ``applied`` is the settings the robot reported applying; its tolerances
+    and heartbeat decide the error bounds and how long silence is normal.
+    """
     now = datetime.now(timezone.utc)
     ts = _as_utc(state.timestamp)
     age_seconds = (now - ts).total_seconds()
+    tol = predict.tolerances(applied)
+    # A robot on a 30 s heartbeat is not offline after 20 s of silence.
+    silent_after = max(settings.offline_after_seconds, 2 * tol["heartbeat_s"])
+    status = _derive_status(state, age_seconds, silent_after)
+    carried = _carried_forward(state, ts, now, tol) if status != OFFLINE else None
+    x, y, battery = (
+        (carried["x"], carried["y"], carried["battery"])
+        if carried
+        else (state.x, state.y, state.battery)
+    )
 
     return {
         "robot_id": state.robot_id,
-        "battery": round(state.battery, 2),
+        "battery": round(battery, 2),
         "temperature": round(state.temperature, 2),
         "speed": round(state.speed, 2),
-        "status": _derive_status(state, age_seconds),
+        "status": status,
         "mission_id": state.mission_id,
         "mission_type": state.mission_type,
         "mission_progress": round(state.mission_progress, 1)
@@ -105,9 +146,20 @@ def summarize_state(state) -> dict:
         else None,
         "mission_start_time": _iso(_as_utc(state.mission_start_time)),
         "last_seen": _iso(ts),
-        "runtime_remaining_minutes": _estimate_runtime_minutes(state),
-        "x": round(state.x, 2) if state.x is not None else 0.0,
-        "y": round(state.y, 2) if state.y is not None else 0.0,
+        "runtime_remaining_minutes": _estimate_runtime_minutes(state, battery),
+        "x": round(x, 2) if x is not None else 0.0,
+        "y": round(y, 2) if y is not None else 0.0,
+        "vx": getattr(state, "vx", None),
+        "vy": getattr(state, "vy", None),
+        "battery_rate": getattr(state, "battery_rate", None),
+        "predicted": carried is not None,
+        "keyframe_at": _iso(ts),
+        # The keyframe itself, for clients that run the predictor themselves
+        # (the dashboard): x, y and battery above are already carried forward.
+        "keyframe_x": state.x,
+        "keyframe_y": state.y,
+        "keyframe_battery": state.battery,
+        "bounds": predict.bounds(tol) if carried else None,
         "battery_health": _health(state.battery_health),
         "motor_health": _health(state.motor_health),
         "sensor_health": _health(state.sensor_health),
@@ -148,6 +200,7 @@ class RobotService:
     """Fleet status: the roster joined with each robot's latest state."""
 
     def __init__(self, db: AsyncSession) -> None:
+        self.db = db
         self.robots = RobotRepository(db)
 
     async def get_fleet_status(self, limit: int = 50, skip: int = 0) -> list[dict]:
@@ -160,7 +213,12 @@ class RobotService:
         window = settings.fleet_window_minutes * 60
         now = datetime.now(timezone.utc)
         robots = []
+        applied = await applied_settings(self.db)
         for robot, state in await self.robots.list_with_state(limit=limit, skip=skip):
             fresh = state is not None and (now - _as_utc(state.timestamp)).total_seconds() <= window
-            robots.append(summarize_state(state) if fresh else summarize_silent_robot(robot))
+            robots.append(
+                summarize_state(state, applied.get(robot.id))
+                if fresh
+                else summarize_silent_robot(robot)
+            )
         return robots

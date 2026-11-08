@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 to 3 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 4 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -158,8 +158,17 @@ Each step ships with tests and a measurement, and is committed separately.
 3. **Robot agent package** (done). Message schema, CBOR, on-disk outbox, an
    end-to-end stored watermark, desired and reported config, correction of
    fast clocks. The simulator is rebuilt on top of it.
-4. **Dual prediction.** Shared predictor (Python, with a matching JavaScript
-   version for the dashboard), keyframe storage, reconstruction.
+4. **Dual prediction** (done). Shared predictor in Python
+   (`agent/fleetops_agent/predict.py`, copied to the API) and JavaScript (the
+   dashboard), checked against one set of test vectors; keyframes stored with
+   their rates; fleet status carried forward to now with its bounds;
+   `GET /robots/<id>/track` rebuilds any time range. Measured with the
+   simulator (20 robots, 90 s, default tolerances): 443 messages instead of
+   994 (55% fewer) and 64 kB instead of 125 kB. Most remaining keyframes come
+   from the simulator's per-tick speed changes, pauses at waypoints and sensor
+   noise spikes; the tolerances are the lever, which step 6 sets. A unit test
+   drives a robot along a patrol and checks that what the server shows is
+   within tolerance at every tick.
 5. **Streaming intelligence and alarms.** Kalman battery, peer anomalies, phi
    accrual, alarm lifecycle, webhooks.
 6. **Budget allocator.** Online `c_i` estimates, weights, the closed-form
@@ -177,6 +186,12 @@ Each step ships with tests and a measurement, and is committed separately.
   time carried in each keyframe, so skew does not create error.
 - **A wrong motion model.** It only costs bandwidth: the error bound still
   holds, because the robot sends as soon as reality diverges.
+- **Rounding.** Rates are sent as fixed-point integers, and rounding a
+  velocity adds up over a minute. The robot therefore predicts from its
+  keyframe as the server will decode it, not from its own unrounded values.
+- **The bound holds at sensor ticks.** Between two ticks the robot itself does
+  not know its error, so the guarantee is per tick, and the server stops
+  extrapolating at the heartbeat, when a keyframe is overdue.
 - **Lost keyframes.** QoS 1 plus the on-disk outbox; a per-robot sequence
   number exposes any gap. Measured in step 2: with `kill -9` of the API or the
   broker mid-stream, every reading was stored exactly once (five runs, 20

@@ -37,6 +37,9 @@ READING_FIELDS = (
     "network_health",
     "x",
     "y",
+    "vx",
+    "vy",
+    "battery_rate",
 )
 
 

@@ -73,8 +73,13 @@ cannot connect as another robot's client id and take over its session.
 
 ## Message flow
 
-1. The agent writes each reading to its on-disk outbox, then publishes batches
-   of them with QoS 1. The broker queues them in the API's persistent session.
+1. The agent compares each sensor reading with the prediction it shares with
+   the server ([`predict.py`](../agent/fleetops_agent/predict.py)): position
+   and battery carried forward from the last keyframe by their rates, the rest
+   held. Only a reading that strays past a tolerance, changes a discrete field
+   or is due for the heartbeat becomes a keyframe. Keyframes go to the on-disk
+   outbox, then out in batches with QoS 1. The broker queues them in the API's
+   persistent session.
 2. The consumer collects up to 200 messages or 250 ms, then `persist()` inserts
    the readings (skipping any already stored), registers the robot and upserts
    its `robot_state`, all in one transaction.
@@ -138,6 +143,8 @@ disagree.
 **A roster, so absence is detectable.** Fleet status is the robot roster LEFT JOINed onto each robot's latest state, not a `GROUP BY` over recent telemetry. The distinction is the difference between a working monitor and a broken one: deriving the fleet from telemetry alone means a robot that stops reporting eventually falls outside the query window and silently disappears from the dashboard, so a unit that died an hour ago is indistinguishable from one that never existed. Registered robots are always listed, and missing telemetry renders `OFFLINE` with the roster's last-seen time. The roster populates itself: every write registers the robot in the same transaction.
 
 **Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. A fast clock is corrected: the agent's envelope says when it was sent by the robot's clock, and a message cannot have been sent after it arrived, so every time in it moves back by the difference and readings keep their spacing. Plain JSON readings dated beyond a configurable skew are clamped to the receive time instead, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
+
+**Dual prediction.** The robot sends a keyframe (values and rates) only when what it measures strays from what the server is predicting. Between keyframes, fleet status carries position and battery forward to now and reports the bound (`bounds`, from the robot's applied tolerances), and `GET /api/v1/robots/<id>/track` rebuilds any time range from the stored keyframes. The same predictor runs in Python on both sides and in JavaScript on the dashboard, held together by shared test vectors.
 
 **Confirmed end to end.** A broker acknowledgement only means the broker has the message. The agent keeps every item in a SQLite outbox until the API says it is committed (`fleet/<id>/stored`), and the API's watermark only moves contiguously, so a message lost anywhere after the robot leaves a gap that is resent rather than skipped. The watermark is saved in the database after the batch it covers, so it survives an API restart.
 

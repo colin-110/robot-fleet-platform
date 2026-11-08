@@ -46,7 +46,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 
-from fleetops_agent import wire
+from fleetops_agent import predict, wire
 from fleetops_agent.outbox import Outbox
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,13 @@ SESSION_EXPIRY_SECONDS = 7 * 24 * 3600
 
 def _now_ms() -> int:
     return round(time.time() * 1000)
+
+
+def _as_seen(packed: dict) -> dict:
+    """A packed reading as the server will unpack it, times in epoch seconds."""
+    values = wire.unpack_item("telemetry", packed)
+    values["timestamp"] = values["timestamp"].timestamp()
+    return values
 
 
 def _runs(rows: list[tuple[int, str, dict]], limit: int):
@@ -124,6 +131,8 @@ class Agent:
         self._stopping = threading.Event()
         self._sender: threading.Thread | None = None
         self._conn = uuid.uuid4().hex[:12]
+        self._rates = predict.RateEstimator()
+        self._keyframe: dict | None = None  # the last keyframe, as the server sees it
 
         self._publish_props = Properties(PacketTypes.PUBLISH)
         self._publish_props.ContentType = wire.CONTENT_TYPE
@@ -154,6 +163,30 @@ class Agent:
         """
         values = {"timestamp": time.time(), **reading}
         return self.outbox.put("telemetry", wire.pack_item("telemetry", values))
+
+    def observe(self, reading: dict) -> bool:
+        """Report a sensor reading; it is sent only if the server needs it.
+
+        Dual prediction (``predict.py``): the reading becomes a keyframe when
+        it strays from what the server is predicting by more than the
+        tolerances in force, when a discrete field changes, or when the
+        heartbeat is due. ``vx``, ``vy`` and ``battery_rate`` are estimated
+        from successive readings unless given. Returns whether it was sent.
+        """
+        values = {"timestamp": time.time(), **reading}
+        values["timestamp"] = wire.epoch_ms(values["timestamp"]) / 1000
+        values = self._rates.update(values)
+        packed = wire.pack_item("telemetry", values)
+        seen = _as_seen(packed)
+        reason = predict.keyframe_reason(self._keyframe, seen, predict.tolerances(self._config))
+        self.stats["observed"] += 1
+        if reason is None:
+            return False
+        self.outbox.put("telemetry", packed)
+        self._keyframe = seen
+        self.stats["keyframes"] += 1
+        self.stats[f"keyframe:{reason}"] += 1
+        return True
 
     def send_event(self, message: str, timestamp=None) -> int:
         values = {"timestamp": time.time() if timestamp is None else timestamp, "message": message}
@@ -282,14 +315,13 @@ class Agent:
             envelope = wire.Envelope(
                 self.outbox.stream, run[0][0], floor, _now_ms(), [item for _, _, item in run]
             )
+            payload = wire.encode_envelope(channel, envelope)
             info = self.client.publish(
-                self._topic(channel),
-                wire.encode_envelope(channel, envelope),
-                qos=1,
-                properties=self._publish_props,
+                self._topic(channel), payload, qos=1, properties=self._publish_props
             )
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
                 return
+            self.stats["bytes"] += len(payload)
             with self._lock:
                 if self._sent_upto <= self._stored:
                     # The first unconfirmed item: the resend clock starts now.
