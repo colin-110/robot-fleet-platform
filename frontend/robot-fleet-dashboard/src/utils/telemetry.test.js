@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPresence, isNewerReading, readingTime } from "./telemetry";
+import { applyPresence, asKeyframe, isNewerReading, readingTime } from "./telemetry";
 
 describe("readingTime", () => {
   it("prefers the live timestamp over last_seen", () => {
@@ -62,5 +62,12 @@ describe("applyPresence", () => {
   it("does not mutate the input", () => {
     applyPresence(robots, { 1: false });
     expect(robots[0].status).toBe("ACTIVE");
+  });
+});
+
+describe("asKeyframe", () => {
+  it("makes the message's values the keyframe the predictor starts from", () => {
+    const kf = asKeyframe({ robot_id: 1, x: 3, y: 4, battery: 70, timestamp: "2026-11-01T12:00:00Z" });
+    expect(kf).toMatchObject({ keyframe_x: 3, keyframe_y: 4, keyframe_battery: 70, keyframe_at: "2026-11-01T12:00:00Z" });
   });
 });

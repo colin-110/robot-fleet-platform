@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 to 5 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 8 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -183,11 +183,32 @@ Each step ships with tests and a measurement, and is committed separately.
    battery filter assumed a near-constant drain and reported ranges far
    narrower than its error when a robot started a mission; the drain is now
    allowed to drift, faster when the robot reports its own rate.
-6. **Budget allocator.** Online `c_i` estimates, weights, the closed-form
-   allocation, desired config.
-7. **Storage tiers.** Exact rollups from segments and the retention tiers.
-8. **Dashboard.** Predictor-driven animation, error bounds, viewport
-   subscriptions, alarm views.
+6. **Budget allocator** (done). `app/budget/`: the closed-form allocation with
+   `lambda` by bisection, each robot's demand learned online and its
+   tolerance-independent floor fitted from two operating points, weights for
+   alarms, anomalies and robots a dashboard is watching, and feedback on the
+   fleet's measured total, which makes the total come out right however far
+   the model is from a real robot. Measured live with the simulator (20
+   robots, budget 70 % of the natural 289 a minute): from the third minute the
+   fleet averaged 194 a minute against a budget of 202, swinging by about a
+   third from minute to minute, as the simulated fleet does by itself (its
+   batteries cycle every few minutes). Live runs found two bugs: the
+   controller published the settings it had loaded instead of the ones it had
+   just stored (a stale ORM object), and it handed the whole budget to the
+   robots it happened to be measuring. A closed-loop test, against robots that
+   do not follow the model, fails without the feedback.
+7. **Storage tiers** (done). `app/storage/`: 1-minute and 1-hour rollups,
+   time-weighted integrals over the predictor's segments (checked against a
+   numerical integration of the predictor), recomputed for keyframes that
+   arrive late; hypertables kept a year and indefinitely, raw keyframes 30
+   days. `GET /robots/<id>/history` serves them, and the fleet health trend is
+   time-weighted too.
+8. **Dashboard** (done). The map animates robots with the shared predictor
+   between keyframes and draws each one's error bound; cards show bounds and
+   runtime ranges; an alarms panel with acknowledge; opening a robot on the
+   map asks the server to watch it more closely. The WebSocket accepts
+   per-robot subscriptions, but the dashboard keeps all robots, because its
+   roster shows every one.
 9. **Benchmark and the 512 MB test.** Publish the numbers in the README.
 10. **Deployment.** The smallest instance, TLS on MQTT, backups to S3, budget
     alerts.

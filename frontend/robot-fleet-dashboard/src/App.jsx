@@ -6,6 +6,7 @@ import useRelativeTime from "./hooks/useRelativeTime";
 import useTheme from "./hooks/useTheme";
 import { matchesQuery } from "./utils/search";
 
+import AlarmsPanel from "./components/AlarmsPanel";
 import EventLog from "./components/EventLog";
 import FleetStats from "./components/FleetStats";
 import Navbar from "./components/Navbar";
@@ -23,7 +24,7 @@ const FleetMap = lazy(() => import("./components/FleetMap"));
 const FleetStatusChart = lazy(() => import("./components/FleetStatusChart"));
 const AnalyticsPanel = lazy(() => import("./components/AnalyticsPanel"));
 
-function DashboardView({ filteredRobots, events, onViewAllEvents }) {
+function DashboardView({ filteredRobots, events, onViewAllEvents, alarms, setAlarms, watch }) {
   return (
     <div className="dash">
       <FleetStats robots={filteredRobots} />
@@ -31,10 +32,11 @@ function DashboardView({ filteredRobots, events, onViewAllEvents }) {
       <div className="dash__main">
         <div className="dash__map">
           <Suspense fallback={<LoadingSkeleton type="panel" />}>
-            <FleetMap robots={filteredRobots} />
+            <FleetMap robots={filteredRobots} onWatch={watch} />
           </Suspense>
         </div>
         <div className="dash__aside">
+          <AlarmsPanel alarms={alarms} onChange={setAlarms} />
           <Suspense fallback={<LoadingSkeleton type="panel" />}>
             <FleetStatusChart robots={filteredRobots} />
           </Suspense>
@@ -110,6 +112,9 @@ function FleetConsole() {
     events,
     refreshAll,
     isLoading,
+    alarms,
+    setAlarms,
+    watch,
   } = useFleetData();
 
   const { formatRelativeTime } = useRelativeTime();
@@ -185,6 +190,9 @@ function FleetConsole() {
                 filteredRobots={filteredRobots}
                 events={events}
                 onViewAllEvents={() => setActiveNav("Event Log")}
+                alarms={alarms}
+                setAlarms={setAlarms}
+                watch={watch}
               />
               <SectionLabel title="Fleet Roster" count={filteredRobots.length} />
               <RobotGrid robots={filteredRobots} />
@@ -195,7 +203,7 @@ function FleetConsole() {
             <>
               <div className="dash__map dash__map--tall">
                 <Suspense fallback={<LoadingSkeleton type="panel" />}>
-                  <FleetMap robots={filteredRobots} />
+                  <FleetMap robots={filteredRobots} onWatch={watch} />
                 </Suspense>
               </div>
               <SectionLabel title="Fleet Roster" count={filteredRobots.length} />

@@ -12,8 +12,8 @@ step it is multiplied by ``(budget / measured) ** FEEDBACK_GAIN``, within
 limits. The allocator still decides who gets which share; the feedback makes
 the total come out right.
 
-Weights: an open alarm makes a robot matter four times as much, an anomaly
-score above 2 twice as much. A robot's new tolerances are pushed as desired
+Weights: an open alarm makes a robot matter four times as much, a dashboard
+looking at it closely three times, an anomaly score above 2 twice as much. A robot's new tolerances are pushed as desired
 config only when its scale moves by more than ``HYSTERESIS``, so a steady
 fleet sends no config at all. The allocator owns the ``tol_*`` settings while
 the budget is on; anything else in a robot's desired config is kept.
@@ -101,6 +101,9 @@ def demands(
         else set()
     )
     peers = anomaly.scores(fleet.robots(), now)
+    from app.websocket_manager import manager
+
+    watched = manager.watched()
     out = []
     for robot_id, model in fleet.robots().items():
         rate = model.rate_per_minute(now)
@@ -110,6 +113,8 @@ def demands(
         weight = 1.0
         if robot_id in open_alarms:
             weight *= 4
+        if robot_id in watched:
+            weight *= 3
         peer = peers.get(robot_id)
         if peer and peer.score > 2:
             weight *= 2

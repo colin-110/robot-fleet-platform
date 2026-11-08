@@ -32,6 +32,8 @@ settings = get_settings()
 
 # Max frames buffered per client before we start dropping the oldest.
 CLIENT_QUEUE_MAXSIZE = 256
+# The most robots one client may subscribe to or watch.
+MAX_SUBSCRIBED = 10_000
 
 
 class ConnectionManager:
@@ -44,6 +46,10 @@ class ConnectionManager:
         self._senders: dict[WebSocket, asyncio.Task] = {}
         # Set by the lifespan in mqtt mode: publishes one relay message.
         self.relay = None
+        # Which robots' telemetry each client wants (None: all of them), and
+        # which it is looking at closely, which the budget allocator favours.
+        self._subscriptions: dict[WebSocket, set[int] | None] = {}
+        self._watching: dict[WebSocket, set[int]] = {}
 
     @property
     def connection_count(self) -> int:
@@ -68,6 +74,8 @@ class ConnectionManager:
             logger.info("WebSocket disconnected (total: %d)", self.connection_count)
 
         self._queues.pop(websocket, None)
+        self._subscriptions.pop(websocket, None)
+        self._watching.pop(websocket, None)
         sender = self._senders.pop(websocket, None)
         if sender is not None:
             sender.cancel()
@@ -88,6 +96,36 @@ class ConnectionManager:
                     return
         except asyncio.CancelledError:
             pass
+
+    def handle_client_message(self, websocket: WebSocket, text: str) -> None:
+        """A client's control message.
+
+        ``{"type": "subscribe", "robots": [ids] | null}``: from now on, send
+        this client telemetry only for these robots (null: all). Alarms,
+        events and presence always go to everyone.
+        ``{"type": "watch", "robots": [ids]}``: robots the user is looking at
+        closely, which get tighter tolerances under a message budget.
+        """
+        try:
+            body = orjson.loads(text)
+        except orjson.JSONDecodeError:
+            return
+        if not isinstance(body, dict):
+            return
+        robots = body.get("robots")
+        ids = None
+        if isinstance(robots, list):
+            ids = {
+                r for r in robots[:MAX_SUBSCRIBED] if isinstance(r, int) and not isinstance(r, bool)
+            }
+        if body.get("type") == "subscribe" and (robots is None or ids is not None):
+            self._subscriptions[websocket] = ids
+        elif body.get("type") == "watch" and ids is not None:
+            self._watching[websocket] = ids
+
+    def watched(self) -> set[int]:
+        """Every robot some dashboard is looking at closely."""
+        return set().union(*self._watching.values()) if self._watching else set()
 
     async def broadcast(self, data: dict) -> None:
         """Fan out one message to dashboards."""
@@ -132,9 +170,14 @@ class ConnectionManager:
         enqueue the new one, so a slow consumer sheds stale telemetry instead of
         stalling the broadcast loop or growing memory without bound.
         """
+        # Telemetry (no "type") is filtered by subscription; the rest is not.
+        robot_id = data.get("robot_id") if "type" not in data else None
         for websocket in list(self.active_connections):
             queue = self._queues.get(websocket)
             if queue is None:
+                continue
+            wanted = self._subscriptions.get(websocket)
+            if robot_id is not None and wanted is not None and robot_id not in wanted:
                 continue
             try:
                 queue.put_nowait(data)

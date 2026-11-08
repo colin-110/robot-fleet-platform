@@ -44,6 +44,7 @@ from app.routes.mqtt_auth import router as mqtt_auth_router
 from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
+from app.storage.job import RollupJob
 from app.tickets import SCOPE_CONSOLE, verify_ticket
 from app.websocket_manager import manager
 
@@ -91,6 +92,9 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine = alarm_engine.AlarmEngine()
     alarm_engine.engine.listeners.append(alarm_engine.broadcast)
     alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
+    # Exact rollups of the keyframes, every minute.
+    rollup_task = asyncio.create_task(RollupJob().run())
+
     # The message budget (off until an operator sets one).
     budget_controller.controller = budget_controller.BudgetController()
     budget_task = asyncio.create_task(budget_controller.controller.run())
@@ -136,6 +140,7 @@ async def lifespan(app: FastAPI):
     timeout_task.cancel()
     alarm_task.cancel()
     budget_task.cancel()
+    rollup_task.cancel()
     budget_controller.controller = None
     if webhook_task:
         webhook_task.cancel()
@@ -268,7 +273,9 @@ async def websocket_endpoint(
     try:
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                text = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                if text not in ("ping", "pong"):
+                    manager.handle_client_message(websocket, text)
             except asyncio.TimeoutError:
                 await websocket.send_text("ping")
     except WebSocketDisconnect:

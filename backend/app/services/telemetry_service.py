@@ -16,6 +16,7 @@ from app.intelligence import fleet
 from app.models import Telemetry
 from app.repositories.telemetry_repo import TelemetryRepository, persist
 from app.schemas import TelemetryCreate
+from app.storage import job as rollups
 from app.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[
     inserted = await persist_readings(db, data)
     await db.commit()
     fleet.observe(inserted)
+    rollups.mark_dirty(inserted)
     return inserted
 
 

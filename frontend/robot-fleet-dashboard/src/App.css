@@ -137,7 +137,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1.85fr) minmax(320px, 1fr);
   gap: 20px;
-  height: clamp(520px, 64vh, 760px);
+  height: clamp(600px, 76vh, 880px);
 }
 .dash__map { min-width: 0; min-height: 0; display: flex; }
 .dash__map--tall { min-height: 0; height: clamp(420px, 62vh, 680px); display: flex; }
@@ -145,7 +145,8 @@
 
 .dash__aside {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1.25fr);
+  /* Alarms, status chart, live events. */
+  grid-template-rows: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.25fr);
   gap: 20px;
   min-width: 0;
   min-height: 0;
@@ -155,12 +156,12 @@
 @media (max-width: 1040px) {
   .dash__main { grid-template-columns: 1fr; height: auto; }
   .dash__map { height: 380px; }
-  .dash__aside { grid-template-rows: 300px 360px; }
+  .dash__aside { grid-template-rows: 240px 300px 360px; }
 }
 @media (max-width: 560px) {
   .dash__map { height: 300px; }
   .dash__map--tall { height: 320px; }
-  .dash__aside { grid-template-rows: 260px 320px; gap: 16px; }
+  .dash__aside { grid-template-rows: 220px 260px 320px; gap: 16px; }
 }
 
 .healthGrid {
@@ -257,6 +258,29 @@
 .eventRow__body { min-width: 0; flex: 1; }
 .eventRow__msg { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.35; }
 .eventRow__meta { display: flex; gap: 8px; margin-top: 3px; font-size: 11px; color: var(--muted); }
+
+/* ── Alarms ───────────────────────────────────────────────────────── */
+.alarmsPanel { padding: 0; display: flex; flex-direction: column; min-height: 0; height: 100%; overflow: hidden; }
+.alarmsPanel__empty { padding: 4px 16px 16px; margin: 0; }
+.alarmsPanel__list {
+  list-style: none; margin: 0; padding: 0 12px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 1; min-height: 0; overflow-y: auto;
+}
+.alarmRow {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--bg-2); border: 1px solid var(--line);
+}
+.alarmRow[data-state="ACKNOWLEDGED"] { opacity: 0.7; }
+.alarmRow__accent { width: 3px; align-self: stretch; border-radius: 3px; flex-shrink: 0; }
+.alarmRow__body { min-width: 0; flex: 1; }
+.alarmRow__msg { font-size: 13px; color: var(--text); font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.alarmRow__meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--muted); }
+.alarmRow .btn { flex-shrink: 0; }
+
+/* An error bound next to a value: the value is within this of the truth. */
+.bound { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
 
 /* ── Roster grid + robot card ─────────────────────────────────────── */
 .robotGridPro {

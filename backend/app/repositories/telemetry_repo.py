@@ -49,6 +49,32 @@ def _latest_readings(rows: list[tuple[TelemetryCreate, datetime]]) -> list[dict]
     ]
 
 
+_TREND_FIELDS = (
+    "battery",
+    "temperature",
+    "battery_health",
+    "motor_health",
+    "sensor_health",
+    "network_health",
+)
+
+
+def _trend_keyframe(row: Telemetry) -> dict:
+    return {
+        "timestamp": row.timestamp.timestamp(),
+        "battery": row.battery,
+        "battery_rate": row.battery_rate,
+        "temperature": row.temperature,
+        "speed": row.speed,
+        # Robots that report no component health count as healthy, as in
+        # fleet status.
+        "battery_health": 100.0 if row.battery_health is None else row.battery_health,
+        "motor_health": 100.0 if row.motor_health is None else row.motor_health,
+        "sensor_health": 100.0 if row.sensor_health is None else row.sensor_health,
+        "network_health": 100.0 if row.network_health is None else row.network_health,
+    }
+
+
 class TelemetryRepository:
     """Encapsulates all telemetry-table database operations."""
 
@@ -114,48 +140,62 @@ class TelemetryRepository:
         return list(result.scalars().all())
 
     async def get_fleet_health_trend(self, limit_minutes: int = 20) -> list[dict]:
-        """Calculates fleet health trend over the last limit_minutes by grouping by minute."""
+        """Fleet health per minute over the last ``limit_minutes``, oldest first.
+
+        Exact and time-weighted (``app/storage/rollups.py``): keyframes are
+        unevenly spaced, so ``AVG()`` over rows would let a minute with many
+        keyframes from one robot outweigh the rest. Computed from keyframes so
+        the current, still filling minute is included; the stored rollups are
+        for history.
+        """
+        from app.storage.rollups import minute_buckets
+
+        now = datetime.now(timezone.utc).timestamp()
+        start = (now // 60 - (limit_minutes - 1)) * 60
         stmt = (
-            select(
-                func.date_trunc("minute", Telemetry.timestamp).label("bucket"),
-                func.avg(Telemetry.battery).label("avg_battery"),
-                func.avg(Telemetry.temperature).label("avg_temperature"),
-                func.avg(Telemetry.battery_health).label("avg_batt_h"),
-                func.avg(Telemetry.motor_health).label("avg_motor_h"),
-                func.avg(Telemetry.sensor_health).label("avg_sensor_h"),
-                func.avg(Telemetry.network_health).label("avg_net_h"),
-            )
-            .where(Telemetry.timestamp > func.now() - text(f"INTERVAL '{limit_minutes} minutes'"))
-            .group_by("bucket")
-            .order_by(text("bucket DESC"))
-            .limit(limit_minutes)
+            select(Telemetry)
+            .where(Telemetry.timestamp >= datetime.fromtimestamp(start - 60, tz=timezone.utc))
+            .order_by(Telemetry.robot_id, Telemetry.timestamp)
         )
-        result = await self.db.execute(stmt)
-        rows = result.all()
+        by_robot: dict[int, list[dict]] = {}
+        for row in (await self.db.execute(stmt)).scalars():
+            by_robot.setdefault(row.robot_id, []).append(_trend_keyframe(row))
+
+        totals: dict[float, dict] = {}
+        for frames in by_robot.values():
+            for bucket_start, bucket in minute_buckets(frames, start, now, 30.0).items():
+                row = bucket.row(0)
+                acc = totals.setdefault(bucket_start, {"w": 0.0, "n": 0, "sums": {}})
+                weight = row["seconds_covered"]
+                if weight == 0:
+                    # Only an instant so far: the keyframe's own values.
+                    frame = [f for f in frames if bucket_start <= f["timestamp"]][0]
+                    row = {f"{k}_avg": frame.get(k) for k in _TREND_FIELDS}
+                    weight = 1e-6
+                acc["w"] += weight
+                for k in _TREND_FIELDS:
+                    value = row.get(f"{k}_avg")
+                    if value is not None:
+                        acc["sums"][k] = acc["sums"].get(k, 0.0) + value * weight
 
         trend = []
-        for row in reversed(rows):  # oldest first
-            avg_component = (
-                row.avg_batt_h + row.avg_motor_h + row.avg_sensor_h + row.avg_net_h
+        for bucket_start in sorted(totals):
+            acc = totals[bucket_start]
+            avg = {k: acc["sums"].get(k, 0.0) / acc["w"] for k in _TREND_FIELDS}
+            component = (
+                avg["battery_health"]
+                + avg["motor_health"]
+                + avg["sensor_health"]
+                + avg["network_health"]
             ) / 4.0
             score = (
-                (avg_component * 0.55)
-                + (row.avg_battery * 0.30)
-                - max(0.0, row.avg_temperature - 55.0) * 1.1
+                component * 0.55 + avg["battery"] * 0.30 - max(0.0, avg["temperature"] - 55.0) * 1.1
             )
-            score = max(0.0, min(100.0, score))
-
-            # format bucket properly
-            bucket = row.bucket
-            if bucket.tzinfo is None:
-                bucket = bucket.replace(tzinfo=timezone.utc)
-            else:
-                bucket = bucket.astimezone(timezone.utc)
-
+            stamp = datetime.fromtimestamp(bucket_start, tz=timezone.utc)
             trend.append(
                 {
-                    "timestamp": bucket.isoformat().replace("+00:00", "Z"),
-                    "health_score": round(score, 1),
+                    "timestamp": stamp.isoformat().replace("+00:00", "Z"),
+                    "health_score": round(max(0.0, min(100.0, score)), 1),
                 }
             )
         return trend

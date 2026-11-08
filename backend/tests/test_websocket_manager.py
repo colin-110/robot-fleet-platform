@@ -229,3 +229,48 @@ async def test_without_a_broker_connection_local_clients_still_get_updates(manag
     await _settle()
     assert ws.sent == [{"robot_id": 3}]
     manager.disconnect(ws)
+
+
+# ── Subscriptions and watching ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_filters_telemetry_but_not_alarms(manager):
+    ws, other = FakeWebSocket(), FakeWebSocket()
+    await manager.connect(ws)
+    await manager.connect(other)
+    manager.handle_client_message(ws, orjson.dumps({"type": "subscribe", "robots": [2]}).decode())
+    for robot_id in (1, 2):
+        await manager.broadcast({"robot_id": robot_id, "battery": 50.0})
+    await manager.broadcast({"type": "ALARM", "alarm": {"robot_id": 1}})
+    await _settle()
+    assert [m.get("robot_id") for m in ws.sent] == [2, None]
+    assert len(other.sent) == 3
+    # null: everything again.
+    manager.handle_client_message(ws, '{"type": "subscribe", "robots": null}')
+    await manager.broadcast({"robot_id": 1, "battery": 49.0})
+    await _settle()
+    assert ws.sent[-1]["robot_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_watched_robots_are_collected_and_forgotten(manager):
+    a, b = FakeWebSocket(), FakeWebSocket()
+    await manager.connect(a)
+    await manager.connect(b)
+    manager.handle_client_message(a, '{"type": "watch", "robots": [3, 4]}')
+    manager.handle_client_message(b, '{"type": "watch", "robots": [4, 5, true, "x"]}')
+    assert manager.watched() == {3, 4, 5}
+    manager.disconnect(a)
+    assert manager.watched() == {4, 5}
+
+
+@pytest.mark.asyncio
+async def test_bad_control_messages_are_ignored(manager):
+    ws = FakeWebSocket()
+    await manager.connect(ws)
+    for text in ("not json", "[]", '{"type": "subscribe", "robots": "all"}', '{"type": "x"}'):
+        manager.handle_client_message(ws, text)
+    await manager.broadcast({"robot_id": 9, "battery": 1.0})
+    await _settle()
+    assert len(ws.sent) == 1

@@ -34,3 +34,20 @@ export function applyPresence(robots, presence) {
     offline.has(String(robot.robot_id)) ? { ...robot, status: "OFFLINE" } : robot,
   );
 }
+
+/**
+ * A live keyframe as the predictor needs it. The REST snapshot carries its
+ * keyframe separately (``keyframe_at``, ``keyframe_x`` ...) because its x, y
+ * and battery are already carried forward; a WebSocket message *is* the
+ * keyframe, so it must replace those fields, or the robot would be carried
+ * forward from the previous snapshot's keyframe.
+ */
+export function asKeyframe(message) {
+  return {
+    ...message,
+    keyframe_at: message.timestamp,
+    keyframe_x: message.x,
+    keyframe_y: message.y,
+    keyframe_battery: message.battery,
+  };
+}
