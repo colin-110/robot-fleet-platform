@@ -171,7 +171,12 @@ class Event(Base):
         server_default=func.now(),
     )
 
-    __table_args__ = (Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),)
+    __table_args__ = (
+        Index("ix_events_robot_id_desc", "robot_id", timestamp.desc()),
+        # An event is identified by robot, device time and message, so a
+        # resent or redelivered event is skipped instead of stored twice.
+        UniqueConstraint("robot_id", "timestamp", "message", name="uq_events_robot_time_message"),
+    )
 
 
 class User(Base):
