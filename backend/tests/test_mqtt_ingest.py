@@ -239,6 +239,28 @@ async def test_envelopes_are_stored_like_json(consumer, broadcasts, event_broadc
     assert consumer.client.acked == [1, 2]
 
 
+async def test_a_batch_bigger_than_one_statement_allows(consumer, broadcasts, event_broadcasts):
+    # 3,000 readings is 48,000 parameters, over Postgres's 32,767 per statement.
+    batch = [
+        env_delivery(3, "telemetry", [agent_reading(i * 1000 + j) for j in range(1000)], i)
+        for i in range(3)
+    ]
+    batch.append(
+        env_delivery(
+            3,
+            "events",
+            [{"timestamp": T0 + timedelta(seconds=i), "message": "tick"} for i in range(12_000)],
+            3,
+            seq=3001,
+        )
+    )
+    # Bounded: a failing write is retried forever, which would hang the test.
+    await asyncio.wait_for(consumer.process(batch), 30)
+    assert await stored_count() == 3000
+    assert await event_count() == 12_000
+    assert consumer.client.acked == [0, 1, 2, 3]
+
+
 async def test_a_bad_item_does_not_sink_its_envelope(consumer, broadcasts):
     # A reading without a battery fails validation; its neighbours are kept.
     items = [agent_reading(0), {"timestamp": T0 + timedelta(seconds=1)}, agent_reading(2)]
