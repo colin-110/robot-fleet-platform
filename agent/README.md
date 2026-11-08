@@ -6,3 +6,6 @@ telemetry, events and command progress to the FleetOps broker over MQTT.
 - **Compact.** CBOR with short keys, fixed-point numbers and only the fields
   that changed (`fleetops_agent/wire.py`). A reading is about 130 bytes on
   its own and 20 to 35 inside a batch, against about 450 as JSON.
+- **Nothing lost on a crash.** Everything sent goes through a bounded SQLite
+  outbox (`fleetops_agent/outbox.py`) and stays there until the server
+  confirms it is stored, so a killed robot process resends it on restart.
