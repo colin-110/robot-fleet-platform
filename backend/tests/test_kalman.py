@@ -35,7 +35,7 @@ def test_the_range_narrows_with_more_readings():
         if t in (60, 590):
             r = kf.runtime()
             spans.append(r.high - r.low)
-    assert spans[1] < spans[0] / 3
+    assert spans[1] < spans[0] / 2
 
 
 def test_a_reported_rate_is_used():
@@ -86,3 +86,18 @@ async def test_fleet_status_uses_the_filter():
     assert low <= summary["runtime_remaining_minutes"] <= high
     assert 80 < summary["runtime_remaining_minutes"] < 100
     assert fleet.get(31).battery.rate == pytest.approx(-0.01, rel=0.05)
+
+
+def test_a_drain_that_speeds_up_is_followed_and_the_range_admits_it():
+    # Shaped like a simulated robot starting a mission: the drain climbs from
+    # 0.03 to 0.4 % per second over a minute, then holds.
+    kf = BatteryKalman()
+    level, t = 97.0, 0.0
+    while t < 150:
+        rate = -min(0.4, 0.03 + 0.37 * t / 60)
+        kf.update(t, level, rate)
+        level += rate * 4
+        t += 4
+    true_minutes = level / 0.4 / 60
+    runtime = kf.runtime()
+    assert runtime.low <= true_minutes <= runtime.high

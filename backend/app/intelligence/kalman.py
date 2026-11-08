@@ -16,11 +16,20 @@ import math
 from dataclasses import dataclass
 
 # Measurement noise: battery readings (percent) and reported rates (%/s).
+# A robot's own rate is a smoothed difference of noisy readings, good to
+# about 0.02 %/s (just over 1 % per minute).
 LEVEL_SIGMA = 0.5
-RATE_SIGMA = 0.002
-# Process noise per second: how fast the true level and rate wander.
+RATE_SIGMA = 0.02
+# Process noise per second: how fast the true level and rate wander. Drain
+# follows load (idle, driving, climbing), so the rate has to be allowed to
+# drift, or the filter lags a change in load and reports a range that misses
+# the truth. How much depends on what is measured: when the robot reports its
+# rate, the drift can be fast (about 0.01 %/s a minute), because the rate is
+# observed directly; from levels alone it must be slow (about 0.0025), or the
+# drain is lost in the noise of the readings.
 LEVEL_Q = 0.0005
-RATE_Q = 1e-9
+RATE_Q = 1e-7
+RATE_Q_OBSERVED = 2e-6
 # A rise larger than this means the battery is charging or was swapped.
 JUMP = 2.0
 
@@ -58,7 +67,7 @@ class BatteryKalman:
         p00, p01, p11 = self.p[0][0], self.p[0][1], self.p[1][1]
         p00 = p00 + 2 * dt * p01 + dt * dt * p11 + LEVEL_Q * dt
         p01 = p01 + dt * p11
-        p11 = p11 + RATE_Q * dt
+        p11 = p11 + (RATE_Q if rate is None else RATE_Q_OBSERVED) * dt
         # Update with the level, then with the rate if there is one.
         self.x, self.p = [b, r], [[p00, p01], [p01, p11]]
         self._measure(0, level, LEVEL_SIGMA**2)
