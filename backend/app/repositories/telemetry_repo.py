@@ -16,6 +16,11 @@ from app.models import Telemetry
 from app.repositories.robot_repo import RobotRepository, latest_seen
 from app.schemas import TelemetryCreate
 
+# Postgres takes at most 32,767 parameters per statement, and a reading has
+# 16 columns. One ingest batch can hold far more readings than that (200
+# messages of up to 100 readings each), so inserts go in chunks.
+MAX_ROWS_PER_INSERT = 1000
+
 
 async def persist(
     db: AsyncSession, rows: list[tuple[TelemetryCreate, datetime]]
@@ -53,7 +58,10 @@ class TelemetryRepository:
     # ── Write ───────────────────────────────────────────────────────
 
     async def insert_many(self, rows: list[tuple[TelemetryCreate, datetime]]) -> list[Telemetry]:
-        """Insert readings in one statement, skipping ones already stored.
+        """Insert readings, skipping ones already stored.
+
+        One statement per ``MAX_ROWS_PER_INSERT`` readings, all in the
+        caller's transaction.
 
         A reading is identified by (robot_id, timestamp), enforced by the
         unique ix_telemetry_robot_timestamp index, so a retried upload or a
@@ -63,14 +71,16 @@ class TelemetryRepository:
         if not rows:
             return []
         values = [{**data.model_dump(exclude={"timestamp"}), "timestamp": ts} for data, ts in rows]
-        stmt = (
-            pg_insert(Telemetry)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["robot_id", "timestamp"])
-            .returning(Telemetry)
-        )
-        result = await self.db.execute(stmt)
-        return list(result.scalars().all())
+        inserted: list[Telemetry] = []
+        for start in range(0, len(values), MAX_ROWS_PER_INSERT):
+            stmt = (
+                pg_insert(Telemetry)
+                .values(values[start : start + MAX_ROWS_PER_INSERT])
+                .on_conflict_do_nothing(index_elements=["robot_id", "timestamp"])
+                .returning(Telemetry)
+            )
+            inserted.extend((await self.db.execute(stmt)).scalars().all())
+        return inserted
 
     # ── Read ────────────────────────────────────────────────────────
 

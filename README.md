@@ -18,30 +18,41 @@ emergency stop.
 ## Architecture
 
 ~~~text
-Robots ──MQTT (QoS 1, device keys, last will)──► Mosquitto ──► FastAPI ──► TimescaleDB
-  ▲                                                 │  ack after    │      telemetry (hypertable)
-  └──────────── commands pushed ◄───────────────────┘  commit       │      robot_state, commands,
-                                                                    ▼      events, robots, users
-                                                         WebSocket ──► Dashboard (React, Vercel)
+Robot agent ──MQTT (QoS 1, CBOR, device keys, last will)──► Mosquitto ──► FastAPI ──► TimescaleDB
+ on-disk outbox                                                 │  ack after    │     telemetry (hypertable)
+  ▲  ▲                                                          │  commit       │     robot_state, commands,
+  │  └──── commands, settings, "stored up to N" ◄───────────────┘               │     events, robots, users
+  └─ deletes only what the server confirmed                                     ▼
+                                                                WebSocket ──► Dashboard (React, Vercel)
 ~~~
 
 The broker is the queue: the API acknowledges a message only after it is
-committed, so a crash of the API or the broker loses nothing (measured, with
-the remaining gaps listed in [the architecture doc](docs/architecture.md#measured-durability)). Every reading
+committed. On the robot, the agent keeps every reading on disk until the API
+confirms it is stored, so a crash of the robot, the API or the broker loses
+nothing (measured, with the remaining gaps listed in
+[the architecture doc](docs/architecture.md#measured-durability)). Every reading
 goes through one write path that inserts it, registers the robot and updates
 its current state in a single transaction. There is no Redis and no worker
 process.
 
-This is step 2 of a redesign aimed at running a fleet on the smallest possible
+This is step 3 of a redesign aimed at running a fleet on the smallest possible
 server; next is error-budgeted telemetry. See
 [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
 ## Engineering decisions
 
-- **No data loss, measured.** Messages are acknowledged only after commit. In
-  a chaos test (20 robots, `kill -9` of the API or the broker mid-stream),
-  five runs stored every reading exactly once.
+- **No data loss, measured.** Messages are acknowledged only after commit, and
+  robots keep them on disk until the server confirms they are stored. Chaos
+  tests (20 robots, `kill -9` of the robots, the API or the broker mid-stream)
+  stored every reading exactly once in every run. The previous client lost
+  readings the broker had already acknowledged when the broker was killed.
+- **A robot agent package.** [`agent/`](agent/README.md): compact CBOR
+  messages (a reading is 20 to 35 bytes in a batch, against about 450 as
+  JSON), a SQLite outbox, commands run once, and settings pushed from the
+  server with the robot reporting what it applied.
+- **Fast clocks corrected.** A robot whose clock runs ahead has its readings
+  moved back by the measured offset, keeping their spacing.
 - **Idempotent writes.** A reading is identified by `(robot_id, timestamp)`,
   the table's primary key, so a redelivered message is never stored twice.
 - **Presence from the last will.** A robot whose connection drops is shown
@@ -68,6 +79,9 @@ Tests cover:
 - telemetry ingestion, idempotency and fleet-state derivation
 - the MQTT consumer, presence, command push and broker auth, partly against a
   real broker (set `MQTT_TEST_HOST`)
+- the stored watermark, robot settings and the agent's wire format
+- the agent itself: outbox durability, resends after a broker loses messages,
+  a robot process killed with `-9`
 - device keys, rotation and revocation
 - command concurrency, idempotency and timeouts
 - WebSocket lifecycle and reconnect behavior
@@ -81,6 +95,14 @@ cd backend
 docker run -d -p 1883:1883 eclipse-mosquitto:2.0.22 mosquitto -c /mosquitto-no-auth.conf
 DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db \
   MQTT_TEST_HOST=localhost pytest tests/ -v --cov=app
+~~~
+
+Agent:
+
+~~~bash
+cd agent
+pip install -e '.[test]'
+MQTT_TEST_HOST=localhost pytest
 ~~~
 
 Frontend:
@@ -109,7 +131,8 @@ The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleD
 - `backend/app/` - API routes, services, repositories and authentication
 - `backend/tests/` - backend test suite
 - `frontend/robot-fleet-dashboard/` - React dashboard
-- `simulator/` - asynchronous robot simulator, one MQTT connection per robot
+- `agent/` - the robot-side package (`fleetops-agent`)
+- `simulator/` - asynchronous robot simulator, each robot sending through its own agent
 - `mosquitto/` - broker configuration
 - `scripts/` - EC2 provisioning and CI deploy-role setup
 - `docs/` - architecture, operations, and design decisions (`docs/adr/`)

@@ -75,7 +75,7 @@ Commands ──MQTT QoS 1──► robot                continuous aggregates
 - Presence from last-will messages
 - WebSocket fan-out in-process, or relayed through the broker for several
   processes; Redis removed
-- Simulator sends over MQTT (rebuilt on a reusable robot agent in ADR 0002,
+- Simulator sends over MQTT (since rebuilt on the robot agent package, ADR 0002
   step 3)
 
 Where phase 2 departed from the plan, and why:

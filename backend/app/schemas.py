@@ -21,9 +21,11 @@ class CommandCreate(BaseModel):
 class CommandStatusUpdate(BaseModel):
     """Status update for an existing command."""
 
-    status: str
-    error_code: str | None = None
-    error_message: str | None = None
+    # Lengths match the columns. A value the database refuses would fail the
+    # whole ingest batch on every retry, so it is refused here instead.
+    status: str = Field(max_length=32)
+    error_code: str | None = Field(None, max_length=64)
+    error_message: str | None = Field(None, max_length=255)
     result: dict | None = None
 
 
@@ -37,6 +39,24 @@ class EventCreate(BaseModel):
     robot_id: int
     message: str = Field(max_length=512)
     timestamp: datetime | None = None
+
+
+class RobotConfigUpdate(BaseModel):
+    """New desired settings. Replaces the previous ones entirely."""
+
+    values: dict
+
+
+class RobotConfigResponse(BaseModel):
+    robot_id: int
+    desired: dict
+    version: int
+    updated_at: datetime | None = None
+    reported: dict | None = None
+    reported_rejected: dict | None = None
+    reported_version: int | None = None
+    reported_at: datetime | None = None
+    in_sync: bool
 
 
 class EventResponse(BaseModel):
@@ -64,9 +84,10 @@ class TelemetryCreate(BaseModel):
     temperature: float
     speed: float
     timestamp: datetime
-    status: str | None = None
-    mission_id: str | None = None
-    mission_type: str | None = None
+    # Lengths match the columns (see CommandStatusUpdate for why).
+    status: str | None = Field(None, max_length=32)
+    mission_id: str | None = Field(None, max_length=64)
+    mission_type: str | None = Field(None, max_length=32)
     mission_progress: float | None = None
     mission_start_time: datetime | None = None
     battery_health: float | None = None

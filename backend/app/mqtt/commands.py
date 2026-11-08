@@ -52,7 +52,10 @@ class CommandPublisher:
     def __init__(self, client, session_factory=AsyncSessionLocal) -> None:
         self.client = client
         self.session_factory = session_factory
-        self._loop: asyncio.AbstractEventLoop | None = None
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
         self._waiting: dict[int, asyncio.Future] = {}
         self._tasks: set[asyncio.Task] = set()
         client.on_publish = self._on_publish
@@ -60,8 +63,12 @@ class CommandPublisher:
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    # paho thread
+    # paho thread. Called for everything published on this connection, not
+    # only commands (watermarks, settings, relayed broadcasts), and an
+    # exception here kills paho's network thread, so it must never raise.
     def _on_publish(self, client, userdata, mid, reason_code, properties) -> None:
+        if self._loop is None:
+            return  # nothing can be waiting before the first publish() binds the loop
         value = reason_code.value if isinstance(reason_code, ReasonCode) else int(reason_code or 0)
         self._loop.call_soon_threadsafe(self._resolve, mid, value)
 

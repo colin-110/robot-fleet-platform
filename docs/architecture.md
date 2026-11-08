@@ -11,7 +11,8 @@ broker. Dashboards get updates over WebSocket. The design is in
 ```mermaid
 graph TB
   subgraph Robots["Robots (one MQTT connection each)"]
-    SIM["Simulator / robot agent<br/>device key, persistent session,<br/>last will"]
+    SIM["Simulator on fleetops-agent<br/>device key, persistent session,<br/>last will"]
+    OUTBOX[("On-disk outbox<br/>(SQLite)")]
   end
 
   BROKER["Mosquitto + go-auth<br/>QoS 1 queues, retained presence"]
@@ -29,12 +30,14 @@ graph TB
   PG["TimescaleDB<br/>telemetry hypertable, robot_state,<br/>robots, commands, events, users"]
   DASH["Dashboard<br/>(React + Leaflet)"]
 
-  SIM <-->|"MQTT"| BROKER
+  SIM --- OUTBOX
+  SIM <-->|"MQTT, CBOR envelopes"| BROKER
   BROKER -->|"login / ACL checks"| AUTH
   BROKER -->|"telemetry, events,<br/>command status, presence"| INGEST
   INGEST --> PERSIST --> PG
   INGEST --> PRES
   CMDS -->|"fleet/&lt;id&gt;/commands"| BROKER
+  INGEST -->|"fleet/&lt;id&gt;/stored"| BROKER
   INGEST --> WS
   DASH <-->|"WebSocket"| WS
   DASH -->|"REST"| API
@@ -45,48 +48,82 @@ graph TB
 
 | Topic | Direction | Notes |
 | :--- | :--- | :--- |
-| `fleet/<id>/telemetry` | robot to server | One reading or a JSON array of them, QoS 1 |
+| `fleet/<id>/telemetry` | robot to server | A CBOR envelope from the agent, or plain JSON (one reading or an array), QoS 1 |
 | `fleet/<id>/events` | robot to server | Must carry the device timestamp |
 | `fleet/<id>/commands/status` | robot to server | `{"id", "status", ...}`, same state machine as the HTTP `PATCH` |
 | `fleet/<id>/presence` | robot to server | Retained `online`; the last will is a retained `offline` |
+| `fleet/<id>/config/reported` | robot to server | Retained: the settings the robot applied, and any it refused |
 | `fleet/<id>/commands` | server to robot | Pushed with QoS 1 into the robot's persistent session |
+| `fleet/<id>/config` | server to robot | Retained desired settings, `{"version", "values"}` |
+| `fleet/<id>/stored` | server to robot | Retained: everything up to this sequence number of the robot's outbox is committed |
 | `fleetops/live` | server to server | Dashboard updates relayed between API processes (`WEBSOCKET_BACKEND=mqtt`) |
 
+The agent's messages are CBOR envelopes with the MQTT 5 content type
+`application/vnd.fleetops.v1+cbor`: a stream id, the sequence number of the
+first item, the robot's floor (the lowest number it still holds), its send
+time, and the items with short keys, fixed-point numbers and only the fields
+that changed. A reading is about 130 bytes on its own and 20 to 35 inside a
+batch, against about 450 as JSON. The format is defined once, in
+[`agent/fleetops_agent/wire.py`](../agent/fleetops_agent/wire.py); the API
+keeps an identical copy and a test fails if they differ.
+
 A robot may only publish its own uplink topics and subscribe to its own
-commands. The broker replaces every client id with the username, so a robot
+downlink topics. The broker replaces every client id with the username, so a robot
 cannot connect as another robot's client id and take over its session.
 
 ## Message flow
 
-1. A robot publishes readings with QoS 1. The broker queues them in the API's
-   persistent session.
+1. The agent writes each reading to its on-disk outbox, then publishes batches
+   of them with QoS 1. The broker queues them in the API's persistent session.
 2. The consumer collects up to 200 messages or 250 ms, then `persist()` inserts
    the readings (skipping any already stored), registers the robot and upserts
    its `robot_state`, all in one transaction.
-3. Only after the commit are the messages acknowledged. If the API dies first,
-   the broker delivers them again and the duplicate insert is skipped.
-4. Only newly stored readings are broadcast to dashboards.
-5. When a robot's connection drops, the broker publishes its last will and the
+3. The consumer moves each robot's watermark (how far its outbox stream is
+   committed, contiguously), saves it, and publishes it to the robot's retained
+   `stored` topic. Only then are the messages acknowledged. If the API dies
+   first, the broker delivers them again and the duplicate insert is skipped.
+4. The agent deletes confirmed items from its outbox. Anything not confirmed
+   within 15 seconds is sent again, so a message the broker accepted and then
+   lost leaves a gap the watermark will not pass until it is filled.
+5. Only newly stored readings are broadcast to dashboards.
+6. When a robot's connection drops, the broker publishes its last will and the
    robot is shown offline within a second.
-6. A new command is published to the robot. The broker's acknowledgement moves
+7. A new command is published to the robot. The broker's acknowledgement moves
    it to `DISPATCHED`; if the robot has never subscribed, the command waits as
-   `PENDING` and is pushed again when the robot comes online.
+   `PENDING` and is pushed again when the robot comes online. The agent
+   remembers command ids on disk and runs each command once.
+8. An operator's `PUT /api/v1/robots/<id>/config` is stored with a new version
+   and published to the robot's retained `config` topic; the agent applies it
+   and reports the version back, so the API can say whether the robot is in
+   sync.
 
 The HTTP endpoints (`POST /telemetry`, `/events`, command claim and status)
 remain as a thin adapter onto the same functions, for simple clients and tests.
 
 ## Measured durability
 
-A chaos test runs 20 robots at 10 readings per second each and `kill -9`s the
-API or the broker mid-stream. In five runs, every reading was stored exactly
-once (for example 7,640 sent, 7,640 stored, 7,640 distinct). The first run
-against the broker lost 18%: Mosquitto does not restore shared subscriptions
-after a restart, so ingest now uses plain persistent subscriptions.
+Chaos tests run 20 robots at 10 readings per second each and `kill -9` one
+component mid-stream, then count what reached the database.
 
-What is not covered yet: if the robot itself crashes, readings in its MQTT
-client's memory are lost (the on-disk outbox in ADR 0002, step 3, fixes this),
-and a crash of the whole host can lose what the broker accepted in its last
-autosave interval (5 seconds) before delivering it.
+| Crash | Result |
+| :--- | :--- |
+| The API, or the broker while the API consumes | Every reading stored exactly once, five runs (for example 7,640 sent, 7,640 stored) |
+| The robots, while they cannot reach the broker | Every reading stored exactly once, three runs (1,698 readings were waiting on disk in one run) |
+| The broker, holding messages it accepted but had not saved, while the API is down | Agent: every reading stored exactly once, three runs (2,940 of 2,940, after 40 resends). The step 2 client lost 40 of 2,920 and 39 of 2,900, although the broker had acknowledged all of them |
+
+The first broker run in step 2 lost 18%: Mosquitto does not restore shared
+subscriptions after a restart, so ingest uses plain persistent subscriptions.
+The step 3 runs found two bugs that would each have stopped ingest for the
+whole fleet: the command publisher raised on the broker's acknowledgement of a
+watermark, which killed paho's network thread, and a batch of large envelopes
+went over Postgres's limit of 32,767 parameters per statement, which failed on
+every retry. A value too long for its column would have failed the same way;
+it is now refused per item before it reaches the database.
+
+What is not covered: a robot whose outbox fills (100,000 items by default)
+drops its oldest items, which the server counts and logs; and losing power on
+the robot can undo its last few outbox writes unless the outbox runs with
+`synchronous="FULL"`.
 
 ---
 
@@ -100,7 +137,9 @@ disagree.
 
 **A roster, so absence is detectable.** Fleet status is the robot roster LEFT JOINed onto each robot's latest state, not a `GROUP BY` over recent telemetry. The distinction is the difference between a working monitor and a broken one: deriving the fleet from telemetry alone means a robot that stops reporting eventually falls outside the query window and silently disappears from the dashboard, so a unit that died an hour ago is indistinguishable from one that never existed. Registered robots are always listed, and missing telemetry renders `OFFLINE` with the roster's last-seen time. The roster populates itself: every write registers the robot in the same transaction.
 
-**Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. Future-dated readings beyond a configurable skew are clamped, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
+**Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. A fast clock is corrected: the agent's envelope says when it was sent by the robot's clock, and a message cannot have been sent after it arrived, so every time in it moves back by the difference and readings keep their spacing. Plain JSON readings dated beyond a configurable skew are clamped to the receive time instead, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
+
+**Confirmed end to end.** A broker acknowledgement only means the broker has the message. The agent keeps every item in a SQLite outbox until the API says it is committed (`fleet/<id>/stored`), and the API's watermark only moves contiguously, so a message lost anywhere after the robot leaves a gap that is resent rather than skipped. The watermark is saved in the database after the batch it covers, so it survives an API restart.
 
 **Idempotent writes.** A reading is identified by its robot and device timestamp, so the timestamp is required and `(robot_id, timestamp)` is the primary key. Events are unique by robot, time and message. Inserts use `ON CONFLICT DO NOTHING`, so a redelivered message cannot create duplicate rows, and only newly stored rows are broadcast.
 
@@ -119,7 +158,8 @@ disagree.
 | [`backend/`](../backend) | FastAPI application (routes, services, repositories), SQLAlchemy async models and Alembic migrations. |
 | [`backend/tests/`](../backend/tests) | Pytest suite running against real TimescaleDB. |
 | [`frontend/robot-fleet-dashboard/`](../frontend/robot-fleet-dashboard) | React 19 and Vite dashboard (Leaflet map, Recharts, WebSocket hooks), served by nginx. |
-| [`simulator/`](../simulator) | Async Python simulator with physics-based robot agents, one MQTT connection per robot. |
+| [`agent/`](../agent) | `fleetops-agent`, the robot-side package: wire format, on-disk outbox, MQTT client, settings. |
+| [`simulator/`](../simulator) | Async Python simulator with physics-based robots, each sending through its own agent. |
 | [`mosquitto/`](../mosquitto) | Broker configuration (go-auth against the API, persistence, queues). |
 | [`scripts/`](../scripts) | EC2 provisioning and the CI deploy role. |
 | [`docs/`](.) | Architecture, operations, and design decisions ([`adr/`](adr)). |

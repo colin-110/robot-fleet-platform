@@ -28,6 +28,7 @@ from app.database import engine
 from app.logging_config import configure_logging
 from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.mqtt import commands as mqtt_commands
+from app.mqtt import config as mqtt_config
 from app.mqtt.ingest import IngestConsumer, relay_publisher
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
@@ -85,11 +86,15 @@ async def lifespan(app: FastAPI):
     # username, so this process must be the only one logging in as
     # MQTT_SERVICE_USERNAME: run a single worker.
     app.state.mqtt = IngestConsumer() if settings.mqtt_enabled else None
-    mqtt_task = None
+    mqtt_task = republish_task = None
     if app.state.mqtt:
         # Commands go out on the same connection.
         mqtt_commands.publisher = mqtt_commands.CommandPublisher(app.state.mqtt.client)
         app.state.mqtt.on_robot_online.append(mqtt_commands.publisher.push_pending_soon)
+        mqtt_config.publisher = mqtt_config.ConfigPublisher(app.state.mqtt.client)
+        republish_task = asyncio.create_task(
+            mqtt_config.publisher.republish_all(app.state.mqtt.connected)
+        )
         if settings.websocket_backend == "mqtt":
             manager.relay = relay_publisher(app.state.mqtt.client)
         mqtt_task = asyncio.create_task(app.state.mqtt.run())
@@ -100,6 +105,8 @@ async def lifespan(app: FastAPI):
     # delivers it again after the restart.
     if mqtt_task:
         mqtt_commands.publisher = None
+        mqtt_config.publisher = None
+        republish_task.cancel()
         manager.relay = None
         mqtt_task.cancel()
         await asyncio.gather(mqtt_task, return_exceptions=True)

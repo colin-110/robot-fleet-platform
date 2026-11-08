@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fleetops-agent"
+version = "0.1.0"
+description = "Robot-side agent for FleetOps: compact telemetry over MQTT with an on-disk outbox."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "paho-mqtt>=2.1,<3",
+    "cbor2>=5.6,<7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "orjson>=3.9"]
+
+[tool.setuptools]
+packages = ["fleetops_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

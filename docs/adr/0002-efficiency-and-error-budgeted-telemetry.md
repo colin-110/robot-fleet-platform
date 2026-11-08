@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 and 2 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 3 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -90,11 +90,16 @@ The result goes to each robot as **desired state** on a retained topic
 ### Robot agent (a pip package; ROS 2 robots use `mqtt_client`)
 
 1. **Dual-prediction keyframes** as above.
-2. **Compact encoding.** CBOR payloads with short field names and only changed
-   fields; MQTT 5 topic aliases so the topic string is not resent.
-3. **On-disk outbox.** A bounded SQLite ring buffer, so readings survive network
-   loss and agent restarts. QoS 1 handles redelivery to the broker.
-4. **Applies desired config** (tolerances, heartbeat) and reports it back.
+2. **Compact encoding.** CBOR payloads with short field names, fixed-point
+   numbers, times relative to the send time and only changed fields (done:
+   about 130 bytes for a reading alone, 20 to 35 inside a batch, against about
+   450 as JSON). MQTT 5 topic aliases were left out: paho resends unconfirmed
+   messages after a reconnect, when their aliases no longer mean anything, and
+   the topic is only 18 bytes.
+3. **On-disk outbox.** A bounded SQLite queue (done), kept until the server
+   confirms the items are committed, not merely until the broker's PUBACK.
+4. **Applies desired config** and reports it back (done for the reporting
+   interval; tolerances and the heartbeat arrive with step 4).
 
 ### Broker (Mosquitto + go-auth)
 
@@ -150,8 +155,9 @@ Each step ships with tests and a measurement, and is committed separately.
 2. **MQTT core.** Mosquitto with go-auth on device keys; ingest consumer with
    ack after commit (paho, manual acks); presence from last will; commands
    pushed over MQTT; WebSocket fan-out from the app; Redis removed.
-3. **Robot agent package.** Message schema, CBOR, on-disk outbox, desired and
-   reported config. The simulator is rebuilt on top of it.
+3. **Robot agent package** (done). Message schema, CBOR, on-disk outbox, an
+   end-to-end stored watermark, desired and reported config, correction of
+   fast clocks. The simulator is rebuilt on top of it.
 4. **Dual prediction.** Shared predictor (Python, with a matching JavaScript
    version for the dashboard), keyframe storage, reconstruction.
 5. **Streaming intelligence and alarms.** Kalman battery, peer anomalies, phi
@@ -174,21 +180,32 @@ Each step ships with tests and a measurement, and is committed separately.
 - **Lost keyframes.** QoS 1 plus the on-disk outbox; a per-robot sequence
   number exposes any gap. Measured in step 2: with `kill -9` of the API or the
   broker mid-stream, every reading was stored exactly once (five runs, 20
-  robots at 10 readings per second). Two gaps remain for step 3: a robot crash
-  loses what its MQTT client held in memory, and a host crash can lose what the
-  broker accepted within its 5-second autosave interval but had not delivered.
-  The fix for both is end to end: the robot keeps readings on disk until the
-  server reports them stored (a per-robot stored-up-to watermark), not merely
-  until the broker's PUBACK.
-- **A robot clock far in the future.** Readings more than 300 seconds ahead
-  are clamped to the receive time, so several from one batch collapse onto one
-  timestamp and all but one are dropped as duplicates. Step 3 should shift
-  such a robot's readings by its measured offset instead of clamping each one.
+  robots at 10 readings per second). Step 3 closed the two gaps that remained,
+  a robot crash and a broker that loses what it accepted, with a per-robot
+  stored-up-to watermark: the robot keeps items on disk until the server says
+  they are committed, and resends after 15 seconds without progress. Measured:
+  a robot `kill -9` while it could not reach the broker, and a broker `kill -9`
+  holding unsaved messages, each stored every reading exactly once in three
+  runs, where the step 2 client lost 40 of 2,920 readings to the broker crash.
+  The watermark only moves contiguously, and below the robot's floor (the
+  lowest number it still holds), so an outbox that overflowed does not block
+  it; the server counts those items as given up.
+- **A robot clock far in the future.** Fixed in step 3 for the agent: its
+  envelope carries the send time by the robot's clock, and anything later than
+  the receive time is the clock's error, so the whole message moves back by it
+  and readings keep their spacing. Plain JSON readings are still clamped one by
+  one, which collapses a batch onto one timestamp.
 - **A robot running twice.** Two processes with the same device key share one
   client id, so each connection takes over the other's in a loop. The broker
   log shows it; the API should detect repeated takeovers and raise an alarm
   (step 5).
 - **Unbounded rates from a misbehaving robot.** The broker enforces per-client
   rate limits; the allocator's tolerances are a request, not a guarantee.
+- **One robot must not stop ingest for everyone.** A batch that fails to write
+  is retried until it succeeds, which is right for a database outage and wrong
+  for a batch that can never be written. Step 3 found two such batches (more
+  parameters than Postgres allows in one statement, and values too long for
+  their columns) and fixed both; the remaining defence is validating every
+  value before it reaches the database.
 - **512 MB is tight.** Step 9 measures it before deployment commits to it;
   t4g.micro is the fallback.

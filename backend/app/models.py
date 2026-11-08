@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -177,6 +178,50 @@ class Event(Base):
         # resent or redelivered event is skipped instead of stored twice.
         UniqueConstraint("robot_id", "timestamp", "message", name="uq_events_robot_time_message"),
     )
+
+
+class StoredWatermark(Base):
+    """How far each robot's outbox stream is committed.
+
+    ``seq`` is the highest sequence number such that every item of ``stream``
+    up to it is stored (or was given up by the robot). It is written after a
+    batch commits and is what the robot is told, so a robot deletes an item
+    from its outbox only once the item is safely in the database. See
+    ``app/mqtt/wire.py`` for the format and ``ingest.advance`` for the rule.
+    """
+
+    __tablename__ = "stored_watermarks"
+
+    robot_id = Column(Integer, primary_key=True)
+    stream = Column(String(64), nullable=False)
+    seq = Column(BigInteger, nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class RobotConfig(Base):
+    """A robot's settings: what the server wants and what the robot applied.
+
+    The desired settings are also published to the robot's retained
+    ``fleet/<id>/config`` topic; this row is the source the API republishes
+    from. ``version`` goes up on every change, and the robot reports back the
+    version it applied, so ``reported_version == version`` means in sync.
+    """
+
+    __tablename__ = "robot_configs"
+
+    robot_id = Column(Integer, primary_key=True)
+    desired = Column(JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    reported = Column(JSON, nullable=True)
+    reported_rejected = Column(JSON, nullable=True)
+    reported_version = Column(Integer, nullable=True)
+    reported_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class User(Base):

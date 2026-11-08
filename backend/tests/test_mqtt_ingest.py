@@ -16,11 +16,14 @@ from datetime import datetime, timedelta, timezone
 import orjson
 import paho.mqtt.client as mqtt
 import pytest
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 from sqlalchemy import func, select
 
 from app import presence
-from app.models import Event, Telemetry
-from app.mqtt import ingest
+from app.models import Event, StoredWatermark, Telemetry
+from app.mqtt import ingest, wire
+from app.mqtt.commands import CommandPublisher
 from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
 from app.websocket_manager import manager
 from tests.conftest import TestSessionLocal
@@ -47,9 +50,17 @@ def payload(body) -> bytes:
 class FakeClient:
     def __init__(self):
         self.acked = []
+        self.published = []
 
     def ack(self, mid, qos):
         self.acked.append(mid)
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, qos, retain))
+
+    def stored(self):
+        """The watermarks published, as (topic, stream, seq)."""
+        return [(t, *wire.decode_stored(p)) for t, p, _, retain in self.published if retain]
 
 
 @pytest.fixture
@@ -190,6 +201,229 @@ async def test_events_and_readings_share_a_batch(consumer, broadcasts, event_bro
 
 
 @pytest.mark.asyncio
+# ── agent envelopes ─────────────────────────────────────────────────
+
+
+def envelope(channel, items, seq=1, floor=1, sent=None, stream="s1"):
+    """A CBOR envelope as the agent sends it."""
+    sent_ms = wire.epoch_ms(sent or datetime.now(timezone.utc))
+    packed = [wire.pack_item(channel, i) for i in items]
+    return wire.encode_envelope(channel, wire.Envelope(stream, seq, floor, sent_ms, packed))
+
+
+def env_delivery(robot_id, channel, items, mid, **kwargs):
+    raw = envelope(channel, items, **kwargs)
+    return Delivery(robot_id, channel, raw, mid, 1, 1, wire.CONTENT_TYPE)
+
+
+def agent_reading(seconds=0, **overrides):
+    values = {
+        "timestamp": T0 + timedelta(seconds=seconds),
+        "battery": 80.0,
+        "temperature": 35.0,
+        "speed": 1.0,
+    }
+    return values | overrides
+
+
+async def test_envelopes_are_stored_like_json(consumer, broadcasts, event_broadcasts):
+    batch = [
+        env_delivery(3, "telemetry", [agent_reading(0), agent_reading(1, status="CHARGING")], 1),
+        env_delivery(3, "events", [{"timestamp": T0, "message": "Docked"}], 2),
+    ]
+    await consumer.process(batch)
+    assert await stored_count() == 2
+    assert await event_count() == 1
+    assert [r["status"] for r in broadcasts] == [None, "CHARGING"]
+    assert broadcasts[1]["battery"] == 80.0
+    assert consumer.client.acked == [1, 2]
+
+
+async def test_a_batch_bigger_than_one_statement_allows(consumer, broadcasts, event_broadcasts):
+    # 3,000 readings is 48,000 parameters, over Postgres's 32,767 per statement.
+    batch = [
+        env_delivery(3, "telemetry", [agent_reading(i * 1000 + j) for j in range(1000)], i)
+        for i in range(3)
+    ]
+    batch.append(
+        env_delivery(
+            3,
+            "events",
+            [{"timestamp": T0 + timedelta(seconds=i), "message": "tick"} for i in range(12_000)],
+            3,
+            seq=3001,
+        )
+    )
+    # Bounded: a failing write is retried forever, which would hang the test.
+    await asyncio.wait_for(consumer.process(batch), 30)
+    assert await stored_count() == 3000
+    assert await event_count() == 12_000
+    assert consumer.client.acked == [0, 1, 2, 3]
+
+
+async def test_a_bad_item_does_not_sink_its_envelope(consumer, broadcasts):
+    # A reading without a battery fails validation; its neighbours are kept.
+    items = [agent_reading(0), {"timestamp": T0 + timedelta(seconds=1)}, agent_reading(2)]
+    await consumer.process([env_delivery(3, "telemetry", items, 1)])
+    assert await stored_count() == 2
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.acked == [1]
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"status": "X" * 33}, {"mission_id": "M" * 65}, {"mission_type": "P" * 33}]
+)
+async def test_a_value_too_long_for_its_column_is_rejected_alone(consumer, broadcasts, overrides):
+    # Left to the database it would fail the whole batch on every retry.
+    items = [agent_reading(0), agent_reading(1, **overrides)]
+    await asyncio.wait_for(consumer.process([env_delivery(3, "telemetry", items, 1)]), 10)
+    assert await stored_count() == 1
+    assert consumer.stats["rejected"] == 1
+
+
+async def test_an_overlong_command_status_is_rejected(consumer, broadcasts):
+    report = {"id": "c-1", "status": "FAILED", "error_message": "e" * 256}
+    await asyncio.wait_for(consumer.process([env_delivery(3, "commands/status", [report], 1)]), 10)
+    assert consumer.stats["rejected"] == 1
+
+
+async def test_a_malformed_envelope_is_dropped(consumer, broadcasts):
+    bad = Delivery(3, "telemetry", b"\xff\x00", 1, 1, 1, wire.CONTENT_TYPE)
+    await consumer.process([bad])
+    assert await stored_count() == 0
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.acked == [1]
+
+
+async def test_a_fast_clock_is_corrected_without_collapsing_readings(consumer, broadcasts):
+    now = datetime.now(timezone.utc)
+    robot_now = now + timedelta(hours=1)
+    items = [agent_reading(0, timestamp=robot_now - timedelta(seconds=s)) for s in (3, 2, 1)]
+    await consumer.process([env_delivery(3, "telemetry", items, 1, sent=robot_now)])
+
+    async with TestSessionLocal() as db:
+        stamps = (
+            (await db.execute(select(Telemetry.timestamp).order_by(Telemetry.timestamp)))
+            .scalars()
+            .all()
+        )
+    assert len(stamps) == 3
+    assert [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:], strict=False)] == [1.0, 1.0]
+    # Shifted to the receive time, not left an hour ahead.
+    assert abs((stamps[-1] - (now - timedelta(seconds=1))).total_seconds()) < 2
+
+
+async def test_a_slow_clock_is_left_alone(consumer, broadcasts):
+    # An old send time is also what a message that waited in the broker looks like.
+    sent = T0 + timedelta(seconds=10)
+    await consumer.process([env_delivery(3, "telemetry", [agent_reading(5)], 1, sent=sent)])
+    async with TestSessionLocal() as db:
+        stored = (await db.execute(select(Telemetry.timestamp))).scalar_one()
+    assert stored == T0 + timedelta(seconds=5)
+
+
+# ── stored watermarks ──────────────────────────────────────────────
+
+
+def progress(first, last, floor=1, stream="s1"):
+    return ingest.Progress(3, stream, first, last, floor)
+
+
+@pytest.mark.parametrize(
+    "current, p, expected",
+    [
+        (None, progress(1, 3), ("s1", 3)),
+        (("s1", 3), progress(4, 6), ("s1", 6)),
+        # Beyond a gap: stored, but the watermark waits for the gap to fill.
+        (("s1", 3), progress(6, 8), ("s1", 3)),
+        # A resend that overlaps what is stored.
+        (("s1", 5), progress(2, 9), ("s1", 9)),
+        # Pure duplicates change nothing.
+        (("s1", 9), progress(2, 4), ("s1", 9)),
+        # The robot no longer has anything below its floor.
+        (("s1", 3), progress(10, 12, floor=10), ("s1", 12)),
+        # A new outbox starts from zero.
+        (("s1", 50), progress(1, 2, stream="s2"), ("s2", 2)),
+        (("s1", 50), progress(3, 4, stream="s2"), ("s2", 0)),
+    ],
+)
+def test_advance(current, p, expected):
+    assert ingest.advance(current, p) == expected
+
+
+def items(n, start=0):
+    return [agent_reading(start + i) for i in range(n)]
+
+
+async def test_the_watermark_is_saved_and_published_before_the_ack(consumer, broadcasts):
+    await consumer.process(
+        [
+            env_delivery(3, "telemetry", items(3), 1, seq=1),
+            env_delivery(3, "telemetry", items(2, 3), 2, seq=4),
+        ]
+    )
+    assert consumer.client.stored() == [("fleet/3/stored", "s1", 5)]
+    async with TestSessionLocal() as db:
+        mark = await db.get(StoredWatermark, 3)
+    assert (mark.stream, mark.seq) == ("s1", 5)
+    assert consumer.client.acked == [1, 2]
+
+
+async def test_a_gap_holds_the_watermark_until_it_is_filled(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(2), 1, seq=1)])
+    await consumer.process([env_delivery(3, "telemetry", items(2, 4), 2, seq=5)])
+    assert consumer.client.stored()[-1][2] == 2
+    assert consumer.stats["gaps"] == 1
+    # The readings beyond the gap were stored all the same.
+    assert await stored_count() == 4
+
+    # The robot resends everything above 2.
+    await consumer.process([env_delivery(3, "telemetry", items(4, 2), 3, seq=3)])
+    assert consumer.client.stored()[-1][2] == 6
+    assert await stored_count() == 6
+
+
+async def test_the_watermark_survives_a_restart(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(3), 1, seq=1)])
+
+    restarted = IngestConsumer(session_factory=TestSessionLocal)
+    restarted.client = FakeClient()
+    restarted.epoch = 1
+    await restarted.process([env_delivery(3, "telemetry", items(1, 3), 1, seq=4)])
+    assert restarted.client.stored() == [("fleet/3/stored", "s1", 4)]
+
+
+async def test_duplicates_are_confirmed_again(consumer, broadcasts):
+    # The robot resends because it missed the confirmation; it must hear again.
+    batch = [env_delivery(3, "telemetry", items(3), 1, seq=1)]
+    await consumer.process(batch)
+    await consumer.process(batch)
+    assert [seq for _, _, seq in consumer.client.stored()] == [3, 3]
+
+
+async def test_items_the_robot_gave_up_are_counted(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", items(2), 1, seq=1)])
+    await consumer.process([env_delivery(3, "telemetry", items(2, 9), 2, seq=10, floor=10)])
+    assert consumer.stats["given_up"] == 7
+    assert consumer.client.stored()[-1][2] == 11
+
+
+async def test_rejected_items_still_count_as_processed(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "telemetry", [{"timestamp": T0}], 1, seq=1)])
+    assert consumer.stats["rejected"] == 1
+    assert consumer.client.stored() == [("fleet/3/stored", "s1", 1)]
+
+
+async def test_json_messages_publish_no_watermark(consumer, broadcasts):
+    await consumer.process([delivery(3, reading(), 1)])
+    assert consumer.client.published == []
+
+
+async def test_command_status_envelopes_need_an_id(consumer, broadcasts):
+    await consumer.process([env_delivery(3, "commands/status", [{"status": "ACKNOWLEDGED"}], 1)])
+    assert consumer.stats["rejected"] == 1
+
+
 async def test_presence_changes_are_broadcast(consumer, broadcasts, event_broadcasts):
     await consumer.process(
         [
@@ -352,6 +586,52 @@ async def test_end_to_end_through_the_broker(broadcasts):
     try:
         publish(3, [reading(seconds=i) for i in range(50)])
         assert await wait_for(lambda: _count_is(50))
+    finally:
+        await stop(task)
+
+
+@broker
+@pytest.mark.asyncio
+async def test_envelopes_are_recognised_by_their_content_type(broadcasts):
+    name = f"ingest-{uuid.uuid4().hex[:8]}"
+    task = await start(live_consumer(name))
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        client.connect(MQTT_HOST, 1883)
+        client.loop_start()
+        props = Properties(PacketTypes.PUBLISH)
+        props.ContentType = wire.CONTENT_TYPE
+        body = envelope("telemetry", [agent_reading(i) for i in range(20)])
+        client.publish("fleet/3/telemetry", body, qos=1, properties=props).wait_for_publish(5)
+        client.disconnect()
+        client.loop_stop()
+        assert await wait_for(lambda: _count_is(20))
+    finally:
+        await stop(task)
+
+
+@broker
+@pytest.mark.asyncio
+async def test_the_connection_survives_publishing_watermarks(broadcasts):
+    # Wired as the app does it: the command publisher sees the PUBACK of
+    # everything published on the connection, watermarks included. It once
+    # raised on those before its first command, which killed paho's thread.
+    name = f"ingest-{uuid.uuid4().hex[:8]}"
+    consumer = live_consumer(name)
+    CommandPublisher(consumer.client)
+    task = await start(consumer)
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        client.connect(MQTT_HOST, 1883)
+        client.loop_start()
+        props = Properties(PacketTypes.PUBLISH)
+        props.ContentType = wire.CONTENT_TYPE
+        for seq in (1, 6):
+            body = envelope("telemetry", [agent_reading(seq + i) for i in range(5)], seq=seq)
+            client.publish("fleet/3/telemetry", body, qos=1, properties=props).wait_for_publish(5)
+            assert await wait_for(lambda n=seq + 4: _count_is(n))
+        client.disconnect()
+        client.loop_stop()
     finally:
         await stop(task)
 
