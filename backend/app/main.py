@@ -90,11 +90,12 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine.listeners.append(alarm_engine.broadcast)
     alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
     webhook_task = None
-    if settings.alarm_webhook_url:
-        sender = WebhookSender(
-            settings.alarm_webhook_url,
-            settings.alarm_webhook_secret or settings.telemetry_api_key,
-        )
+    if settings.alarm_webhook_url and not settings.alarm_webhook_secret:
+        # Receivers verify the signature with the secret, so it must be one
+        # they may hold: never the master key.
+        logger.error("ALARM_WEBHOOK_URL is set without ALARM_WEBHOOK_SECRET; webhooks are off")
+    elif settings.alarm_webhook_url:
+        sender = WebhookSender(settings.alarm_webhook_url, settings.alarm_webhook_secret)
         alarm_engine.engine.listeners.append(sender.listener)
         webhook_task = asyncio.create_task(sender.run())
 
