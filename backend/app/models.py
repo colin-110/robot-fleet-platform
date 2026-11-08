@@ -270,6 +270,16 @@ class Alarm(Base):
     )
 
 
+class FleetSetting(Base):
+    """Fleet-wide settings an operator changes at run time (the message budget)."""
+
+    __tablename__ = "fleet_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(JSON, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class User(Base):
     """An operator account.
 
