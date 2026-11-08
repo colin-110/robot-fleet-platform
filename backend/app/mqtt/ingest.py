@@ -24,6 +24,7 @@ from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from pydantic import ValidationError
 
+from app import presence
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.mqtt import topics
@@ -107,6 +108,25 @@ def decode_events(robot_id: int, payload: bytes) -> list[EventCreate]:
 class Decoded:
     readings: list[TelemetryCreate] = field(default_factory=list)
     events: list[EventCreate] = field(default_factory=list)
+    presence: list[tuple[int, tuple[bool, str | None]]] = field(default_factory=list)
+
+
+def decode_presence(payload: bytes) -> tuple[bool, str | None]:
+    parsed = presence.parse(payload)
+    if parsed is None:
+        raise BadMessage("presence must be online/offline or {online, conn}")
+    return parsed
+
+
+async def broadcast_presence(robot_id: int) -> None:
+    state = presence.get(robot_id)
+    payload = {
+        "type": "PRESENCE",
+        "robot_id": robot_id,
+        "online": state.online,
+        "since": state.since.isoformat().replace("+00:00", "Z"),
+    }
+    await manager.broadcast(payload, stream=manager.event_stream)
 
 
 class IngestConsumer:
@@ -152,9 +172,14 @@ class IngestConsumer:
             logger.error("MQTT connection refused: %s", reason_code)
             return
         self.epoch += 1
-        client.subscribe(
-            [(topics.shared_subscription(self.group, c), 1) for c in SUBSCRIBED_CHANNELS]
-        )
+        subscriptions = [
+            (topics.shared_subscription(self.group, c), 1) for c in SUBSCRIBED_CHANNELS
+        ]
+        # Presence is state, not a stream, and is read from retained messages,
+        # which MQTT 5 never delivers on shared subscriptions. Every process
+        # subscribes to it directly.
+        subscriptions.append((f"{topics.ROOT}/+/{topics.PRESENCE}", 1))
+        client.subscribe(subscriptions)
         logger.info(
             "MQTT connected to %s:%d (session present: %s)",
             self.host,
@@ -220,6 +245,8 @@ class IngestConsumer:
                     decoded.readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
                 elif delivery.channel == topics.EVENTS:
                     decoded.events.extend(decode_events(delivery.robot_id, delivery.payload))
+                elif delivery.channel == topics.PRESENCE:
+                    decoded.presence.append((delivery.robot_id, decode_presence(delivery.payload)))
                 else:
                     raise BadMessage(f"unexpected topic channel {delivery.channel!r}")
             except BadMessage as exc:
@@ -236,10 +263,20 @@ class IngestConsumer:
             len(decoded.readings) + len(decoded.events) - len(readings) - len(events)
         )
 
+        changed = [
+            rid for rid, (online, conn) in decoded.presence if presence.apply(rid, online, conn)
+        ]
+        # A robot that is sending is connected, whatever an older will said.
+        changed += [
+            rid for rid in {r.robot_id for r in decoded.readings} if presence.saw_traffic(rid)
+        ]
+
         if readings:
             await manager.broadcast_batch(broadcast_payloads(readings))
         if events:
             await broadcast_events(events)
+        for robot_id in dict.fromkeys(changed):
+            await broadcast_presence(robot_id)
         self.ack(batch)
 
     async def _store(self, decoded: Decoded):

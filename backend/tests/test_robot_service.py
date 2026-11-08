@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app import presence
 from app.models import Robot, RobotState
 from app.services.robot_service import RobotService, summarize_state
 
@@ -59,6 +60,13 @@ def test_no_runtime_when_the_battery_is_not_falling(drain):
 def test_old_state_is_offline():
     old = datetime.now(timezone.utc) - timedelta(minutes=10)
     assert summarize_state(state(timestamp=old))["status"] == "OFFLINE"
+
+
+def test_last_will_makes_a_fresh_robot_offline_at_once():
+    presence.apply(1, False, None)
+    assert summarize_state(state())["status"] == "OFFLINE"
+    presence.saw_traffic(1)
+    assert summarize_state(state())["status"] == "ACTIVE"
 
 
 @pytest.mark.asyncio

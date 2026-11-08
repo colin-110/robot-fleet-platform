@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import presence
 from app.config import get_settings
 from app.models import Robot
 from app.repositories.robot_repo import RobotRepository
@@ -50,7 +51,9 @@ def _derive_status(latest, age_seconds: float) -> str:
     caller - of which ``>300`` was unreachable and ``>180`` was dead for any
     robot that reported a status.
     """
-    if age_seconds > settings.offline_after_seconds:
+    # The broker's last will is immediate; silence is the fallback for robots
+    # on HTTP or when the broker is unreachable.
+    if presence.is_offline(latest.robot_id) or age_seconds > settings.offline_after_seconds:
         return OFFLINE
     return latest.status.upper() if latest.status else "ACTIVE"
 

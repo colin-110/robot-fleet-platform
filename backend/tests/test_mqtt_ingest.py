@@ -18,6 +18,7 @@ import paho.mqtt.client as mqtt
 import pytest
 from sqlalchemy import func, select
 
+from app import presence
 from app.models import Event, Telemetry
 from app.mqtt import ingest
 from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
@@ -186,6 +187,31 @@ async def test_events_and_readings_share_a_batch(consumer, broadcasts, event_bro
     assert [e["message"] for e in event_broadcasts] == ["Mission complete"]
     assert consumer.client.acked == [1, 2, 3]
     assert consumer.stats["duplicates"] == 1
+
+
+@pytest.mark.asyncio
+async def test_presence_changes_are_broadcast(consumer, broadcasts, event_broadcasts):
+    await consumer.process(
+        [
+            delivery(1, b'{"online": true, "conn": "c1"}', mid=1, channel="presence"),
+            delivery(2, b"offline", mid=2, channel="presence"),
+            delivery(3, b"sideways", mid=3, channel="presence"),
+        ]
+    )
+    assert presence.get(1).online and presence.is_offline(2)
+    assert [(e["robot_id"], e["online"]) for e in event_broadcasts] == [(1, True), (2, False)]
+    assert consumer.client.acked == [1, 2, 3]
+    assert consumer.stats["rejected"] == 1
+
+    # The will fires; then robot 2 turns out to be sending again.
+    await consumer.process(
+        [
+            delivery(1, b'{"online": false, "conn": "c1"}', mid=4, channel="presence"),
+            delivery(2, reading(), mid=5),
+        ]
+    )
+    assert presence.is_offline(1) and not presence.is_offline(2)
+    assert [(e["robot_id"], e["online"]) for e in event_broadcasts[2:]] == [(1, False), (2, True)]
 
 
 @pytest.mark.asyncio
