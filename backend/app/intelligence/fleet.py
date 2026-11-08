@@ -4,22 +4,31 @@ readings after a restart."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from app.intelligence.kalman import BatteryKalman
+from app.intelligence.phi import PhiAccrual
 
 
 @dataclass
 class RobotModel:
     battery: BatteryKalman = field(default_factory=BatteryKalman)
+    arrivals: PhiAccrual = field(default_factory=PhiAccrual)
     last: dict = field(default_factory=dict)
 
 
 _robots: dict[int, RobotModel] = {}
 
 
-def observe(rows) -> None:
-    """Fold newly stored telemetry rows in, oldest first."""
+def observe(rows, now: float | None = None) -> None:
+    """Fold newly stored telemetry rows in, oldest first.
+
+    Arrivals are timed by the server clock, once per robot per batch.
+    """
+    now = time.time() if now is None else now
+    for robot_id in {row.robot_id for row in rows}:
+        _robots.setdefault(robot_id, RobotModel()).arrivals.heartbeat(now)
     for row in sorted(rows, key=lambda r: r.timestamp):
         model = _robots.setdefault(row.robot_id, RobotModel())
         t = row.timestamp.timestamp()
@@ -43,6 +52,11 @@ def observe(rows) -> None:
                     default=None,
                 ),
             }
+
+
+def suspicion(robot_id: int, now: float | None = None) -> float | None:
+    model = _robots.get(robot_id)
+    return model.arrivals.phi(time.time() if now is None else now) if model else None
 
 
 def get(robot_id: int) -> RobotModel | None:

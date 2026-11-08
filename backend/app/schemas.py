@@ -151,6 +151,9 @@ class RobotStatusResponse(BaseModel):
     runtime_remaining_minutes: float | None = None
     # Two-sigma range of the runtime, from the battery's Kalman filter.
     runtime_range_minutes: list[float] | None = None
+    # Phi accrual: how unlikely the current silence is, given this robot's
+    # usual gaps (1: one in ten, 8: one in a hundred million). None until learned.
+    suspicion: float | None = None
     x: float = 0.0
     y: float = 0.0
     battery_health: float = 100.0

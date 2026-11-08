@@ -93,6 +93,10 @@ def _estimate_runtime_minutes(state, battery: float | None = None) -> float | No
     return round(effective_battery / drain, 1)
 
 
+def _rounded(value: float | None, digits: int) -> float | None:
+    return round(value, digits) if value is not None else None
+
+
 def _runtime(state, battery: float) -> dict:
     """Remaining runtime, from the robot's Kalman filter when there is one."""
     model = fleet.get(state.robot_id)
@@ -163,6 +167,7 @@ def summarize_state(state, applied: dict | None = None) -> dict:
         "mission_start_time": _iso(_as_utc(state.mission_start_time)),
         "last_seen": _iso(ts),
         **_runtime(state, battery),
+        "suspicion": _rounded(fleet.suspicion(state.robot_id), 1),
         "x": round(x, 2) if x is not None else 0.0,
         "y": round(y, 2) if y is not None else 0.0,
         "vx": getattr(state, "vx", None),
