@@ -3,6 +3,7 @@ API v1 routes - Robot status and fleet overview.
 """
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,13 +15,16 @@ from app.mqtt import config as mqtt_config
 from app.mqtt import wire
 from app.repositories import config_repo
 from app.repositories.robot_repo import RobotRepository
+from app.repositories.telemetry_repo import TelemetryRepository
 from app.schemas import (
     DeviceKeyResponse,
     RobotConfigResponse,
     RobotConfigUpdate,
     RobotStatusResponse,
+    TrackPoint,
 )
 from app.security import OPERATOR
+from app.services import track_service
 from app.services.robot_service import RobotService
 
 logger = logging.getLogger(__name__)
@@ -122,3 +126,27 @@ async def set_robot_config(
         mqtt_config.publisher.publish(robot_id, row.version, row.desired)
     logger.info("Robot %d settings are now version %d: %s", robot_id, row.version, accepted)
     return _config_response(robot_id, row)
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+@router.get("/robots/{robot_id}/track", response_model=list[TrackPoint])
+async def robot_track(
+    start: datetime,
+    end: datetime,
+    step_s: float = Query(1.0, gt=0, le=3600),
+    robot_id: int = Path(..., ge=0),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
+):
+    """Position and battery every ``step_s`` seconds, rebuilt from keyframes."""
+    start, end = _utc(start), _utc(end)
+    problem = track_service.check_window(start, end, step_s)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    rows = await TelemetryRepository(db).keyframes_between(robot_id, start, end)
+    config = await config_repo.get_config(db, robot_id)
+    applied = config.reported if config else None
+    return track_service.reconstruct(rows, start, end, step_s, applied)

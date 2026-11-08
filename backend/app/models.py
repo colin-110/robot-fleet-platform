@@ -88,6 +88,11 @@ class RobotState(Base):
     network_health = Column(Float, nullable=True)
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
+    # Rates the robot's keyframe carried (per second), which the shared
+    # predictor carries x, y and battery forward with between keyframes.
+    vx = Column(Float, nullable=True)
+    vy = Column(Float, nullable=True)
+    battery_rate = Column(Float, nullable=True)
     # Smoothed battery drain in percent per minute; NULL until two readings
     # have been seen or after the battery starts charging.
     battery_drain_per_min = Column(Float, nullable=True)
@@ -149,6 +154,11 @@ class Telemetry(Base):
     network_health = Column(Float, nullable=True)
     x = Column(Float, nullable=True)
     y = Column(Float, nullable=True)
+    # Keyframe rates, per second (app/mqtt/predict.py). NULL for robots that
+    # send every reading, whose values are simply held.
+    vx = Column(Float, nullable=True)
+    vy = Column(Float, nullable=True)
+    battery_rate = Column(Float, nullable=True)
     timestamp = Column(DateTime(timezone=True), primary_key=True)
 
     def __repr__(self) -> str:

@@ -63,3 +63,11 @@ async def list_desired(db: AsyncSession) -> list[tuple[int, int, dict]]:
         )
     )
     return [(robot_id, version, desired) for robot_id, version, desired in rows]
+
+
+async def applied_settings(db: AsyncSession) -> dict[int, dict]:
+    """The settings each robot last reported applying, by robot id."""
+    rows = await db.execute(
+        select(RobotConfig.robot_id, RobotConfig.reported).where(RobotConfig.reported.isnot(None))
+    )
+    return {row.robot_id: row.reported for row in rows}

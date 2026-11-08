@@ -81,6 +81,9 @@ def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
         "network_health": t.network_health,
         "x": t.x,
         "y": t.y,
+        "vx": t.vx,
+        "vy": t.vy,
+        "battery_rate": t.battery_rate,
         "timestamp": _to_iso(t.timestamp),
     }
 

@@ -96,6 +96,10 @@ class TelemetryCreate(BaseModel):
     network_health: float | None = None
     x: float | None = None
     y: float | None = None
+    # Rates per second for the shared predictor (keyframes from the agent).
+    vx: float | None = None
+    vy: float | None = None
+    battery_rate: float | None = None
 
 
 class TelemetryResponse(BaseModel):
@@ -151,6 +155,23 @@ class RobotStatusResponse(BaseModel):
     motor_health: float = 100.0
     sensor_health: float = 100.0
     network_health: float = 100.0
+    # Dual prediction: x, y and battery above are carried forward from the
+    # last keyframe to now, and are within ``bounds`` of what the robot
+    # measured. ``predicted`` is false when there was nothing to carry forward.
+    vx: float | None = None
+    vy: float | None = None
+    battery_rate: float | None = None
+    predicted: bool = False
+    keyframe_at: str | None = None
+    bounds: dict | None = None
+
+
+class TrackPoint(BaseModel):
+    timestamp: datetime
+    x: float | None = None
+    y: float | None = None
+    battery: float | None = None
+    keyframe: bool
 
 
 class DistributionBucket(BaseModel):

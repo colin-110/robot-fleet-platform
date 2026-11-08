@@ -84,6 +84,29 @@ class TelemetryRepository:
 
     # ── Read ────────────────────────────────────────────────────────
 
+    async def keyframes_between(
+        self, robot_id: int, start: datetime, end: datetime
+    ) -> list[Telemetry]:
+        """The keyframe in force at ``start`` and every one up to ``end``, oldest first."""
+        before = (
+            select(Telemetry)
+            .where(Telemetry.robot_id == robot_id, Telemetry.timestamp <= start)
+            .order_by(Telemetry.timestamp.desc())
+            .limit(1)
+        )
+        within = (
+            select(Telemetry)
+            .where(
+                Telemetry.robot_id == robot_id,
+                Telemetry.timestamp > start,
+                Telemetry.timestamp <= end,
+            )
+            .order_by(Telemetry.timestamp)
+        )
+        first = (await self.db.execute(before)).scalars().all()
+        rest = (await self.db.execute(within)).scalars().all()
+        return [*first, *rest]
+
     async def get_recent(self, limit: int = 50, skip: int = 0) -> list[Telemetry]:
         """Return the *limit* most recent telemetry rows (all robots)."""
         stmt = select(Telemetry).order_by(Telemetry.timestamp.desc()).offset(skip).limit(limit)
