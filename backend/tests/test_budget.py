@@ -152,3 +152,18 @@ async def test_the_budget_api_validates(client):
     assert (await client.get("/api/v1/fleet/budget")).json()["enabled"] is False
     bad = await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 0})
     assert bad.status_code == 422
+
+
+async def test_what_is_published_is_what_was_stored(client, publisher):
+    # A robot that already has settings: the controller loads them first, and
+    # the new row must not come back as the stale, already-loaded one.
+    await client.put("/api/v1/robots/1/config", json={"values": {"tol_position_m": 0.5}})
+    publisher.client.published.clear()
+    busy_robot(1, 40)
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 10})
+    await BudgetController(TestSessionLocal).step(NOW)
+    async with TestSessionLocal() as db:
+        stored = await config_repo.get_config(db, 1)
+    [(_, (version, values), _, _)] = publisher.sent()
+    assert (version, values) == (stored.version, stored.desired) == (2, stored.desired)
+    assert values["tol_position_m"] != 0.5

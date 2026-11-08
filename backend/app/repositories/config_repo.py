@@ -19,14 +19,21 @@ async def set_desired(db: AsyncSession, robot_id: int, values: dict) -> RobotCon
     stmt = pg_insert(RobotConfig).values(
         robot_id=robot_id, desired=values, version=1, updated_at=now
     )
-    stmt = stmt.on_conflict_do_update(
-        index_elements=[RobotConfig.robot_id],
-        set_={
-            "desired": stmt.excluded.desired,
-            "version": RobotConfig.version + 1,
-            "updated_at": stmt.excluded.updated_at,
-        },
-    ).returning(RobotConfig)
+    stmt = (
+        stmt.on_conflict_do_update(
+            index_elements=[RobotConfig.robot_id],
+            set_={
+                "desired": stmt.excluded.desired,
+                "version": RobotConfig.version + 1,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        .returning(RobotConfig)
+        # If this session already loaded the row, RETURNING hands back that
+        # object, and without this its old version and values are kept: the
+        # budget controller then published stale settings.
+        .execution_options(populate_existing=True)
+    )
     return (await db.execute(stmt)).scalar_one()
 
 
