@@ -103,10 +103,30 @@ def lerp(a: float, b: float, t: float):
     return a + (b - a) * t
 
 
-# Multiplies the per-tick component wear rates. Wear is slow in absolute terms
-# - a real robot degrades over months - but a demo that has to be left running
-# for twenty hours before anything moves off 100% is not demonstrating anything.
-WEAR_ACCELERATION = 6.0
+# ── Rates ────────────────────────────────────────────────────────────
+# Everything below is per second of wall-clock time, so a different tick rate
+# does not change how fast robots drain, charge or wear. The battery and wear
+# models below are written at real-world scale and sped up here, by one
+# factor each, so a demo shows a full cycle in under an hour. --time-scale
+# multiplies all three (2 = everything twice as fast).
+#
+# At the default: a robot on a mission drains about 2.6 % a minute (a full
+# battery lasts about half an hour of driving), charges about 15 % a minute,
+# and its components lose about 5 % of their health an hour.
+DRAIN_SPEEDUP = 1.5
+CHARGE_PERCENT_PER_S = 0.25
+WEAR_SPEEDUP = 1.5
+# An idle robot below this goes back to charge before it is given a mission.
+IDLE_TOP_UP_PERCENT = 35.0
+# A brief, hard heat spike (a jammed wheel, direct sun), per second.
+HEAT_SPIKE_PER_S = 0.0003
+# Network blackouts, per second: a base rate plus more for a worn network
+# interface. Each lasts 10 to 25 seconds.
+BLACKOUT_BASE_PER_S = 0.0002
+BLACKOUT_WEAR_PER_S = 0.002
+
+# Set from --time-scale in main().
+TIME_SCALE = 1.0
 
 
 def initial_component_health(rng: random.Random, service_age: float | None = None):
@@ -232,18 +252,26 @@ def effective_speed(robot: RobotState, mission_type: str, rng: random.Random):
 
 
 def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: random.Random):
+    """Measurement noise, growing as the sensors wear.
+
+    Sized like real sensors: a battery's state of charge comes from its
+    management system already smoothed, so it moves by tenths of a percent,
+    not whole percents; a temperature probe jitters by up to a degree; and only
+    the physical sensors (temperature, wheel speed) occasionally glitch. Noise
+    larger than the agent's tolerances would make every reading a keyframe.
+    """
     noise_scale = (100.0 - robot.sensor_health) / 100.0
     if noise_scale <= 0:
         return value
 
     if kind == "temperature":
-        value += rng.uniform(-2.5, 2.5) * noise_scale
+        value += rng.uniform(-1.0, 1.0) * noise_scale
     elif kind == "speed":
-        value += rng.uniform(-0.18, 0.18) * noise_scale
+        value += rng.uniform(-0.12, 0.12) * noise_scale
     else:
-        value += rng.uniform(-1.8, 1.8) * noise_scale
+        value += rng.uniform(-0.3, 0.3) * noise_scale
 
-    if rng.random() < noise_scale * 0.05:
+    if kind != "battery" and rng.random() < noise_scale * 0.01:
         value += rng.uniform(-6.0, 6.0)
 
     return value
@@ -528,24 +556,42 @@ async def robot_loop(
 
             # Check simulated network blackout
             is_blacked_out = robot.blackout_until > now
+            agent = _agents.get(robot.robot_id)
+            if agent is not None and agent.link_down and not is_blacked_out:
+                agent.restore_link()
+                safe_print(
+                    f"[R{robot.robot_id:02d}] Network back; sending {agent.pending()} "
+                    "readings held on the robot"
+                )
 
             # Trigger network blackout with random probability
             if not is_blacked_out and robot.status not in ("DEAD", "STOPPED"):
-                blackout_chance = 0.0015 + ((100.0 - robot.network_health) / 100.0) * 0.008
+                blackout_chance = (
+                    BLACKOUT_BASE_PER_S
+                    + ((100.0 - robot.network_health) / 100.0) * BLACKOUT_WEAR_PER_S
+                ) * dt
                 if rng.random() < blackout_chance:
                     blackout_duration = rng.uniform(10.0, 25.0)
                     robot.blackout_until = now + blackout_duration
                     is_blacked_out = True
                     safe_print(
-                        f"[R{robot.robot_id:02d}] Telemetry drop: Network blackout started for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)"
+                        f"[R{robot.robot_id:02d}] Network blackout for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)"
                     )
+                    # Over MQTT this is a real link loss: the broker publishes
+                    # the robot's will (offline), and the robot keeps measuring
+                    # into its agent's outbox, which sends everything once the
+                    # link is back. Over HTTP the readings are simply lost.
+                    if agent is not None:
+                        agent.drop_link()
+
+            # Whether readings and events go anywhere this tick.
+            can_send = agent is not None or not is_blacked_out
 
             # Commands are handled during a telemetry blackout too, so an
             # operator's Stop still lands. Over MQTT they were pushed to the
             # robot; over HTTP it claims them (POST /claim, not GET: claiming
             # transitions commands to DISPATCHED, so it is not a safe method).
             try:
-                agent = _agents.get(robot.robot_id)
                 if agent is not None:
                     await handle_commands(robot, agent.take_commands(), client, base_api)
                 else:
@@ -579,7 +625,7 @@ async def robot_loop(
                     )
 
                 # Emit dead telemetry if not blacked out
-                if not is_blacked_out:
+                if can_send:
                     await emit_telemetry(robot, queue, rng)
 
                 # Maintenance repair crew event (45s to 90s delay)
@@ -606,7 +652,7 @@ async def robot_loop(
                 continue
 
             if robot.status == "STOPPED":
-                if not is_blacked_out:
+                if can_send:
                     await emit_telemetry(robot, queue, rng)
                 await asyncio.sleep(tick_seconds(robot, rng, tick_min_s, tick_max_s))
                 continue
@@ -625,7 +671,7 @@ async def robot_loop(
             # Proactive top up if idle
             if (
                 robot.mission is None
-                and robot.battery <= 50.0
+                and robot.battery <= IDLE_TOP_UP_PERCENT
                 and not robot.returning_to_charge
                 and robot.status != "CHARGING"
             ):
@@ -656,7 +702,7 @@ async def robot_loop(
                     motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
                     battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
                     drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
-                    robot.battery -= drain_per_s * dt * 20.0
+                    robot.battery -= drain_per_s * dt * DRAIN_SPEEDUP * TIME_SCALE
 
                     load_heat = (
                         0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
@@ -685,8 +731,10 @@ async def robot_loop(
                             f"[R{robot.robot_id:02d}] Battery cooled to safe levels. Resuming charge cycle."
                         )
                 else:
-                    charge_rate = 0.35 * clamp(robot.battery_health / 100.0, 0.55, 1.0)
-                    robot.battery = clamp(robot.battery + charge_rate * dt * 10.0, 0.0, 100.0)
+                    charge_rate = CHARGE_PERCENT_PER_S * clamp(
+                        robot.battery_health / 100.0, 0.55, 1.0
+                    )
+                    robot.battery = clamp(robot.battery + charge_rate * dt * TIME_SCALE, 0.0, 100.0)
 
                     # Charging creates heat
                     charging_heat = 0.12 * (1.0 + (100.0 - robot.battery_health) / 100.0)
@@ -722,7 +770,7 @@ async def robot_loop(
                             safe_print(
                                 f"[R{robot.robot_id:02d}] Completed mission {mission.mission_id} while overheating."
                             )
-                            if not is_blacked_out:
+                            if can_send:
                                 await emit_telemetry(robot, queue, rng)
                             clear_mission(robot)
                         else:
@@ -736,7 +784,7 @@ async def robot_loop(
                     motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
                     battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
                     drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
-                    robot.battery -= drain_per_s * dt * 20.0
+                    robot.battery -= drain_per_s * dt * DRAIN_SPEEDUP * TIME_SCALE
 
                     load_heat = 0.02 + 0.02 * robot.speed
                     cooling = 0.045 * (robot.temperature - ambient_c)
@@ -776,7 +824,7 @@ async def robot_loop(
                                 f"[R{robot.robot_id:02d}] completed "
                                 f"{mission.mission_type} {mission.mission_id}"
                             )
-                            if not is_blacked_out:
+                            if can_send:
                                 await emit_telemetry(robot, queue, rng)
                                 await send_event(
                                     client,
@@ -799,7 +847,7 @@ async def robot_loop(
                 motor_penalty = 1.0 + ((100.0 - robot.motor_health) / 100.0) * 0.45
                 battery_penalty = 1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.65
                 drain_per_s = (0.008 + 0.014 * robot.speed) * motor_penalty * battery_penalty
-                robot.battery -= drain_per_s * dt * 20.0
+                robot.battery -= drain_per_s * dt * DRAIN_SPEEDUP * TIME_SCALE
 
                 load_heat = (
                     0.055 + 0.055 * robot.speed + ((100.0 - robot.motor_health) / 100.0) * 0.035
@@ -811,29 +859,29 @@ async def robot_loop(
             else:
                 robot.speed = lerp(robot.speed, 0.0, 0.35)
                 standby_drain = 0.0015 * (1.0 + ((100.0 - robot.battery_health) / 100.0) * 0.25)
-                robot.battery -= standby_drain * dt * 20.0
+                robot.battery -= standby_drain * dt * DRAIN_SPEEDUP * TIME_SCALE
                 robot.temperature -= 0.04 * (robot.temperature - ambient_c) * dt
 
-            # Wear down components. Scaled by WEAR_ACCELERATION so degradation
-            # is observable across a demo session rather than a working week.
-            wear = WEAR_ACCELERATION
+            # Wear down components, per second. The rates are about 0.5 % an
+            # hour each before WEAR_SPEEDUP; motors wear faster on a mission.
+            wear = dt * WEAR_SPEEDUP * TIME_SCALE
             robot.battery_health = clamp(
-                robot.battery_health - rng.uniform(0.0006, 0.0012) * wear, 10.0, 100.0
+                robot.battery_health - rng.uniform(0.00034, 0.00069) * wear, 10.0, 100.0
             )
             robot.motor_health = clamp(
                 robot.motor_health
-                - rng.uniform(0.0008, 0.0014) * (1.3 if robot.mission else 0.5) * wear,
+                - rng.uniform(0.00046, 0.0008) * (1.3 if robot.mission else 0.5) * wear,
                 10.0,
                 100.0,
             )
             robot.sensor_health = clamp(
-                robot.sensor_health - rng.uniform(0.0005, 0.0010) * wear, 10.0, 100.0
+                robot.sensor_health - rng.uniform(0.00029, 0.00057) * wear, 10.0, 100.0
             )
             robot.network_health = clamp(
-                robot.network_health - rng.uniform(0.0006, 0.0011) * wear, 10.0, 100.0
+                robot.network_health - rng.uniform(0.00034, 0.00063) * wear, 10.0, 100.0
             )
 
-            if rng.random() < 0.0025:
+            if rng.random() < HEAT_SPIKE_PER_S * dt:
                 robot.temperature += rng.uniform(4.0, 9.0)
 
             # Check geofence. Hysteresis (enter <5m, clear only after >7m) stops a
@@ -842,7 +890,7 @@ async def robot_loop(
             dist_to_fence = math.hypot(robot.x - 15.0, robot.y - 10.0)
             if dist_to_fence < 5.0 and not robot.in_fence:
                 robot.in_fence = True
-                if now >= robot.fence_cooldown_until and not is_blacked_out:
+                if now >= robot.fence_cooldown_until and can_send:
                     robot.fence_cooldown_until = now + 45.0
                     safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
                     await send_event(client, base_api, robot.robot_id, "Entered Restricted Zone!")
@@ -854,7 +902,7 @@ async def robot_loop(
             robot.speed = clamp(robot.speed, 0.0, 2.2)
 
             # Emit telemetry if online and not in blackout
-            if not is_blacked_out:
+            if can_send:
                 await emit_telemetry(robot, queue, rng)
 
             await asyncio.sleep(tick_seconds(robot, rng, tick_min_s, tick_max_s))
@@ -922,7 +970,7 @@ async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Ra
         progress = (
             f"{robot.mission_progress:5.1f}%" if robot.mission_progress is not None else "  n/a"
         )
-        safe_print(
+        logger.debug(
             f"[R{robot.robot_id:02d}] {robot.status:<10} {mission_label:<10} "
             f"bat={robot.battery:5.1f}% temp={robot.temperature:5.1f}C spd={robot.speed:4.2f} "
             f"mission={progress} comp=({robot.battery_health:4.0f}/{robot.motor_health:4.0f}/"
@@ -1203,6 +1251,15 @@ def main():
     parser.add_argument("--tick-min", type=float, default=1.0)
     parser.add_argument("--tick-max", type=float, default=2.5)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--time-scale",
+        type=float,
+        default=1.0,
+        help="Run battery drain, charging and wear this many times faster (default 1).",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Log every robot's state on every tick."
+    )
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
         "--mqtt-host",
@@ -1230,6 +1287,10 @@ def main():
         help="Issue each robot its own device key at startup and send as that robot.",
     )
     args = parser.parse_args()
+    global TIME_SCALE
+    TIME_SCALE = args.time_scale
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
 
     if not args.api_key:
         parser.error(
