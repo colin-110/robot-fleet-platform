@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from app import presence
 from app.models import Event, StoredWatermark, Telemetry
 from app.mqtt import ingest, wire
+from app.mqtt.commands import CommandPublisher
 from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
 from app.websocket_manager import manager
 from tests.conftest import TestSessionLocal
@@ -566,6 +567,32 @@ async def test_envelopes_are_recognised_by_their_content_type(broadcasts):
         client.disconnect()
         client.loop_stop()
         assert await wait_for(lambda: _count_is(20))
+    finally:
+        await stop(task)
+
+
+@broker
+@pytest.mark.asyncio
+async def test_the_connection_survives_publishing_watermarks(broadcasts):
+    # Wired as the app does it: the command publisher sees the PUBACK of
+    # everything published on the connection, watermarks included. It once
+    # raised on those before its first command, which killed paho's thread.
+    name = f"ingest-{uuid.uuid4().hex[:8]}"
+    consumer = live_consumer(name)
+    CommandPublisher(consumer.client)
+    task = await start(consumer)
+    try:
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        client.connect(MQTT_HOST, 1883)
+        client.loop_start()
+        props = Properties(PacketTypes.PUBLISH)
+        props.ContentType = wire.CONTENT_TYPE
+        for seq in (1, 6):
+            body = envelope("telemetry", [agent_reading(seq + i) for i in range(5)], seq=seq)
+            client.publish("fleet/3/telemetry", body, qos=1, properties=props).wait_for_publish(5)
+            assert await wait_for(lambda n=seq + 4: _count_is(n))
+        client.disconnect()
+        client.loop_stop()
     finally:
         await stop(task)
 

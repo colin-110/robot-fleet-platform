@@ -46,6 +46,14 @@ class FakeClient:
         return FakeInfo(mid)
 
 
+def test_pubacks_before_the_first_command_are_ignored():
+    # Created outside a running loop, so nothing is bound yet. A PUBACK for
+    # something else published on the connection must not raise: an exception
+    # in a paho callback kills its network thread.
+    publisher = CommandPublisher(FakeClient(reply=None))
+    publisher._on_publish(None, None, 1, 0, None)
+
+
 @pytest.fixture
 def broadcasts(monkeypatch):
     sent = []
