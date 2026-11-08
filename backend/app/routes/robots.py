@@ -150,3 +150,37 @@ async def robot_track(
     config = await config_repo.get_config(db, robot_id)
     applied = config.reported if config else None
     return track_service.reconstruct(rows, start, end, step_s, applied)
+
+
+@router.get("/robots/{robot_id}/history")
+async def robot_history(
+    start: datetime,
+    end: datetime,
+    resolution: str = Query("minute", pattern="^(minute|hour)$"),
+    robot_id: int = Path(..., ge=0),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
+):
+    """Exact time-weighted rollups (``app/storage/rollups.py``), oldest first.
+
+    Minutes are kept a year and hours indefinitely; raw keyframes, 30 days.
+    ``seconds_covered`` says how much of each bucket the robot was heard
+    from; the averages are over that time only.
+    """
+    from sqlalchemy import select
+
+    from app.models import TelemetryHour, TelemetryMinute
+
+    model = TelemetryMinute if resolution == "minute" else TelemetryHour
+    start, end = _utc(start), _utc(end)
+    limit = 2000
+    rows = (
+        await db.execute(
+            select(model)
+            .where(model.robot_id == robot_id, model.bucket >= start, model.bucket < end)
+            .order_by(model.bucket)
+            .limit(limit)
+        )
+    ).scalars()
+    columns = [c.name for c in model.__table__.columns if c.name != "robot_id"]
+    return [{c: getattr(r, c) for c in columns} for r in rows]

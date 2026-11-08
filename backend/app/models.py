@@ -280,6 +280,38 @@ class FleetSetting(Base):
     updated_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class _RollupColumns:
+    """Exact time-weighted aggregates of keyframe segments (app/storage/rollups.py)."""
+
+    robot_id = Column(Integer, primary_key=True)
+    bucket = Column(DateTime(timezone=True), primary_key=True)
+    seconds_covered = Column(Float, nullable=False)
+    keyframes = Column(Integer, nullable=False)
+    distance_m = Column(Float, nullable=False)
+    battery_avg = Column(Float, nullable=True)
+    battery_min = Column(Float, nullable=True)
+    battery_max = Column(Float, nullable=True)
+    temperature_avg = Column(Float, nullable=True)
+    temperature_max = Column(Float, nullable=True)
+    speed_avg = Column(Float, nullable=True)
+    battery_health_avg = Column(Float, nullable=True)
+    motor_health_avg = Column(Float, nullable=True)
+    sensor_health_avg = Column(Float, nullable=True)
+    network_health_avg = Column(Float, nullable=True)
+
+
+class TelemetryMinute(_RollupColumns, Base):
+    """One row per robot per minute. Kept a year (raw keyframes, 30 days)."""
+
+    __tablename__ = "telemetry_1m"
+
+
+class TelemetryHour(_RollupColumns, Base):
+    """One row per robot per hour, built from the minutes. Kept indefinitely."""
+
+    __tablename__ = "telemetry_1h"
+
+
 class User(Base):
     """An operator account.
 
