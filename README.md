@@ -35,7 +35,7 @@ goes through one write path that inserts it, registers the robot and updates
 its current state in a single transaction. There is no Redis and no worker
 process.
 
-This is step 3 of a redesign aimed at running a fleet on the smallest possible
+This is step 4 of a redesign aimed at running a fleet on the smallest possible
 server; next is error-budgeted telemetry. See
 [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
@@ -51,6 +51,10 @@ server; next is error-budgeted telemetry. See
   messages (a reading is 20 to 35 bytes in a batch, against about 450 as
   JSON), a SQLite outbox, commands run once, and settings pushed from the
   server with the robot reporting what it applied.
+- **Dual prediction.** Robot and server run the same predictor; the robot
+  sends only when reality strays past a tolerance, and every value on the API
+  carries its error bound. In the simulator that is 55% fewer messages at the
+  default tolerances, and the tolerances are the dial.
 - **Fast clocks corrected.** A robot whose clock runs ahead has its readings
   moved back by the measured offset, keeping their spacing.
 - **Idempotent writes.** A reading is identified by `(robot_id, timestamp)`,
