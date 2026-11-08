@@ -74,6 +74,15 @@ class RobotState:
     processed_command_ids: list[str] = field(default_factory=list)
     in_fence: bool = False
     fence_cooldown_until: float = 0.0
+    # Seconds between readings when the server has set one (desired config).
+    report_interval_s: float | None = None
+
+
+def tick_seconds(robot: RobotState, rng: random.Random, tick_min_s: float, tick_max_s: float):
+    """How long the robot waits before its next tick."""
+    if robot.report_interval_s:
+        return robot.report_interval_s * rng.uniform(0.9, 1.1)
+    return rng.uniform(tick_min_s, tick_max_s)
 
 
 def clamp(value: float, lo: float, hi: float):
@@ -245,9 +254,10 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
 _device_keys: dict[int, str] = {}
 
 
-# One MQTT connection per robot, filled at startup when --mqtt-host is set.
-# A robot with a link sends everything over MQTT instead of HTTP.
-_links: dict = {}
+# One agent (fleetops_agent.Agent) per robot, filled at startup when
+# --mqtt-host is set. A robot with an agent sends everything over MQTT
+# through the agent's on-disk outbox instead of HTTP.
+_agents: dict = {}
 
 
 def key_headers(robot_id: int) -> dict | None:
@@ -368,9 +378,9 @@ async def patch_command_status(
     reconcile anything left dangling.
     """
     payload = {"status": status, **extra}
-    link = _links.get(robot_id)
-    if link is not None:
-        link.publish("commands/status", {"id": cmd_id, **payload})
+    agent = _agents.get(robot_id)
+    if agent is not None:
+        agent.report_command(cmd_id, status, **extra)
         return
     try:
         async with client.patch(
@@ -383,11 +393,11 @@ async def patch_command_status(
 
 async def send_event(client: aiohttp.ClientSession, base_api: str, robot_id: int, message: str):
     """Best-effort event. The device timestamp makes a resent event idempotent."""
-    body = {"robot_id": robot_id, "message": message, "timestamp": iso_utc_now()}
-    link = _links.get(robot_id)
-    if link is not None:
-        link.publish("events", body)
+    agent = _agents.get(robot_id)
+    if agent is not None:
+        agent.send_event(message)
         return
+    body = {"robot_id": robot_id, "message": message, "timestamp": iso_utc_now()}
     try:
         async with client.post(
             f"{base_api}/events", json=body, timeout=10.0, headers=key_headers(robot_id)
@@ -532,9 +542,9 @@ async def robot_loop(
             # robot; over HTTP it claims them (POST /claim, not GET: claiming
             # transitions commands to DISPATCHED, so it is not a safe method).
             try:
-                link = _links.get(robot.robot_id)
-                if link is not None:
-                    await handle_commands(robot, link.take_commands(), client, base_api)
+                agent = _agents.get(robot.robot_id)
+                if agent is not None:
+                    await handle_commands(robot, agent.take_commands(), client, base_api)
                 else:
                     cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
                     async with client.post(
@@ -589,13 +599,13 @@ async def robot_loop(
                         f"[R{robot.robot_id:02d}] MAINTENANCE COMPLETE: Robot fully revived and operational"
                     )
 
-                await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+                await asyncio.sleep(tick_seconds(robot, rng, tick_min_s, tick_max_s))
                 continue
 
             if robot.status == "STOPPED":
                 if not is_blacked_out:
                     await emit_telemetry(robot, queue, rng)
-                await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+                await asyncio.sleep(tick_seconds(robot, rng, tick_min_s, tick_max_s))
                 continue
 
             # Low power / Return to charge triggers
@@ -844,7 +854,7 @@ async def robot_loop(
             if not is_blacked_out:
                 await emit_telemetry(robot, queue, rng)
 
-            await asyncio.sleep(rng.uniform(tick_min_s, tick_max_s))
+            await asyncio.sleep(tick_seconds(robot, rng, tick_min_s, tick_max_s))
 
     except asyncio.CancelledError:
         safe_print(f"[R{robot.robot_id:02d}] Decommissioned and shutting down.")
@@ -887,7 +897,16 @@ async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Ra
     }
 
     try:
-        await queue.put(payload)
+        agent = _agents.get(robot.robot_id)
+        if agent is not None:
+            # Straight into the agent's outbox; it batches and sends.
+            reading = {k: v for k, v in payload.items() if k != "robot_id"}
+            reading["timestamp"] = _parse_ts(reading["timestamp"])
+            if reading["mission_start_time"]:
+                reading["mission_start_time"] = _parse_ts(reading["mission_start_time"])
+            agent.send_telemetry(reading)
+        else:
+            await queue.put(payload)
         mission_label = (
             robot.mission.mission_type
             if robot.mission
@@ -935,17 +954,6 @@ async def telemetry_batcher(
             return
 
         unsent = outbox.unsent()
-        if _links:
-            # One message per robot. paho keeps it until the broker's PUBACK
-            # and resends it after a reconnect.
-            groups: dict[int, list] = {}
-            for item in unsent:
-                groups.setdefault(item["robot_id"], []).append(item)
-            for robot_id, items in groups.items():
-                if _links[robot_id].publish("telemetry", items):
-                    outbox.confirm(items)
-            return
-
         # A device key only covers its own robot, so with device keys the
         # readings go out as one request per robot.
         if _device_keys:
@@ -989,6 +997,16 @@ async def telemetry_batcher(
                 await flush()
         except asyncio.CancelledError:
             break
+
+
+def _config_applier(robot: RobotState):
+    """on_config callback: the server's settings take effect on the next tick."""
+
+    def apply(values: dict) -> None:
+        robot.report_interval_s = values.get("report_interval_s")
+        safe_print(f"[R{robot.robot_id:02d}] Settings applied: {values}")
+
+    return apply
 
 
 async def main_async(args, worker_index=0, total_workers=1):
@@ -1060,16 +1078,24 @@ async def main_async(args, worker_index=0, total_workers=1):
                 client, get_base_api(args.api_url), [r.robot_id for r in robots], args.timeout
             )
         if args.mqtt_host:
-            from mqtt_link import RobotLink
+            from fleetops_agent.agent import Agent
 
+            os.makedirs(args.outbox_dir, exist_ok=True)
             for robot in robots:
-                link = RobotLink(
-                    robot.robot_id, _device_keys[robot.robot_id], args.mqtt_host, args.mqtt_port
+                agent = Agent(
+                    robot.robot_id,
+                    _device_keys[robot.robot_id],
+                    args.mqtt_host,
+                    args.mqtt_port,
+                    outbox_path=os.path.join(args.outbox_dir, f"robot-{robot.robot_id}.db"),
                 )
-                link.start()
-                _links[robot.robot_id] = link
+                agent.on_config = _config_applier(robot)
+                agent.start()
+                _agents[robot.robot_id] = agent
+            held = sum(agent.pending() for agent in _agents.values())
             safe_print(
-                f"[MQTT] {len(_links)} robots connecting to {args.mqtt_host}:{args.mqtt_port}"
+                f"[MQTT] {len(_agents)} robots connecting to {args.mqtt_host}:{args.mqtt_port}; "
+                f"{held} items held from a previous run"
             )
 
         # Start batcher
@@ -1105,12 +1131,16 @@ async def main_async(args, worker_index=0, total_workers=1):
                 f"[OUTBOX] generated={outbox.generated} unsent={outbox.pending_count()} "
                 f"dropped={outbox.dropped}"
             )
-            if _links:
-                unacked = sum(link.unacked() for link in _links.values())
-                rejected = sum(link.rejected for link in _links.values())
-                safe_print(f"[MQTT] unacked={unacked} rejected={rejected}")
-                for link in _links.values():
-                    link.stop()
+            if _agents:
+                # Unconfirmed items stay on disk and are sent on the next start.
+                for agent in _agents.values():
+                    agent.flush(timeout=2.0 / len(_agents))
+                pending = sum(agent.pending() for agent in _agents.values())
+                sent = sum(agent.stats["items"] for agent in _agents.values())
+                resends = sum(agent.stats["resends"] for agent in _agents.values())
+                safe_print(f"[MQTT] sent={sent} unconfirmed={pending} resends={resends}")
+                for agent in _agents.values():
+                    agent.stop()
             dispatcher_task.cancel()
             batcher_task.cancel()
             for task in list(active_robot_tasks.values()):
@@ -1151,6 +1181,11 @@ def main():
         help="Send over MQTT to this broker (implies --device-keys). HTTP is used to issue keys.",
     )
     parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument(
+        "--outbox-dir",
+        default="outbox",
+        help="Where each robot keeps its on-disk outbox (with --mqtt-host).",
+    )
     parser.add_argument(
         "--device-keys",
         action="store_true",

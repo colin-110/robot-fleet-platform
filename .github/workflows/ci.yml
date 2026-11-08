@@ -47,15 +47,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
+          pip install -e 'agent[test]'
           pip install ruff
       # Blocking, unlike the previous `|| echo warning` step which could never
       # fail the build.
       - name: Lint (ruff)
         run: |
           cd backend && ruff check app tests
-          cd .. && ruff check simulator
+          cd .. && ruff check simulator agent
       - name: Check formatting (ruff format)
-        run: cd backend && ruff format --check app tests
+        run: |
+          cd backend && ruff format --check app tests
+          cd .. && ruff format --check agent
       # Applies every migration to a real TimescaleDB, so a migration that only
       # works on plain Postgres (or not at all) fails here, not on deploy.
       - name: Check migrations
@@ -71,6 +74,10 @@ jobs:
           TELEMETRY_API_KEY: ci-test-key-not-a-real-secret
           PYTHONPATH: .
         run: cd backend && pytest tests/ -v --cov=app --cov-report=term-missing
+      - name: Run agent tests
+        env:
+          MQTT_TEST_HOST: localhost
+        run: cd agent && pytest -v
 
   # ── CI: Frontend Lint & Build ──────────────────────────────────────
   frontend-test:
@@ -109,11 +116,14 @@ jobs:
         include:
           - name: backend
             context: ./backend
+            file: backend/Dockerfile
           # The EC2 host pulls these two (docker-compose.ec2.yml); the frontend
           # is served by Vercel, so it has no image to publish. Building on the
           # t3.micro host itself has filled its disk before.
+          # Built from the root: the image installs the agent package.
           - name: simulator
-            context: ./simulator
+            context: .
+            file: simulator/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -127,6 +137,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/robot-fleet-${{ matrix.name }}:latest

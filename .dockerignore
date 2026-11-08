@@ -1,0 +1,7 @@
+# Only the simulator image builds from the repository root; it needs these two.
+*
+!agent/
+!simulator/
+**/__pycache__
+**/*.egg-info
+agent/tests/
