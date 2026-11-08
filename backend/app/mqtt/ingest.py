@@ -39,6 +39,7 @@ from app import presence
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.mqtt import topics, wire
+from app.repositories.config_repo import set_reported
 from app.repositories.event_repo import insert_events
 from app.repositories.watermark_repo import load_watermarks, save_watermarks
 from app.schemas import CommandStatusUpdate, EventCreate, TelemetryCreate
@@ -83,7 +84,12 @@ class Delivery:
     content_type: str | None = None
 
 
-SUBSCRIBED_CHANNELS = (topics.TELEMETRY, topics.EVENTS, topics.COMMAND_STATUS)
+SUBSCRIBED_CHANNELS = (
+    topics.TELEMETRY,
+    topics.EVENTS,
+    topics.COMMAND_STATUS,
+    topics.CONFIG_REPORTED,
+)
 
 
 def _decode(robot_id: int, payload: bytes, model):
@@ -208,6 +214,8 @@ class Decoded:
     presence: list[tuple[int, tuple[bool, str | None] | None]] = field(default_factory=list)
     statuses: list[StatusReport] = field(default_factory=list)
     progress: list[Progress] = field(default_factory=list)
+    # (robot_id, version, applied, rejected), latest last.
+    reported: list[tuple[int, int, dict, dict]] = field(default_factory=list)
 
 
 def decode_presence(payload: bytes) -> tuple[bool, str | None]:
@@ -394,6 +402,12 @@ class IngestConsumer:
                     decoded.statuses.append(
                         decode_command_status(delivery.robot_id, delivery.payload)
                     )
+                elif delivery.channel == topics.CONFIG_REPORTED:
+                    try:
+                        report = wire.decode_reported(delivery.payload)
+                    except wire.WireError as exc:
+                        raise BadMessage(str(exc)) from None
+                    decoded.reported.append((delivery.robot_id, *report))
                 elif delivery.channel == topics.PRESENCE:
                     decoded.presence.append((delivery.robot_id, decode_presence(delivery.payload)))
                 else:
@@ -429,6 +443,8 @@ class IngestConsumer:
         for report in decoded.statuses:
             await self._apply_status(report)
         await self._confirm(decoded.progress)
+        if decoded.reported:
+            await self._save_reported(decoded.reported)
         for robot_id in dict.fromkeys(changed):
             await broadcast_presence(robot_id)
             if presence.get(robot_id).online:
@@ -490,6 +506,23 @@ class IngestConsumer:
                 decoded.statuses.append(item)
         if delivery.channel == topics.TELEMETRY:
             decoded.presence.append((delivery.robot_id, None))
+
+    async def _save_reported(self, reports: list[tuple[int, int, dict, dict]]) -> None:
+        """Record the settings robots say they applied (retried until saved)."""
+        delay = 0.5
+        while True:
+            try:
+                async with self.session_factory() as db:
+                    for robot_id, version, applied, rejected in reports:
+                        await set_reported(db, robot_id, version, applied, rejected)
+                    await db.commit()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Saving reported settings failed; retrying in %.1fs", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
 
     def _warn_clock(self, robot_id: int, ahead_ms: int) -> None:
         now = asyncio.get_running_loop().time()

@@ -31,10 +31,17 @@ The server answers with ``fleet/<id>/stored``: a retained CBOR map ``{s, q}``
 saying that everything up to sequence ``q`` of stream ``s`` is committed. The
 robot deletes those items from its outbox. Until then it keeps them on disk
 and sends them again if no confirmation comes.
+
+Settings travel as JSON, since they are rare and worth reading in a broker
+tool: the server publishes the desired settings to the retained
+``fleet/<id>/config`` as ``{"version": n, "values": {...}}``, and the robot
+answers on the retained ``fleet/<id>/config/reported`` with
+``{"version": n, "applied": {...}, "rejected": {name: reason}}``.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -302,3 +309,74 @@ def decode_stored(payload: bytes) -> tuple[str, int]:
     if not isinstance(body, dict):
         raise WireError("a stored confirmation must be a map")
     return _stream(body), _int(body, "q", minimum=0)
+
+
+# ── Settings (server -> robot, and the robot's answer) ────────────
+
+# What the server may set on a robot, with the allowed range of each.
+CONFIG_FIELDS = {
+    # Seconds between readings.
+    "report_interval_s": (0.1, 3600.0),
+}
+
+
+def check_config(values: dict) -> tuple[dict, dict]:
+    """Split settings into ``(accepted, rejected)``; rejected maps name to reason."""
+    accepted, rejected = {}, {}
+    for name, value in values.items():
+        limits = CONFIG_FIELDS.get(name)
+        if limits is None:
+            rejected[name] = "unknown setting"
+        elif (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            rejected[name] = "must be a number"
+        elif not limits[0] <= value <= limits[1]:
+            rejected[name] = f"must be between {limits[0]:g} and {limits[1]:g}"
+        else:
+            accepted[name] = float(value)
+    return accepted, rejected
+
+
+def _json_object(payload: bytes) -> dict:
+    try:
+        body = json.loads(payload)
+    except ValueError as exc:
+        raise WireError(f"not JSON: {exc}") from None
+    if not isinstance(body, dict):
+        raise WireError("expected a JSON object")
+    return body
+
+
+def _version(body: dict) -> int:
+    version = body.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise WireError("version must be a non-negative integer")
+    return version
+
+
+def _mapping(body: dict, key: str) -> dict:
+    value = body.get(key, {})
+    if not isinstance(value, dict):
+        raise WireError(f"{key} must be an object")
+    return value
+
+
+def encode_config(version: int, values: dict) -> bytes:
+    return json.dumps({"version": version, "values": values}).encode()
+
+
+def decode_config(payload: bytes) -> tuple[int, dict]:
+    body = _json_object(payload)
+    return _version(body), _mapping(body, "values")
+
+
+def encode_reported(version: int, applied: dict, rejected: dict) -> bytes:
+    return json.dumps({"version": version, "applied": applied, "rejected": rejected}).encode()
+
+
+def decode_reported(payload: bytes) -> tuple[int, dict, dict]:
+    body = _json_object(payload)
+    return _version(body), _mapping(body, "applied"), _mapping(body, "rejected")

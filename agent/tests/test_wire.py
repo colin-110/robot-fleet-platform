@@ -146,3 +146,36 @@ def test_stored_confirmation_roundtrip():
     assert wire.decode_stored(wire.encode_stored("abc", 17)) == ("abc", 17)
     with pytest.raises(WireError):
         wire.decode_stored(cbor2.dumps({"s": "abc", "q": -1}))
+
+
+def test_check_config_accepts_known_settings_in_range():
+    accepted, rejected = wire.check_config(
+        {"report_interval_s": 5, "warp": 9, "report_interval": "fast"}
+    )
+    assert accepted == {"report_interval_s": 5.0}
+    assert set(rejected) == {"warp", "report_interval"}
+    _, rejected = wire.check_config({"report_interval_s": 0})
+    assert rejected == {"report_interval_s": "must be between 0.1 and 3600"}
+    _, rejected = wire.check_config({"report_interval_s": True})
+    assert rejected == {"report_interval_s": "must be a number"}
+
+
+def test_config_messages_roundtrip():
+    assert wire.decode_config(wire.encode_config(3, {"report_interval_s": 2.0})) == (
+        3,
+        {"report_interval_s": 2.0},
+    )
+    reported = wire.encode_reported(3, {"report_interval_s": 2.0}, {"warp": "unknown setting"})
+    assert wire.decode_reported(reported) == (
+        3,
+        {"report_interval_s": 2.0},
+        {"warp": "unknown setting"},
+    )
+
+
+@pytest.mark.parametrize(
+    "payload", [b"nope", b"[]", b'{"version": -1}', b'{"version": 1, "values": []}']
+)
+def test_decode_config_rejects_malformed(payload):
+    with pytest.raises(WireError):
+        wire.decode_config(payload)

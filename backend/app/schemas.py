@@ -39,6 +39,24 @@ class EventCreate(BaseModel):
     timestamp: datetime | None = None
 
 
+class RobotConfigUpdate(BaseModel):
+    """New desired settings. Replaces the previous ones entirely."""
+
+    values: dict
+
+
+class RobotConfigResponse(BaseModel):
+    robot_id: int
+    desired: dict
+    version: int
+    updated_at: datetime | None = None
+    reported: dict | None = None
+    reported_rejected: dict | None = None
+    reported_version: int | None = None
+    reported_at: datetime | None = None
+    in_sync: bool
+
+
 class EventResponse(BaseModel):
     """Event response payload."""
 

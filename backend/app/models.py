@@ -203,6 +203,27 @@ class StoredWatermark(Base):
     )
 
 
+class RobotConfig(Base):
+    """A robot's settings: what the server wants and what the robot applied.
+
+    The desired settings are also published to the robot's retained
+    ``fleet/<id>/config`` topic; this row is the source the API republishes
+    from. ``version`` goes up on every change, and the robot reports back the
+    version it applied, so ``reported_version == version`` means in sync.
+    """
+
+    __tablename__ = "robot_configs"
+
+    robot_id = Column(Integer, primary_key=True)
+    desired = Column(JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    reported = Column(JSON, nullable=True)
+    reported_rejected = Column(JSON, nullable=True)
+    reported_version = Column(Integer, nullable=True)
+    reported_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class User(Base):
     """An operator account.
 
