@@ -5,21 +5,26 @@
 #   -ForceNewInstance   launch a second host even if a tagged one exists.
 param(
     [switch]$ForceNewInstance,
-    # Defaults to the group the RDS and ElastiCache security groups actually
-    # admit. This script previously created and used 'fleet-security-group',
-    # which the data tier does not reference -- so the host it built could not
-    # open a connection to Postgres or Redis, whatever its .env said.
-    [string]$SecurityGroupName = "fleet-ec2-sg"
+    # The database and broker run on the host itself, so the group only
+    # needs the public ports (SSH, HTTP/S, MQTT over TLS).
+    [string]$SecurityGroupName = "fleet-ec2-sg",
+    # Graviton (ARM): the cheapest instances that run the stack. bench/run.py
+    # measures what fits; CI publishes arm64 images.
+    [string]$InstanceType = "t4g.small",
+    [int]$DiskGb = 16
 )
+
+# Graviton families need the arm64 image.
+$arch = if ($InstanceType -match '^[a-z]+\d+g') { "arm64" } else { "amd64" }
 
 # Refresh PATH to load AWS CLI
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
 Write-Host "=== FleetOps: AWS Automated EC2 Deployer ===" -ForegroundColor Cyan
 
-# 1. Get Latest Ubuntu 22.04 LTS AMI
-Write-Host "Searching for latest Ubuntu 22.04 LTS AMI in us-east-1..."
-$ami_id = aws ec2 describe-images --owners amazon --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" "Name=state,Values=available" --query "sort_by(Images, &CreationDate)[-1].ImageId" --output text
+# 1. Get Latest Ubuntu 24.04 LTS AMI for the instance's architecture
+Write-Host "Searching for latest Ubuntu 24.04 LTS ($arch) AMI..."
+$ami_id = aws ec2 describe-images --owners amazon --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-$arch-server-*" "Name=state,Values=available" --query "sort_by(Images, &CreationDate)[-1].ImageId" --output text
 if (-not $ami_id) {
     Write-Error "Failed to find Ubuntu AMI."
     exit 1
@@ -76,13 +81,14 @@ if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
     $sg_id = aws ec2 create-security-group --group-name $SecurityGroupName --description "Security group for FleetOps" --query "GroupId" --output text
     if ($sg_id) {
         Write-Host "Security Group created: $sg_id" -ForegroundColor Green
-        # 22 for SSH, 80 for
-        # nginx. Not 8000: docker-compose.ec2.yml binds the backend
-        # port to 127.0.0.1 only -- nginx on the host proxies to it -- so opening
-        # it exposed nothing but an unauthenticated API if anyone ever did.
-        Write-Host "Configuring firewall rules (ports 22, 80)..."
-        aws ec2 authorize-security-group-ingress --group-id $sg_id --protocol tcp --port 22 --cidr 0.0.0.0/0
-        aws ec2 authorize-security-group-ingress --group-id $sg_id --protocol tcp --port 80 --cidr 0.0.0.0/0
+        # 22 for SSH, 80 and 443 for nginx (Let's Encrypt and HTTPS), 8883
+        # for robots (MQTT over TLS). Not 8000: docker-compose.ec2.yml binds
+        # the backend to 127.0.0.1 and nginx proxies to it. Not 1883: plain
+        # MQTT stays on the Docker network.
+        Write-Host "Configuring firewall rules (ports 22, 80, 443, 8883)..."
+        foreach ($port in 22, 80, 443, 8883) {
+            aws ec2 authorize-security-group-ingress --group-id $sg_id --protocol tcp --port $port --cidr 0.0.0.0/0
+        }
         Write-Host "Firewall rules successfully applied." -ForegroundColor Green
     } else {
         Write-Error "Failed to create Security Group."
@@ -102,37 +108,6 @@ if ($LASTEXITCODE -ne 0 -or -not $sg_id) {
         Write-Host "  backend locally -- so it is very likely unused. Close it:" -ForegroundColor Red
         Write-Host "  aws ec2 revoke-security-group-ingress --group-id $sg_id --protocol tcp --port 8000 --cidr 0.0.0.0/0" -ForegroundColor Yellow
     }
-}
-
-# 3b. Does the data tier actually admit this group?
-# Nothing else reports this. A host in the wrong security group provisions
-# cleanly, starts cleanly, and then hangs on its first database connection --
-# long after this script has printed a success banner.
-Write-Host "Checking that RDS and ElastiCache admit $SecurityGroupName..."
-$data_sgs = @()
-$rds_sgs = aws rds describe-db-instances --query "DBInstances[].VpcSecurityGroups[].VpcSecurityGroupId" --output text 2>$null
-$cache_sgs = aws elasticache describe-cache-clusters --query "CacheClusters[].SecurityGroups[].SecurityGroupId" --output text 2>$null
-foreach ($group in @($rds_sgs, $cache_sgs)) {
-    if ($group) { $data_sgs += ($group -split "\s+" | Where-Object { $_ }) }
-}
-$data_sgs = @($data_sgs | Select-Object -Unique)
-
-$admits = $false
-foreach ($dsg in $data_sgs) {
-    $sources = aws ec2 describe-security-groups --group-ids $dsg --query "SecurityGroups[].IpPermissions[].UserIdGroupPairs[].GroupId" --output text 2>$null
-    if ($sources -and (($sources -split "\s+") -contains $sg_id)) { $admits = $true; break }
-}
-
-if ($data_sgs.Count -eq 0) {
-    Write-Host "No RDS or ElastiCache in this account; nothing to check." -ForegroundColor Yellow
-} elseif (-not $admits) {
-    Write-Host "WARNING: no RDS or ElastiCache security group admits $SecurityGroupName ($sg_id)." -ForegroundColor Red
-    Write-Host "  The stack will come up and then fail to reach Postgres and Redis." -ForegroundColor Red
-    Write-Host "  Either provision into the group the data tier already trusts" -ForegroundColor Red
-    Write-Host "  (-SecurityGroupName <name>), or grant this one access on 5432 and 6379." -ForegroundColor Red
-    Write-Host "  Data-tier groups found: $($data_sgs -join ', ')" -ForegroundColor Yellow
-} else {
-    Write-Host "Data tier admits this group." -ForegroundColor Green
 }
 
 # 4. SSM Instance Profile
@@ -247,8 +222,8 @@ if ($reused) {
     $user_data_uri = "file://" + $user_data.Replace('\', '/')
 
     if (-not $forced_new) { Write-Host "No existing host found." }
-    Write-Host "Launching t3.micro EC2 Instance..."
-    $instance_id = aws ec2 run-instances --image-id $ami_id --instance-type t3.micro --key-name fleet-key --security-group-ids $sg_id --iam-instance-profile "Name=$profile_name" --user-data $user_data_uri --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=fleetops-app},{Key=role,Value=fleet-app}]" --query "Instances[0].InstanceId" --output text
+    Write-Host "Launching $InstanceType EC2 Instance..."
+    $instance_id = aws ec2 run-instances --image-id $ami_id --instance-type $InstanceType --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$DiskGb,VolumeType=gp3}" --key-name fleet-key --security-group-ids $sg_id --iam-instance-profile "Name=$profile_name" --user-data $user_data_uri --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=fleetops-app},{Key=role,Value=fleet-app}]" --query "Instances[0].InstanceId" --output text
     if (-not $instance_id -or $LASTEXITCODE -ne 0) {
         Write-Error "Failed to launch EC2 instance."
         exit 1

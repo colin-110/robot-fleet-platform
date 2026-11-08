@@ -1,13 +1,17 @@
-# Production: one EC2 instance running the backend and simulator.
+# Production: the whole stack on one small instance (ARM, Graviton).
 #
-# No frontend container (Vercel serves the dashboard). nginx and
-# Let's Encrypt run on the host. Postgres (Neon) and Redis (Upstash) are
-# external; their URLs come from .env on the host.
+# TimescaleDB, the Mosquitto broker, the API and the demo simulator, with the
+# memory limits measured by bench/run.py (480 MB in all). The dashboard is a
+# static build on Vercel. nginx and Let's Encrypt run on the host: nginx
+# proxies HTTPS to the API on 127.0.0.1:8000, and the broker serves TLS on
+# 8883 with the same certificate (mosquitto/tls.conf, scripts/mqtt_certs.sh).
 #
 #   IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops pull
 #   IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
 #
-# IMAGE_TAG defaults to `latest`.
+# The simulator is the demo fleet; leave it out with --scale simulator=0 when
+# real robots connect. .env on the host holds the secrets (backend/.env.example).
+# Backups: scripts/backup_db.sh from cron. IMAGE_TAG defaults to `latest`.
 
 x-logging: &default-logging
   driver: json-file
@@ -16,36 +20,91 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    # Sized for a 512 MB host (bench/docker-compose.yml). Full durability:
+    # the broker is only told a message is safe once it is committed.
+    command: >
+      postgres -c shared_buffers=48MB -c effective_cache_size=96MB
+      -c work_mem=2MB -c maintenance_work_mem=16MB -c max_connections=30
+      -c max_worker_processes=4 -c timescaledb.max_background_workers=2
+      -c wal_buffers=4MB -c synchronous_commit=on
+    env_file: [./.env]
+    environment:
+      - TIMESCALEDB_TELEMETRY=off
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    mem_limit: 200m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    networks: [fleet_net]
+
+  mqtt:
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - ./mosquitto/tls.conf:/mosquitto/conf.d/tls.conf:ro
+      - ./certs:/mosquitto/certs:ro
+      - mosquitto_data:/var/lib/mosquitto
+    # Only TLS is published. Plain 1883 is reachable on fleet_net alone, by
+    # the API and the demo simulator.
+    ports:
+      - "8883:8883"
+    mem_limit: 48m
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [fleet_net]
+
   backend:
     image: ghcr.io/colin-110/robot-fleet-backend:${IMAGE_TAG:-latest}
-    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log"]
+    # One process: it owns the broker session that ingest runs on.
+    command: ["sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --no-access-log"]
     env_file: [./.env]
     environment:
       - PYTHONPATH=.
-    restart: unless-stopped
+      - MQTT_ENABLED=true
+      - MQTT_HOST=mqtt
     ports:
       - "127.0.0.1:8000:8000"
+    mem_limit: 160m
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
     healthcheck:
-      # /health/live, not /health: the latter queries the database, and a
-      # query every 15s would keep a serverless database from ever suspending.
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 90s
+      start_period: 60s
     logging: *default-logging
     networks: [fleet_net]
 
   simulator:
     image: ghcr.io/colin-110/robot-fleet-simulator:${IMAGE_TAG:-latest}
-    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "24"]
+    command: ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--robots", "24", "--mqtt-host", "mqtt", "--outbox-dir", "/data"]
     env_file: [./.env]
+    volumes:
+      - simulator_outbox:/data
+    mem_limit: 72m
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     logging: *default-logging
     networks: [fleet_net]
+
+volumes:
+  timescale_data:
+  mosquitto_data:
+  simulator_outbox:
 
 networks:
   fleet_net:

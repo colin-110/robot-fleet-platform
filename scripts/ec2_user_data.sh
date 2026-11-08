@@ -52,10 +52,11 @@ Host bootstrapped. Two steps remain and neither can be automated
 from here, because both involve secrets that are not in the repo:
 
   1. Write /opt/fleetops/.env (see backend/.env.example).
-     It carries the Neon and Upstash URLs, TELEMETRY_API_KEY,
-     APP_ENV=production, CORS_ORIGINS and TRUSTED_PROXY_COUNT=2.
-     Compose cannot interpolate from env_file, so the stack starts
-     without these rather than failing on them.
+     It carries the POSTGRES_* values and DATABASE_URL (host db),
+     TELEMETRY_API_KEY, APP_ENV=production, CORS_ORIGINS and
+     TRUSTED_PROXY_COUNT. Then issue the certificate (certbot) and
+     run scripts/mqtt_certs.sh so the broker can serve TLS on 8883,
+     and add scripts/backup_db.sh to cron (docs/operations.md).
 
   2. If the GHCR packages are private, authenticate the host once:
        docker login ghcr.io -u <user> -p <read:packages PAT>
