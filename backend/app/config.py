@@ -82,9 +82,13 @@ class Settings(BaseSettings):
     mqtt_enabled: bool = False
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
-    # Shared-subscription group for the ingest consumer. Several API processes
-    # in the same group split the robots' messages between them.
-    mqtt_ingest_group: str = "ingest"
+    # Unset (the default): the ingest consumer uses plain subscriptions.
+    # Set it to a group name to use shared subscriptions, so several API
+    # processes split the robots' messages. Only do that knowingly: Mosquitto
+    # does not restore shared subscriptions after a broker restart, so messages
+    # published before the consumers resubscribe are dropped. A plain
+    # persistent subscription keeps queueing across the restart.
+    mqtt_ingest_group: str | None = None
     # A batch is written when it reaches this many messages or this age.
     mqtt_batch_size: int = 200
     mqtt_batch_wait_ms: int = 250

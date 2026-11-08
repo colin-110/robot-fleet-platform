@@ -328,7 +328,6 @@ def live_consumer(name, session_factory=TestSessionLocal):
         port=1883,
         username=name,
         password="",
-        group=name,
         session_factory=session_factory,
     )
 

@@ -2,7 +2,9 @@
 
 The broker is the queue. Messages arrive with QoS 1 on a persistent session,
 are written in micro-batches through the same function as the HTTP endpoint,
-and are acknowledged only once their batch is committed. Anything not yet
+and are acknowledged only once their batch is committed. Subscriptions are
+plain, not shared: Mosquitto keeps queueing for a plain persistent subscription
+across its own restart, but not for a shared one. Anything not yet
 committed when the process dies stays in the broker and is delivered again,
 and because writes skip readings already stored, a redelivery is harmless.
 
@@ -174,7 +176,7 @@ class IngestConsumer:
         port: int = settings.mqtt_port,
         username: str = settings.mqtt_service_username,
         password: str = settings.telemetry_api_key,
-        group: str = settings.mqtt_ingest_group,
+        group: str | None = settings.mqtt_ingest_group,
         batch_size: int = settings.mqtt_batch_size,
         batch_wait: float = settings.mqtt_batch_wait_ms / 1000,
         session_factory=AsyncSessionLocal,
@@ -218,9 +220,7 @@ class IngestConsumer:
             logger.error("MQTT connection refused: %s", reason_code)
             return
         self.epoch += 1
-        subscriptions = [
-            (topics.shared_subscription(self.group, c), 1) for c in SUBSCRIBED_CHANNELS
-        ]
+        subscriptions = [(self._filter(c), 1) for c in SUBSCRIBED_CHANNELS]
         # Presence is state, not a stream, and is read from retained messages,
         # which MQTT 5 never delivers on shared subscriptions. Every process
         # subscribes to it directly.
@@ -235,6 +235,13 @@ class IngestConsumer:
             flags.session_present,
         )
         self._loop.call_soon_threadsafe(self.connected.set)
+
+    def _filter(self, channel: str) -> str:
+        """A plain subscription unless a shared group is configured (see
+        ``mqtt_ingest_group`` for why plain is the default)."""
+        if self.group:
+            return topics.shared_subscription(self.group, channel)
+        return f"{topics.ROOT}/+/{channel}"
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties) -> None:
         logger.warning("MQTT disconnected: %s", reason_code)
