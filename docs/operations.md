@@ -75,21 +75,26 @@ The API runs as **one process**. The broker replaces each client id with the use
 
 ## Deployment
 
-> This section describes the deployment that is live today, which still runs the version before the MQTT redesign. Step 10 of ADR 0002 replaces it with a single small instance running the Compose stack.
+> The live demo still runs the version before the redesign (backend and simulator on a t3.micro, with Neon and Upstash). What follows is the deployment the repository now describes; moving to it is a manual step for the operator.
 
-Production is one free-tier EC2 instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): just the backend and the simulator. Everything else is a managed free tier - **Neon** (Postgres), **Upstash** (Redis), **Vercel** (the static frontend build). nginx and Let's Encrypt run directly on the host, not in Compose, and proxy HTTPS to the backend on `127.0.0.1:8000`.
+Production is one small Graviton instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): TimescaleDB, the Mosquitto broker, the API and the demo simulator, with the memory limits [`bench/run.py`](../bench/run.py) measured (480 MB in all; see [the benchmark](benchmark.md)). The dashboard is a static build on Vercel. nginx and Let's Encrypt run on the host.
 
 ```
 Viewer --HTTPS--> Vercel (static dashboard)
    |
-   '--HTTPS/WSS--> EC2 nginx --> FastAPI :8000 (+ simulator container)
-                                   |--> Neon (PostgreSQL)
-                                   '--> Upstash (Redis)
+   '--HTTPS/WSS--> nginx (host) --> API :8000 ----> TimescaleDB
+                                       |  ^
+Robots --MQTT over TLS :8883--> Mosquitto (go-auth asks the API)
 ```
 
-The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
+| Port | Open to | What |
+| :--- | :--- | :--- |
+| 22 | anywhere (narrow it) | SSH |
+| 80, 443 | anywhere | nginx: Let's Encrypt and HTTPS to the API |
+| 8883 | anywhere | MQTT over TLS for robots |
+| 8000, 1883, 5432 | nobody | bound to localhost or the Docker network |
 
-The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
+The host **pulls pre-built images from GHCR rather than building**; CI publishes them for amd64 and arm64 after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA:
 
 ```bash
 cd /opt/fleetops
@@ -97,25 +102,46 @@ IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops pull
 IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
 ```
 
-Every container caps its logs at 30 MB (`10m` × 3 files); the json-file driver is unbounded by default, which on a 7.6 GB disk is a disk-full outage waiting to happen.
+Every container caps its logs at 30 MB (`10m` × 3 files).
 
 ### Provisioning the host
 
-[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap, and clones the repo to `/opt/fleetops`. Two details matter:
+[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance (`-InstanceType`, default `t4g.small`; the stack fits a `t4g.nano` by the benchmark, with the swap the bootstrap adds), and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap and clones the repo to `/opt/fleetops`. Two details matter:
 
 - **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. `send-command` treats a target that matches nothing as success, so an untagged host is a silent non-deploy.
 - **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the SSM agent never registers and the host is invisible to the pipeline.
 
-Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env` (see [`backend/.env.example`](../backend/.env.example)), and `docker login ghcr.io` if the GHCR packages are private.
+Then, by hand, because each involves a secret or a domain:
+
+1. Write `/opt/fleetops/.env` from [`backend/.env.example`](../backend/.env.example): `POSTGRES_*`, `DATABASE_URL` pointing at host `db`, a long `TELEMETRY_API_KEY`, `APP_ENV=production`, `CORS_ORIGINS`.
+2. Issue a certificate for the API and broker host names with certbot, then give the broker a copy it can read: `MQTT_DOMAIN=<host> sudo scripts/mqtt_certs.sh`, and link the script into `/etc/letsencrypt/renewal-hooks/deploy/` so renewals reach it.
+3. `docker login ghcr.io` if the GHCR packages are private.
+4. Backups, below, and a budget alert: `BUDGET_EMAIL=<you> BUDGET_USD=20 scripts/setup_budget_alert.sh`.
+
+### Backups
+
+[`scripts/backup_db.sh`](../scripts/backup_db.sh) writes a compressed `pg_dump` to S3 or a directory; run it nightly from the host's crontab:
+
+```
+15 3 * * * cd /opt/fleetops && BACKUP_TARGET=s3://<bucket>/fleetops scripts/backup_db.sh >> /var/log/fleetops-backup.log 2>&1
+```
+
+Give the instance role `s3:PutObject` on that prefix, and expire old dumps with a lifecycle rule:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lifecycle-configuration \
+  '{"Rules":[{"ID":"expire-fleetops-dumps","Status":"Enabled","Filter":{"Prefix":"fleetops/"},"Expiration":{"Days":30}}]}'
+```
+
+[`scripts/restore_db.sh`](../scripts/restore_db.sh) restores one (stop the API first). It wraps `pg_restore` in TimescaleDB's `timescaledb_pre_restore()` and `timescaledb_post_restore()`, without which hypertables do not come back.
 
 ### Gotchas hit on this stack
 
-- **`DATABASE_URL` needs the `sslmode`/`channel_binding` query params stripped.** Neon hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs. Drop both; asyncpg negotiates TLS with Neon automatically.
+- **`DATABASE_URL` must not carry `sslmode`/`channel_binding`.** A managed Postgres hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs.
 - **Health routes must answer `HEAD`.** Uptime monitors and load balancers default to `HEAD`; `@app.get` only registers `GET`, so they read a healthy service as down. Health/root routes use `@app.api_route(path, methods=["GET", "HEAD"])`.
 - **`CORS_ORIGINS` must match the browser's `Origin` exactly - no trailing slash.** `https://your-app.vercel.app/` never matches.
 - **Every write registers the robot.** Fleet status is the roster `LEFT JOIN`ed onto `robot_state`, so `persist()` upserts the roster in the same transaction or a robot would never appear.
 - **Direct batch ingest commits once per batch.** Per-row commits to a remote Postgres were slow enough to exceed the simulator's POST timeout and silently drop whole batches.
-- **Upstash URLs use `rediss://`.** `redis-py` picks TLS from the URL scheme alone.
 - **CartoDB's free basemap CDN was discontinued.** The map uses OpenStreetMap tiles, with the dark theme approximated by a CSS filter.
 
 ### CI/CD

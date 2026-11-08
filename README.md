@@ -35,8 +35,9 @@ goes through one write path that inserts it, registers the robot and updates
 its current state in a single transaction. There is no Redis and no worker
 process.
 
-This is step 8 of a redesign aimed at running a fleet on the smallest possible
-server; next is error-budgeted telemetry. See
+This is a redesign aimed at running a fleet on the smallest possible server.
+All ten steps are built; the last, deployment, is prepared and tested locally
+but not yet run on AWS. See
 [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
@@ -91,6 +92,10 @@ server; next is error-budgeted telemetry. See
 - **Bounded WebSocket queues.** A slow client drops its oldest frames instead of
   stalling fan-out for everyone else.
 - **Short-lived console tickets.** The browser never holds the master API key.
+- **Measured, including the misses.** `bench/run.py` runs the whole stack
+  inside 480 MB: 24 robots peak at 261 MB, about $0.33 a robot a month on a
+  t4g.nano. The simulator sends more than the targets allow, and
+  [the benchmark](docs/benchmark.md) says why.
 
 ## Testing
 
@@ -153,8 +158,9 @@ The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleD
 - `frontend/robot-fleet-dashboard/` - React dashboard
 - `agent/` - the robot-side package (`fleetops-agent`)
 - `simulator/` - asynchronous robot simulator, each robot sending through its own agent
-- `mosquitto/` - broker configuration
-- `scripts/` - EC2 provisioning and CI deploy-role setup
+- `mosquitto/` - broker configuration (TLS listener for production)
+- `bench/` - the benchmark: the stack under 512 MB, measured
+- `scripts/` - provisioning, broker certificates, backups and restore, budget alert, CI deploy role
 - `docs/` - architecture, operations, and design decisions (`docs/adr/`)
 - `docker-compose.yml` - full local stack; `docker-compose.ec2.yml` - production
 
