@@ -1,0 +1,47 @@
+{
+  "robots": 24,
+  "minutes": 10.0,
+  "keyframes_per_robot_per_min": 18.23,
+  "readings_observed_per_robot_per_min": 33.36,
+  "uplink_messages_per_robot_per_min": 18.24,
+  "uplink_bytes_per_robot_per_day": 3884853,
+  "db_bytes_per_robot_per_day_raw": 6608870,
+  "db_bytes_per_robot_per_day_compressed": 2822166,
+  "memory_peak_mb": {
+    "db": 128.9,
+    "mqtt": 13.8,
+    "backend": 78.1,
+    "simulator": 40.0
+  },
+  "memory_mean_mb": {
+    "db": 113.4,
+    "mqtt": 12.7,
+    "backend": 76.6,
+    "simulator": 38.6
+  },
+  "memory_limit_mb": {
+    "db": 200,
+    "mqtt": 48,
+    "backend": 160,
+    "simulator": 72
+  },
+  "memory_peak_total_mb": 260.8,
+  "cpu_mean_percent_of_one_core": {
+    "db": 3.5,
+    "mqtt": 1.1,
+    "backend": 6.6,
+    "simulator": 2.4
+  },
+  "oom_killed": {
+    "db": false,
+    "mqtt": false,
+    "backend": false,
+    "simulator": false
+  },
+  "database_size_mb": 11.0,
+  "cost_per_robot_per_month_usd": {
+    "t4g.nano (0.5 GB)": 0.333,
+    "t4g.micro (1 GB)": 0.461,
+    "t4g.small (2 GB)": 0.716
+  }
+}

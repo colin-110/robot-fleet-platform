@@ -1,6 +1,6 @@
 # ADR 0002: Efficiency design and error-budgeted telemetry
 
-Status: accepted; build steps 1 to 8 done. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
+Status: accepted; build steps 1 to 9 done, 10 prepared. Builds on [ADR 0001](0001-mqtt-and-timescale.md).
 
 ## Goal
 
@@ -8,16 +8,16 @@ Run a real fleet on the smallest server possible, with zero data loss, and make
 every number on the dashboard honest about how accurate it is. Everything here
 is measured by one headline metric: **cost per robot per month**.
 
-Targets (to be measured, not assumed):
+Targets, and what step 9 measured ([benchmark](../benchmark.md)):
 
-| Metric | Target |
-| :--- | :--- |
-| Server | 512 MB RAM, ARM (t4g.nano or a 512 MB Lightsail plan) |
-| Fleet on that server | 24 robots with headroom |
-| Average uplink | under one message per robot every 10 s while healthy |
-| Bytes per robot per day | under 1 MB |
-| Data loss under `kill -9` of the app or broker | zero |
-| Cost per robot per month | about $0.20 |
+| Metric | Target | Measured |
+| :--- | :--- | :--- |
+| Server | 512 MB RAM, ARM (t4g.nano or a 512 MB Lightsail plan) | 261 MB peak for the containers |
+| Fleet on that server | 24 robots with headroom | 24, with headroom |
+| Average uplink | under one message per robot every 10 s while healthy | 18 a minute (missed; see the benchmark) |
+| Bytes per robot per day | under 1 MB | 3.9 MB (missed) |
+| Data loss under `kill -9` of the app or broker | zero | zero |
+| Cost per robot per month | about $0.20 | $0.33 |
 
 ## The idea: error-budgeted telemetry
 
@@ -209,9 +209,16 @@ Each step ships with tests and a measurement, and is committed separately.
    map asks the server to watch it more closely. The WebSocket accepts
    per-robot subscriptions, but the dashboard keeps all robots, because its
    roster shows every one.
-9. **Benchmark and the 512 MB test.** Publish the numbers in the README.
-10. **Deployment.** The smallest instance, TLS on MQTT, backups to S3, budget
-    alerts.
+9. **Benchmark and the 512 MB test** (done). `bench/run.py`; the stack
+   peaks at 261 MB for 24 robots. The simulator misses the uplink and byte
+   targets: it is a stress case whose robots stop and start every few
+   seconds, and its keyframe floor is about five a minute even at the
+   loosest tolerances. See the benchmark for what that means for cost.
+10. **Deployment** (prepared, not yet run). `docker-compose.ec2.yml` for the
+    whole stack with the measured limits, TLS on 8883 with the host's
+    certificate, nightly `pg_dump` to S3 and a tested restore, an AWS Budgets
+    alert, arm64 images from CI, and a Graviton instance from
+    `scripts/deploy_aws.ps1`.
 
 ## Risks and how they are handled
 
