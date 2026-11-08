@@ -3,7 +3,7 @@ services:
   backend:
     build: ./backend
     image: robot-fleet-platform-backend:latest
-    command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --no-access-log" ]
+    command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --no-access-log" ]
     ports:
       - "8000:8000"
     env_file:
@@ -11,12 +11,17 @@ services:
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
       - PYTHONPATH=.
+      # One process: it owns the broker session that ingest runs on.
+      - MQTT_ENABLED=true
+      - MQTT_HOST=mqtt
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mqtt:
+        condition: service_started
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s

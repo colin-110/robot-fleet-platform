@@ -218,6 +218,8 @@ class HealthResponse(BaseModel):
 
     status: str
     database: str
+    # "connected", "disconnected", or "disabled" when MQTT_ENABLED is off.
+    mqtt: str = "disabled"
     version: str = "1.0.0"
 
 

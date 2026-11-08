@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     # The API's own broker account. It logs in with the master key and is a
     # superuser; robots log in as robot-<id> with their device key.
     mqtt_service_username: str = "fleetops"
+    # Run the ingest consumer in this process. Off by default so a plain
+    # HTTP setup (and the test suite) needs no broker.
+    mqtt_enabled: bool = False
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
     # Shared-subscription group for the ingest consumer. Several API processes
