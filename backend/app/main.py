@@ -24,6 +24,7 @@ from app import device_keys
 from app.alarms import engine as alarm_engine
 from app.alarms.webhook import WebhookSender
 from app.auth import is_valid_api_key
+from app.budget import controller as budget_controller
 from app.command_timeouts import timeout_loop
 from app.config import get_settings
 from app.database import engine
@@ -38,6 +39,7 @@ from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
+from app.routes.fleet import router as fleet_router
 from app.routes.mqtt_auth import router as mqtt_auth_router
 from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
@@ -89,6 +91,10 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine = alarm_engine.AlarmEngine()
     alarm_engine.engine.listeners.append(alarm_engine.broadcast)
     alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
+    # The message budget (off until an operator sets one).
+    budget_controller.controller = budget_controller.BudgetController()
+    budget_task = asyncio.create_task(budget_controller.controller.run())
+
     webhook_task = None
     if settings.alarm_webhook_url and not settings.alarm_webhook_secret:
         # Receivers verify the signature with the secret, so it must be one
@@ -129,6 +135,8 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()
     alarm_task.cancel()
+    budget_task.cancel()
+    budget_controller.controller = None
     if webhook_task:
         webhook_task.cancel()
     alarm_engine.engine = None
@@ -176,6 +184,7 @@ app.include_router(telemetry_router)
 app.include_router(commands_router)
 app.include_router(robots_router)
 app.include_router(alarms_router)
+app.include_router(fleet_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
 app.include_router(auth_router)

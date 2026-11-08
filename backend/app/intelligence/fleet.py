@@ -5,10 +5,13 @@ readings after a restart."""
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from app.intelligence.kalman import BatteryKalman
 from app.intelligence.phi import PhiAccrual
+
+RATE_SAMPLES = 1000
 
 
 @dataclass
@@ -16,6 +19,18 @@ class RobotModel:
     battery: BatteryKalman = field(default_factory=BatteryKalman)
     arrivals: PhiAccrual = field(default_factory=PhiAccrual)
     last: dict = field(default_factory=dict)
+    # Server arrival time of each recent keyframe, for the budget allocator.
+    keyframes: deque = field(default_factory=lambda: deque(maxlen=RATE_SAMPLES))
+    first_seen: float | None = None
+
+    def rate_per_minute(self, now: float, window: float = 300.0) -> float | None:
+        """Keyframes per minute over the last ``window`` seconds (or since first
+        seen); None until there is a minute of history."""
+        if self.first_seen is None or now - self.first_seen < 60:
+            return None
+        span = min(window, now - self.first_seen)
+        count = sum(1 for t in self.keyframes if t > now - span)
+        return count * 60 / span
 
 
 _robots: dict[int, RobotModel] = {}
@@ -28,7 +43,12 @@ def observe(rows, now: float | None = None) -> None:
     """
     now = time.time() if now is None else now
     for robot_id in {row.robot_id for row in rows}:
-        _robots.setdefault(robot_id, RobotModel()).arrivals.heartbeat(now)
+        model = _robots.setdefault(robot_id, RobotModel())
+        model.arrivals.heartbeat(now)
+        if model.first_seen is None:
+            model.first_seen = now
+    for row in rows:
+        _robots[row.robot_id].keyframes.append(now)
     for row in sorted(rows, key=lambda r: r.timestamp):
         model = _robots.setdefault(row.robot_id, RobotModel())
         t = row.timestamp.timestamp()
