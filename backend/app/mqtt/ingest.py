@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import orjson
 import paho.mqtt.client as mqtt
@@ -26,8 +27,14 @@ from pydantic import ValidationError
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.mqtt import topics
-from app.schemas import TelemetryCreate
-from app.services.telemetry_service import broadcast_payloads, store_readings
+from app.repositories.event_repo import insert_events
+from app.schemas import EventCreate, TelemetryCreate
+from app.services.event_service import broadcast_events
+from app.services.telemetry_service import (
+    broadcast_payloads,
+    persist_readings,
+    resolve_timestamp,
+)
 from app.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -55,8 +62,11 @@ class Delivery:
     epoch: int
 
 
-def decode_telemetry(robot_id: int, payload: bytes) -> list[TelemetryCreate]:
-    """One reading (a JSON object) or several (a JSON array).
+SUBSCRIBED_CHANNELS = (topics.TELEMETRY, topics.EVENTS)
+
+
+def _decode(robot_id: int, payload: bytes, model):
+    """One item (a JSON object) or several (a JSON array) of ``model``.
 
     The robot id comes from the topic, which the broker ACL ties to the
     robot's login, so a body naming another robot is refused.
@@ -66,18 +76,37 @@ def decode_telemetry(robot_id: int, payload: bytes) -> list[TelemetryCreate]:
     except orjson.JSONDecodeError as exc:
         raise BadMessage(f"not JSON: {exc}") from None
     items = body if isinstance(body, list) else [body]
-    readings = []
+    decoded = []
     for item in items:
         if not isinstance(item, dict):
-            raise BadMessage("each reading must be an object")
+            raise BadMessage("each item must be an object")
         claimed = item.setdefault("robot_id", robot_id)
         if claimed != robot_id:
-            raise BadMessage(f"reading for robot {claimed} on robot {robot_id}'s topic")
+            raise BadMessage(f"message for robot {claimed} on robot {robot_id}'s topic")
         try:
-            readings.append(TelemetryCreate.model_validate(item))
+            decoded.append(model.model_validate(item))
         except ValidationError as exc:
             raise BadMessage(str(exc)) from None
-    return readings
+    return decoded
+
+
+def decode_telemetry(robot_id: int, payload: bytes) -> list[TelemetryCreate]:
+    return _decode(robot_id, payload, TelemetryCreate)
+
+
+def decode_events(robot_id: int, payload: bytes) -> list[EventCreate]:
+    """Events over MQTT must carry their device timestamp: a redelivered event
+    stamped with the receive time would look new and be stored twice."""
+    events = _decode(robot_id, payload, EventCreate)
+    if any(e.timestamp is None for e in events):
+        raise BadMessage("events sent over MQTT need a timestamp")
+    return events
+
+
+@dataclass
+class Decoded:
+    readings: list[TelemetryCreate] = field(default_factory=list)
+    events: list[EventCreate] = field(default_factory=list)
 
 
 class IngestConsumer:
@@ -100,7 +129,7 @@ class IngestConsumer:
         self.session_factory = session_factory
         self.epoch = 0
         self.connected = asyncio.Event()
-        self.stats = {"stored": 0, "duplicates": 0, "rejected": 0, "batches": 0}
+        self.stats = {"stored": 0, "events": 0, "duplicates": 0, "rejected": 0, "batches": 0}
         self._queue: asyncio.Queue[Delivery] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -123,7 +152,9 @@ class IngestConsumer:
             logger.error("MQTT connection refused: %s", reason_code)
             return
         self.epoch += 1
-        client.subscribe(topics.shared_subscription(self.group, topics.TELEMETRY), qos=1)
+        client.subscribe(
+            [(topics.shared_subscription(self.group, c), 1) for c in SUBSCRIBED_CHANNELS]
+        )
         logger.info(
             "MQTT connected to %s:%d (session present: %s)",
             self.host,
@@ -182,39 +213,53 @@ class IngestConsumer:
 
     async def process(self, batch: list[Delivery]) -> None:
         """Store a batch, broadcast what is new, then acknowledge it."""
-        readings: list[TelemetryCreate] = []
+        decoded = Decoded()
         for delivery in batch:
             try:
-                if delivery.channel != topics.TELEMETRY:
+                if delivery.channel == topics.TELEMETRY:
+                    decoded.readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
+                elif delivery.channel == topics.EVENTS:
+                    decoded.events.extend(decode_events(delivery.robot_id, delivery.payload))
+                else:
                     raise BadMessage(f"unexpected topic channel {delivery.channel!r}")
-                readings.extend(decode_telemetry(delivery.robot_id, delivery.payload))
             except BadMessage as exc:
                 self.stats["rejected"] += 1
                 logger.warning("Dropping message from robot %d: %s", delivery.robot_id, exc)
 
-        inserted = await self._store(readings) if readings else []
+        readings, events = ([], [])
+        if decoded.readings or decoded.events:
+            readings, events = await self._store(decoded)
         self.stats["batches"] += 1
-        self.stats["stored"] += len(inserted)
-        self.stats["duplicates"] += len(readings) - len(inserted)
+        self.stats["stored"] += len(readings)
+        self.stats["events"] += len(events)
+        self.stats["duplicates"] += (
+            len(decoded.readings) + len(decoded.events) - len(readings) - len(events)
+        )
 
-        if inserted:
-            await manager.broadcast_batch(broadcast_payloads(inserted))
+        if readings:
+            await manager.broadcast_batch(broadcast_payloads(readings))
+        if events:
+            await broadcast_events(events)
         self.ack(batch)
 
-    async def _store(self, readings: list[TelemetryCreate]):
-        """Write until it succeeds. Nothing is acknowledged in the meantime,
-        so the broker keeps queueing and no message is lost."""
+    async def _store(self, decoded: Decoded):
+        """Write in one transaction until it succeeds. Nothing is acknowledged
+        in the meantime, so the broker keeps queueing and no message is lost."""
         delay = 0.5
         while True:
             try:
                 async with self.session_factory() as db:
-                    return await store_readings(db, readings)
+                    readings = await persist_readings(db, decoded.readings)
+                    now = datetime.now(timezone.utc)
+                    events = await insert_events(
+                        db, [(e, resolve_timestamp(e.timestamp, now)) for e in decoded.events]
+                    )
+                    await db.commit()
+                    return readings, events
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception(
-                    "Storing %d readings failed; retrying in %.1fs", len(readings), delay
-                )
+                logger.exception("Storing a batch failed; retrying in %.1fs", delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
 

@@ -85,17 +85,24 @@ def _telemetry_to_broadcast_dict(t: Telemetry) -> dict:
     }
 
 
-async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[Telemetry]:
-    """Store readings in one transaction and commit. The one write path.
+async def persist_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[Telemetry]:
+    """Write readings without committing. The one write path for telemetry.
 
     Returns the rows actually inserted; readings already stored are skipped,
     so a redelivered or retried reading is harmless.
     """
+    if not data:
+        return []
     received_at = datetime.now(timezone.utc)
     # Resolved per reading: stamping a whole batch with one time would
     # collapse readings taken seconds apart onto a single instant.
     rows = [(d, resolve_timestamp(d.timestamp, received_at)) for d in data]
-    inserted = await persist(db, rows)
+    return await persist(db, rows)
+
+
+async def store_readings(db: AsyncSession, data: list[TelemetryCreate]) -> list[Telemetry]:
+    """``persist_readings`` and commit."""
+    inserted = await persist_readings(db, data)
     await db.commit()
     return inserted
 

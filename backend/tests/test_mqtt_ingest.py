@@ -18,9 +18,9 @@ import paho.mqtt.client as mqtt
 import pytest
 from sqlalchemy import func, select
 
-from app.models import Telemetry
+from app.models import Event, Telemetry
 from app.mqtt import ingest
-from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_telemetry
+from app.mqtt.ingest import BadMessage, Delivery, IngestConsumer, decode_events, decode_telemetry
 from app.websocket_manager import manager
 from tests.conftest import TestSessionLocal
 
@@ -75,6 +75,26 @@ def delivery(robot_id, body, mid, channel="telemetry", epoch=1):
     return Delivery(robot_id, channel, raw, mid, 1, epoch)
 
 
+def event(message="Mission complete", seconds=0):
+    return {"message": message, "timestamp": (T0 + timedelta(seconds=seconds)).isoformat()}
+
+
+@pytest.fixture
+def event_broadcasts(monkeypatch):
+    sent = []
+
+    async def record(payload, stream=None):
+        sent.append(payload)
+
+    monkeypatch.setattr(manager, "broadcast", record)
+    return sent
+
+
+async def event_count():
+    async with TestSessionLocal() as db:
+        return (await db.execute(select(func.count()).select_from(Event))).scalar_one()
+
+
 async def stored_count():
     async with TestSessionLocal() as db:
         return (await db.execute(select(func.count()).select_from(Telemetry))).scalar_one()
@@ -108,6 +128,13 @@ def test_decode_rejects_bad_messages(raw):
         decode_telemetry(4, raw)
 
 
+def test_events_over_mqtt_need_a_timestamp():
+    [e] = decode_events(4, payload(event()))
+    assert (e.robot_id, e.message) == (4, "Mission complete")
+    with pytest.raises(BadMessage):
+        decode_events(4, payload({"message": "no time"}))
+
+
 # ── processing ──────────────────────────────────────────────────────
 
 
@@ -136,13 +163,29 @@ async def test_bad_messages_are_acked_and_dropped(consumer, broadcasts):
         [
             delivery(1, b"garbage", mid=1),
             delivery(1, reading(robot_id=2), mid=2),
-            delivery(1, reading(), mid=3, channel="events"),
+            delivery(1, reading(), mid=3, channel="config/reported"),
             delivery(1, reading(seconds=5), mid=4),
         ]
     )
     assert await stored_count() == 1
     assert consumer.client.acked == [1, 2, 3, 4]
     assert consumer.stats["rejected"] == 3
+
+
+@pytest.mark.asyncio
+async def test_events_and_readings_share_a_batch(consumer, broadcasts, event_broadcasts):
+    await consumer.process(
+        [
+            delivery(1, reading(), mid=1),
+            delivery(1, event(), mid=2, channel="events"),
+            delivery(1, event(), mid=3, channel="events"),  # redelivered
+        ]
+    )
+    assert (await stored_count(), await event_count()) == (1, 1)
+    assert len(broadcasts) == 1
+    assert [e["message"] for e in event_broadcasts] == ["Mission complete"]
+    assert consumer.client.acked == [1, 2, 3]
+    assert consumer.stats["duplicates"] == 1
 
 
 @pytest.mark.asyncio
