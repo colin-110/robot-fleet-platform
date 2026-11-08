@@ -92,6 +92,10 @@ def is_offline(robot_id: int) -> bool:
     return current is not None and not current.online
 
 
+def robot_ids() -> list[int]:
+    return list(_state)
+
+
 def get(robot_id: int) -> Presence | None:
     return _state.get(robot_id)
 

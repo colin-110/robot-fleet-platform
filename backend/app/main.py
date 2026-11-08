@@ -21,6 +21,7 @@ from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
 from app import device_keys
+from app.alarms import engine as alarm_engine
 from app.auth import is_valid_api_key
 from app.command_timeouts import timeout_loop
 from app.config import get_settings
@@ -30,6 +31,7 @@ from app.middleware import RateLimitMiddleware, RequestIDMiddleware
 from app.mqtt import commands as mqtt_commands
 from app.mqtt import config as mqtt_config
 from app.mqtt.ingest import IngestConsumer, relay_publisher
+from app.routes.alarms import router as alarms_router
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import bootstrap_admin_user
 from app.routes.auth import router as auth_router
@@ -82,6 +84,11 @@ async def lifespan(app: FastAPI):
 
     timeout_task = asyncio.create_task(timeout_loop())
 
+    # Alarms are evaluated from memory; changes go to dashboards (and webhooks).
+    alarm_engine.engine = alarm_engine.AlarmEngine()
+    alarm_engine.engine.listeners.append(alarm_engine.broadcast)
+    alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
+
     # One consumer per process. The broker pins each client id to its
     # username, so this process must be the only one logging in as
     # MQTT_SERVICE_USERNAME: run a single worker.
@@ -111,6 +118,8 @@ async def lifespan(app: FastAPI):
         mqtt_task.cancel()
         await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()
+    alarm_task.cancel()
+    alarm_engine.engine = None
     if key_refresh_task:
         key_refresh_task.cancel()
 
@@ -154,6 +163,7 @@ app.add_middleware(
 app.include_router(telemetry_router)
 app.include_router(commands_router)
 app.include_router(robots_router)
+app.include_router(alarms_router)
 app.include_router(analytics_router)
 app.include_router(events_router)
 app.include_router(auth_router)

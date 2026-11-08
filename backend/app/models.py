@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 
 from app.database import Base
@@ -232,6 +233,41 @@ class RobotConfig(Base):
     reported_rejected = Column(JSON, nullable=True)
     reported_version = Column(Integer, nullable=True)
     reported_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class Alarm(Base):
+    """A raised alarm: ACTIVE, then ACKNOWLEDGED by an operator, then CLEARED
+    when its condition recovers (it can also clear straight from ACTIVE).
+
+    At most one alarm per robot and kind is open at a time, enforced by a
+    partial unique index, so a condition that persists is one alarm, not one
+    per evaluation. See ``app/alarms/rules.py``.
+    """
+
+    __tablename__ = "alarms"
+
+    id = Column(Integer, primary_key=True)
+    robot_id = Column(Integer, nullable=False)
+    kind = Column(String(32), nullable=False)
+    severity = Column(String(16), nullable=False)
+    state = Column(String(16), nullable=False, default="ACTIVE")
+    message = Column(String(255), nullable=False)
+    value = Column(Float, nullable=True)
+    raised_at = Column(DateTime(timezone=True), nullable=False)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    acknowledged_by = Column(String(64), nullable=True)
+    cleared_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_alarms_open",
+            "robot_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("state <> 'CLEARED'"),
+        ),
+        Index("ix_alarms_raised", raised_at.desc()),
+    )
 
 
 class User(Base):

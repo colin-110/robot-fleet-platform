@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     # more than this many seconds in the future is clamped to server time.
     max_clock_skew_seconds: int = 300
 
+    # ── Alarms ──────────────────────────────────────────────────────
+    # How often every robot is checked against the alarm rules (in memory).
+    alarm_interval_seconds: float = 2.0
+
     # ── Access control ──────────────────────────────────────────────
 
     # Whether the read-only endpoints (fleet status, analytics, events) require
