@@ -106,6 +106,17 @@ describe("useWebSocket", () => {
     await waitFor(() => expect(result.current.isConnected).toBe(false));
   });
 
+  it("sends control messages, and lets the client resend its state on each new socket", async () => {
+    const onOpen = vi.fn((sendNow) => sendNow({ type: "watch", robots: [4] }));
+    const { result } = renderHook(() => useWebSocket("ws://x/ws", () => {}, onOpen));
+    await waitForSocket();
+    act(() => latest().open());
+    expect(latest().sent).toEqual([JSON.stringify({ type: "watch", robots: [4] })]);
+
+    act(() => result.current.send({ type: "subscribe", robots: null }));
+    expect(latest().sent.at(-1)).toBe(JSON.stringify({ type: "subscribe", robots: null }));
+  });
+
   it("parses JSON frames and forwards them to the handler", async () => {
     const onMessage = vi.fn();
     renderHook(() => useWebSocket("ws://x/ws", onMessage));

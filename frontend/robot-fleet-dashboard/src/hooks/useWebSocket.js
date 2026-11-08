@@ -1,14 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { getTicket } from '../utils/ticket';
 
-export function useWebSocket(url, onMessage) {
+export function useWebSocket(url, onMessage, onOpen) {
   const [isConnected, setIsConnected] = useState(false);
   const onMessageRef = useRef(onMessage);
+  const onOpenRef = useRef(onOpen);
+  const socketRef = useRef(null);
 
   // Keep the latest callback without re-opening the socket on every render.
   useEffect(() => {
     onMessageRef.current = onMessage;
-  }, [onMessage]);
+    onOpenRef.current = onOpen;
+  }, [onMessage, onOpen]);
 
   useEffect(() => {
     let ws = null;
@@ -43,9 +46,13 @@ export function useWebSocket(url, onMessage) {
 
       const separator = url.includes('?') ? '&' : '?';
       ws = new WebSocket(`${url}${separator}ticket=${encodeURIComponent(ticket)}`);
+      socketRef.current = ws;
 
       ws.onopen = () => {
         setIsConnected(true);
+        // A new connection knows nothing of this client: resend its state
+        // (subscriptions, watched robots) through this socket.
+        onOpenRef.current?.((data) => ws.send(JSON.stringify(data)));
         // Heartbeat: keep the connection warm.
         pingInterval = setInterval(() => {
           if (ws?.readyState === WebSocket.OPEN) ws.send('ping');
@@ -84,5 +91,11 @@ export function useWebSocket(url, onMessage) {
     };
   }, [url]);
 
-  return { isConnected };
+  // Send a control message; dropped while disconnected (onOpen resends state).
+  const send = useCallback((data) => {
+    const ws = socketRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+  }, []);
+
+  return { isConnected, send };
 }
