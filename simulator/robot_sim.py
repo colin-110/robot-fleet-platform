@@ -6,6 +6,7 @@ import math
 import multiprocessing
 import os
 import random
+import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -244,6 +245,11 @@ def apply_sensor_noise(robot: RobotState, value: float, *, kind: str, rng: rando
 _device_keys: dict[int, str] = {}
 
 
+# One MQTT connection per robot, filled at startup when --mqtt-host is set.
+# A robot with a link sends everything over MQTT instead of HTTP.
+_links: dict = {}
+
+
 def key_headers(robot_id: int) -> dict | None:
     """Headers that authenticate as ``robot_id``, or None to use the shared key."""
     key = _device_keys.get(robot_id)
@@ -362,6 +368,10 @@ async def patch_command_status(
     reconcile anything left dangling.
     """
     payload = {"status": status, **extra}
+    link = _links.get(robot_id)
+    if link is not None:
+        link.publish("commands/status", {"id": cmd_id, **payload})
+        return
     try:
         async with client.patch(
             f"{base_api}/commands/{cmd_id}/status", json=payload, headers=key_headers(robot_id)
@@ -369,6 +379,22 @@ async def patch_command_status(
             await response.read()
     except Exception as exc:
         logger.debug("Failed to patch command %s to %s: %s", cmd_id, status, exc)
+
+
+async def send_event(client: aiohttp.ClientSession, base_api: str, robot_id: int, message: str):
+    """Best-effort event. The device timestamp makes a resent event idempotent."""
+    body = {"robot_id": robot_id, "message": message, "timestamp": iso_utc_now()}
+    link = _links.get(robot_id)
+    if link is not None:
+        link.publish("events", body)
+        return
+    try:
+        async with client.post(
+            f"{base_api}/events", json=body, timeout=10.0, headers=key_headers(robot_id)
+        ) as response:
+            await response.read()
+    except Exception:
+        pass
 
 
 async def dispatcher_loop(
@@ -414,6 +440,58 @@ async def dispatcher_loop(
         await asyncio.sleep(3.0)
 
 
+async def handle_commands(
+    robot: RobotState, commands: list[dict], client: aiohttp.ClientSession, base_api: str
+):
+    """Run commands, reporting each step. A command seen before is not run again."""
+    for cmd_obj in commands:
+        cmd_id = cmd_obj["id"]
+        cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
+
+        if cmd_id in robot.processed_command_ids:
+            # End-to-end idempotency: replay the result
+            # rather than executing the command twice.
+            await patch_command_status(
+                client,
+                base_api,
+                robot.robot_id,
+                cmd_id,
+                "COMPLETED",
+                result={"message": "Already processed"},
+            )
+            continue
+
+        robot.processed_command_ids.append(cmd_id)
+        if len(robot.processed_command_ids) > 100:
+            robot.processed_command_ids.pop(0)
+
+        await patch_command_status(client, base_api, robot.robot_id, cmd_id, "ACKNOWLEDGED")
+        await patch_command_status(client, base_api, robot.robot_id, cmd_id, "EXECUTING")
+
+        status_to_patch = "COMPLETED"
+
+        if cmd_action == "RETURN_TO_BASE":
+            clear_mission(robot)
+            robot.returning_to_charge = True
+            robot.status = "ACTIVE"
+            robot.online = True
+            safe_print(f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})")
+        elif cmd_action == "EMERGENCY_STOP":
+            robot.status = "STOPPED"
+            robot.speed = 0.0
+            clear_mission(robot)
+            robot.returning_to_charge = False
+            safe_print(f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})")
+        elif cmd_action == "RESUME":
+            robot.status = "ACTIVE"
+            robot.online = True
+            safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
+        else:
+            status_to_patch = "FAILED"
+
+        await patch_command_status(client, base_api, robot.robot_id, cmd_id, status_to_patch)
+
+
 async def robot_loop(
     robot: RobotState,
     *,
@@ -449,73 +527,21 @@ async def robot_loop(
                         f"[R{robot.robot_id:02d}] Telemetry drop: Network blackout started for {blackout_duration:.1f}s (network_health={robot.network_health:.1f}%)"
                     )
 
-            # Command polling continues during a telemetry blackout so an
-            # operator's Stop still lands.
+            # Commands are handled during a telemetry blackout too, so an
+            # operator's Stop still lands. Over MQTT they were pushed to the
+            # robot; over HTTP it claims them (POST /claim, not GET: claiming
+            # transitions commands to DISPATCHED, so it is not a safe method).
             try:
-                # POST /claim, not GET: claiming transitions commands to
-                # DISPATCHED, so it is not a safe method.
-                cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
-                async with client.post(
-                    cmd_url, timeout=10.0, headers=key_headers(robot.robot_id)
-                ) as cmd_resp:
-                    if cmd_resp.status == 200:
-                        data = await cmd_resp.json()
-                        for cmd_obj in data:
-                            cmd_id = cmd_obj["id"]
-                            cmd_action = cmd_obj.get("command_type") or cmd_obj.get("action")
-
-                            if cmd_id in robot.processed_command_ids:
-                                # End-to-end idempotency: replay the result
-                                # rather than executing the command twice.
-                                await patch_command_status(
-                                    client,
-                                    base_api,
-                                    robot.robot_id,
-                                    cmd_id,
-                                    "COMPLETED",
-                                    result={"message": "Already processed"},
-                                )
-                                continue
-
-                            robot.processed_command_ids.append(cmd_id)
-                            if len(robot.processed_command_ids) > 100:
-                                robot.processed_command_ids.pop(0)
-
-                            await patch_command_status(
-                                client, base_api, robot.robot_id, cmd_id, "ACKNOWLEDGED"
-                            )
-                            await patch_command_status(
-                                client, base_api, robot.robot_id, cmd_id, "EXECUTING"
-                            )
-
-                            status_to_patch = "COMPLETED"
-
-                            if cmd_action == "RETURN_TO_BASE":
-                                clear_mission(robot)
-                                robot.returning_to_charge = True
-                                robot.status = "ACTIVE"
-                                robot.online = True
-                                safe_print(
-                                    f"[R{robot.robot_id:02d}] Executing RETURN_TO_BASE command (id={cmd_id})"
-                                )
-                            elif cmd_action == "EMERGENCY_STOP":
-                                robot.status = "STOPPED"
-                                robot.speed = 0.0
-                                clear_mission(robot)
-                                robot.returning_to_charge = False
-                                safe_print(
-                                    f"[R{robot.robot_id:02d}] EMERGENCY STOP ACTIVATED (id={cmd_id})"
-                                )
-                            elif cmd_action == "RESUME":
-                                robot.status = "ACTIVE"
-                                robot.online = True
-                                safe_print(f"[R{robot.robot_id:02d}] RESUMED (id={cmd_id})")
-                            else:
-                                status_to_patch = "FAILED"
-
-                            await patch_command_status(
-                                client, base_api, robot.robot_id, cmd_id, status_to_patch
-                            )
+                link = _links.get(robot.robot_id)
+                if link is not None:
+                    await handle_commands(robot, link.take_commands(), client, base_api)
+                else:
+                    cmd_url = f"{base_api}/commands/{robot.robot_id}/claim"
+                    async with client.post(
+                        cmd_url, timeout=10.0, headers=key_headers(robot.robot_id)
+                    ) as cmd_resp:
+                        if cmd_resp.status == 200:
+                            await handle_commands(robot, await cmd_resp.json(), client, base_api)
             except Exception as e:
                 logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
@@ -739,19 +765,12 @@ async def robot_loop(
                             )
                             if not is_blacked_out:
                                 await emit_telemetry(robot, queue, rng)
-                                try:
-                                    async with client.post(
-                                        f"{base_api}/events",
-                                        json={
-                                            "robot_id": robot.robot_id,
-                                            "message": f"Completed {mission.mission_type} mission {mission.mission_id}",
-                                        },
-                                        timeout=10.0,
-                                        headers=key_headers(robot.robot_id),
-                                    ) as _r:
-                                        await _r.read()
-                                except Exception:
-                                    pass
+                                await send_event(
+                                    client,
+                                    base_api,
+                                    robot.robot_id,
+                                    f"Completed {mission.mission_type} mission {mission.mission_id}",
+                                )
                             clear_mission(robot)
                             robot.status = "ACTIVE"
                         else:
@@ -813,19 +832,7 @@ async def robot_loop(
                 if now >= robot.fence_cooldown_until and not is_blacked_out:
                     robot.fence_cooldown_until = now + 45.0
                     safe_print(f"[R{robot.robot_id:02d}] ENTERED RESTRICTED ZONE")
-                    try:
-                        async with client.post(
-                            f"{base_api}/events",
-                            json={
-                                "robot_id": robot.robot_id,
-                                "message": "Entered Restricted Zone!",
-                            },
-                            timeout=10.0,
-                            headers=key_headers(robot.robot_id),
-                        ) as _r:
-                            await _r.read()
-                    except Exception:
-                        pass
+                    await send_event(client, base_api, robot.robot_id, "Entered Restricted Zone!")
             elif dist_to_fence > 7.0 and robot.in_fence:
                 robot.in_fence = False
 
@@ -928,6 +935,17 @@ async def telemetry_batcher(
             return
 
         unsent = outbox.unsent()
+        if _links:
+            # One message per robot. paho keeps it until the broker's PUBACK
+            # and resends it after a reconnect.
+            groups: dict[int, list] = {}
+            for item in unsent:
+                groups.setdefault(item["robot_id"], []).append(item)
+            for robot_id, items in groups.items():
+                if _links[robot_id].publish("telemetry", items):
+                    outbox.confirm(items)
+            return
+
         # A device key only covers its own robot, so with device keys the
         # readings go out as one request per robot.
         if _device_keys:
@@ -1024,6 +1042,11 @@ async def main_async(args, worker_index=0, total_workers=1):
         )
     )
 
+    # `docker stop` sends SIGTERM: shut down cleanly so robots say offline
+    # themselves and the outbox counts are printed.
+    with contextlib.suppress(NotImplementedError, RuntimeError):
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
+
     active_robot_tasks = {}
     headers = {"X-API-Key": args.api_key}
     connector = aiohttp.TCPConnector(limit=5000)
@@ -1032,9 +1055,21 @@ async def main_async(args, worker_index=0, total_workers=1):
     async with aiohttp.ClientSession(
         headers=headers, connector=connector, timeout=timeout_obj
     ) as client:
-        if args.device_keys:
+        if args.device_keys or args.mqtt_host:
             await provision_device_keys(
                 client, get_base_api(args.api_url), [r.robot_id for r in robots], args.timeout
+            )
+        if args.mqtt_host:
+            from mqtt_link import RobotLink
+
+            for robot in robots:
+                link = RobotLink(
+                    robot.robot_id, _device_keys[robot.robot_id], args.mqtt_host, args.mqtt_port
+                )
+                link.start()
+                _links[robot.robot_id] = link
+            safe_print(
+                f"[MQTT] {len(_links)} robots connecting to {args.mqtt_host}:{args.mqtt_port}"
             )
 
         # Start batcher
@@ -1070,6 +1105,12 @@ async def main_async(args, worker_index=0, total_workers=1):
                 f"[OUTBOX] generated={outbox.generated} unsent={outbox.pending_count()} "
                 f"dropped={outbox.dropped}"
             )
+            if _links:
+                unacked = sum(link.unacked() for link in _links.values())
+                rejected = sum(link.rejected for link in _links.values())
+                safe_print(f"[MQTT] unacked={unacked} rejected={rejected}")
+                for link in _links.values():
+                    link.stop()
             dispatcher_task.cancel()
             batcher_task.cancel()
             for task in list(active_robot_tasks.values()):
@@ -1104,6 +1145,12 @@ def main():
     parser.add_argument("--tick-max", type=float, default=5.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument(
+        "--mqtt-host",
+        default=None,
+        help="Send over MQTT to this broker (implies --device-keys). HTTP is used to issue keys.",
+    )
+    parser.add_argument("--mqtt-port", type=int, default=1883)
     parser.add_argument(
         "--device-keys",
         action="store_true",
