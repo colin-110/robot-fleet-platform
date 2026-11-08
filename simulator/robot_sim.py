@@ -258,6 +258,9 @@ _device_keys: dict[int, str] = {}
 # --mqtt-host is set. A robot with an agent sends everything over MQTT
 # through the agent's on-disk outbox instead of HTTP.
 _agents: dict = {}
+# --every-reading: send every reading instead of only the keyframes dual
+# prediction needs (for comparing the two).
+_every_reading = False
 
 
 def key_headers(robot_id: int) -> dict | None:
@@ -899,12 +902,16 @@ async def emit_telemetry(robot: RobotState, queue: asyncio.Queue, rng: random.Ra
     try:
         agent = _agents.get(robot.robot_id)
         if agent is not None:
-            # Straight into the agent's outbox; it batches and sends.
+            # The agent keeps only the keyframes the server's prediction
+            # needs, in its outbox, and batches them.
             reading = {k: v for k, v in payload.items() if k != "robot_id"}
             reading["timestamp"] = _parse_ts(reading["timestamp"])
             if reading["mission_start_time"]:
                 reading["mission_start_time"] = _parse_ts(reading["mission_start_time"])
-            agent.send_telemetry(reading)
+            if _every_reading:
+                agent.send_telemetry(reading)
+            else:
+                agent.observe(reading)
         else:
             await queue.put(payload)
         mission_label = (
@@ -1080,6 +1087,9 @@ async def main_async(args, worker_index=0, total_workers=1):
         if args.mqtt_host:
             from fleetops_agent.agent import Agent
 
+            global _every_reading
+            _every_reading = args.every_reading
+
             os.makedirs(args.outbox_dir, exist_ok=True)
             for robot in robots:
                 agent = Agent(
@@ -1137,8 +1147,21 @@ async def main_async(args, worker_index=0, total_workers=1):
                     agent.flush(timeout=2.0 / len(_agents))
                 pending = sum(agent.pending() for agent in _agents.values())
                 sent = sum(agent.stats["items"] for agent in _agents.values())
+                observed = sum(agent.stats["observed"] for agent in _agents.values())
                 resends = sum(agent.stats["resends"] for agent in _agents.values())
-                safe_print(f"[MQTT] sent={sent} unconfirmed={pending} resends={resends}")
+                messages = sum(agent.stats["messages"] for agent in _agents.values())
+                sent_bytes = sum(agent.stats["bytes"] for agent in _agents.values())
+                safe_print(
+                    f"[MQTT] observed={observed} sent={sent} messages={messages} "
+                    f"bytes={sent_bytes} unconfirmed={pending} resends={resends}"
+                )
+                reasons: dict[str, int] = {}
+                for agent in _agents.values():
+                    for key, count in agent.stats.items():
+                        if key.startswith("keyframe:"):
+                            reasons[key[9:]] = reasons.get(key[9:], 0) + count
+                if reasons:
+                    safe_print(f"[MQTT] keyframes by reason: {reasons}")
                 for agent in _agents.values():
                     agent.stop()
             dispatcher_task.cancel()
@@ -1171,8 +1194,12 @@ def main():
     )
     parser.add_argument("--ambient", type=float, default=30.0)
     parser.add_argument("--radius", type=float, default=20.0)
-    parser.add_argument("--tick-min", type=float, default=2.0)
-    parser.add_argument("--tick-max", type=float, default=5.0)
+    # Each tick moves a robot by at most 2.5 seconds' worth (robot_loop), so a
+    # longer sleep made it cover less ground than the time that passed and its
+    # apparent speed jump from tick to tick. Ticks are sensor readings; with
+    # dual prediction only some of them are sent.
+    parser.add_argument("--tick-min", type=float, default=1.0)
+    parser.add_argument("--tick-max", type=float, default=2.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument(
@@ -1181,6 +1208,11 @@ def main():
         help="Send over MQTT to this broker (implies --device-keys). HTTP is used to issue keys.",
     )
     parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument(
+        "--every-reading",
+        action="store_true",
+        help="With --mqtt-host, send every reading instead of only predictor keyframes.",
+    )
     parser.add_argument(
         "--outbox-dir",
         default="outbox",
