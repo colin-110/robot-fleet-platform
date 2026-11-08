@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import device_keys
 from app.alarms import engine as alarm_engine
+from app.alarms.webhook import WebhookSender
 from app.auth import is_valid_api_key
 from app.command_timeouts import timeout_loop
 from app.config import get_settings
@@ -88,6 +89,14 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine = alarm_engine.AlarmEngine()
     alarm_engine.engine.listeners.append(alarm_engine.broadcast)
     alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
+    webhook_task = None
+    if settings.alarm_webhook_url:
+        sender = WebhookSender(
+            settings.alarm_webhook_url,
+            settings.alarm_webhook_secret or settings.telemetry_api_key,
+        )
+        alarm_engine.engine.listeners.append(sender.listener)
+        webhook_task = asyncio.create_task(sender.run())
 
     # One consumer per process. The broker pins each client id to its
     # username, so this process must be the only one logging in as
@@ -119,6 +128,8 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(mqtt_task, return_exceptions=True)
     timeout_task.cancel()
     alarm_task.cancel()
+    if webhook_task:
+        webhook_task.cancel()
     alarm_engine.engine = None
     if key_refresh_task:
         key_refresh_task.cancel()
