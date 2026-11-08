@@ -21,7 +21,7 @@ import time
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.alarms import engine as alarm_engine
-from app.budget.allocator import Demand, allocate, predicted_rate
+from app.budget.allocator import Demand, allocate, feasible, fit, predicted_rate
 from app.database import AsyncSessionLocal
 from app.intelligence import anomaly, fleet
 from app.models import FleetSetting
@@ -67,10 +67,21 @@ async def set_budget(db, value: dict) -> dict:
     return value
 
 
-def demands(applied: dict[int, dict], now: float, assigned: dict | None = None) -> list[Demand]:
+def demands(
+    applied: dict[int, dict],
+    now: float,
+    assigned: dict | None = None,
+    points: dict | None = None,
+) -> list[Demand]:
     """What each measured robot needs. Its scale is the one it was last given
-    (the agent applies desired settings at once), else what it reports."""
+    (the agent applies desired settings at once), else what it reports.
+
+    ``points`` collects each robot's ``(scale, rate)`` observations at up to
+    two different scales; with two, its tolerance-independent floor is
+    fitted instead of assumed to be just the heartbeat.
+    """
     assigned = assigned or {}
+    points = {} if points is None else points
     open_alarms = (
         {robot for robot, _ in (alarm_engine.engine._open or {})}
         if (alarm_engine.engine)
@@ -91,7 +102,17 @@ def demands(applied: dict[int, dict], now: float, assigned: dict | None = None) 
             weight *= 2
         heartbeat = predict.tolerances(settings)["heartbeat_s"]
         scale = assigned.get(robot_id) or scale_of(settings)
-        out.append(Demand(robot_id, rate, scale, weight, 60 / heartbeat))
+        seen = points.setdefault(robot_id, [])
+        if seen and abs(seen[-1][0] / scale - 1) <= HYSTERESIS:
+            seen[-1] = (scale, rate)  # the same operating point, measured again
+        else:
+            seen.append((scale, rate))
+            del seen[:-2]
+        floor = 60 / heartbeat
+        fitted = fit(seen[0], seen[1], floor) if len(seen) == 2 else None
+        if fitted:
+            floor = min(fitted[1], rate)
+        out.append(Demand(robot_id, rate, scale, weight, floor))
     return out
 
 
@@ -102,6 +123,7 @@ class BudgetController:
         # The last measured demand of each robot, and the scale it was given.
         self.known: dict[int, Demand] = {}
         self.assigned: dict[int, float] = {}
+        self.points: dict[int, list[tuple[float, float]]] = {}
 
     async def step(self, now: float | None = None) -> dict[int, float]:
         """One allocation. Returns the robots whose tolerances were changed."""
@@ -111,7 +133,7 @@ class BudgetController:
             if not budget.get("enabled") or not budget.get("messages_per_minute"):
                 return {}
             applied = await config_repo.applied_settings(db)
-            wanted = demands(applied, now, self.assigned)
+            wanted = demands(applied, now, self.assigned, self.points)
             for d in wanted:
                 self.known[d.robot_id] = d
             measured = {d.robot_id for d in wanted}
@@ -125,7 +147,8 @@ class BudgetController:
             fixed = sum(
                 d.c / self.assigned.get(d.robot_id, d.scale) ** 2 + d.floor_per_min for d in waiting
             )
-            scales = allocate(wanted, float(budget["messages_per_minute"]) - fixed)
+            available = float(budget["messages_per_minute"]) - fixed
+            scales = allocate(wanted, available)
             changed = {}
             for d in wanted:
                 new = scales[d.robot_id]
@@ -156,6 +179,9 @@ class BudgetController:
             "measured": len(wanted),
             "observed_per_min": round(sum(d.rate_per_min for d in wanted), 1),
             "planned_per_min": round(planned, 1),
+            # False when even the loosest tolerances cannot get under the
+            # budget: the rest of the rate does not depend on tolerance.
+            "feasible": feasible(wanted, available) if wanted else True,
             "changed": len(changed),
             "changed_ids": sorted(changed),
         }

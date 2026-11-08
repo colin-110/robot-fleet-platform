@@ -7,8 +7,11 @@ stray ``s`` times as far), on top of a floor its heartbeat sets::
 
     rate_i(s) = c_i / s**2 + h_i          (keyframes per minute)
 
-``c_i`` is learned from the robot itself: its observed rate at its current
-scale, less the heartbeat floor, times the scale squared.
+``c_i`` and ``h_i`` are learned from the robot itself. ``h_i`` starts as the
+heartbeat's share; once the robot has been seen at two different scales,
+both are fitted to the two points (``fit``), because much of a robot's rate
+may not depend on tolerance at all: a robot that stops at every waypoint
+sends a keyframe each time it stops and starts, whatever the tolerance.
 
 Given a budget ``B`` and a weight ``w_i`` per robot (higher for one with an
 alarm or an anomaly), choose the scales that minimise the weighted error::
@@ -44,6 +47,24 @@ class Demand:
     @property
     def c(self) -> float:
         return max(self.rate_per_min - self.floor_per_min, MIN_DEMAND) * self.scale**2
+
+
+def fit(a: tuple[float, float], b: tuple[float, float], heartbeat_floor: float):
+    """``(c, h)`` through two ``(scale, rate)`` observations, or None if they
+    are too close in scale to tell apart. ``h`` is at least the heartbeat's share."""
+    (s1, r1), (s2, r2) = a, b
+    x1, x2 = 1 / s1**2, 1 / s2**2
+    if abs(x1 - x2) < 0.1 * max(x1, x2):
+        return None
+    c = max((r1 - r2) / (x1 - x2), 0.0)
+    h = max(r1 - c * x1, heartbeat_floor)
+    return c, h
+
+
+def feasible(demands: list[Demand], budget_per_min: float) -> bool:
+    """Whether the budget can be met at the loosest scale."""
+    loosest = {d.robot_id: MAX_SCALE for d in demands}
+    return predicted_rate(demands, loosest) <= budget_per_min
 
 
 def _scales(demands: list[Demand], lam: float) -> dict[int, float]:

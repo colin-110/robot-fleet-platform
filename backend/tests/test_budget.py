@@ -132,6 +132,22 @@ async def test_robots_not_measured_still_count_against_the_budget(client, publis
     assert 1 not in controller.last.get("changed_ids", [])
 
 
+async def test_an_unreachable_budget_is_reported(client, publisher):
+    # Robots whose rate does not fall with tolerance: measured at two scales.
+    for robot_id in range(1, 6):
+        busy_robot(robot_id, 10)
+    await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 10})
+    controller = BudgetController(TestSessionLocal)
+    await controller.step(NOW)
+    for robot_id in range(1, 6):
+        fleet.get(robot_id).keyframes.clear()
+        busy_robot(robot_id, 10)
+    await controller.step(NOW)
+    assert controller.last["feasible"] is False
+    # The fitted floor (10 a minute each) is what the plan expects.
+    assert controller.last["planned_per_min"] == pytest.approx(50, rel=0.05)
+
+
 async def test_the_budget_api_validates(client):
     assert (await client.get("/api/v1/fleet/budget")).json()["enabled"] is False
     bad = await client.put("/api/v1/fleet/budget", json={"enabled": True, "messages_per_minute": 0})
