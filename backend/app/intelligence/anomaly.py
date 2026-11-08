@@ -24,6 +24,14 @@ MAX_AGE_SECONDS = 120.0
 FLOORS = {"temperature": 1.0, "drain": 0.1}
 # m/s; below this a robot is not doing comparable work for drain.
 MOVING_SPEED = 0.3
+# A drain is compared only once the battery filter is this sure of it (%/s):
+# just after charging or a repair the filter starts over (uncertainty 0.02 to
+# 0.05), and its first estimates are guesses that would look like wild
+# outliers. A settled filter is at 0.003 to 0.01, depending on keyframe gaps.
+MAX_DRAIN_SIGMA = 0.015
+# The drain's spread is at least this share of the fleet's median drain, so
+# ordinary differences between robots are not anomalies.
+RELATIVE_DRAIN_FLOOR = 0.1
 
 
 @dataclass(frozen=True)
@@ -39,7 +47,8 @@ def _features(model) -> dict[str, float]:
     if temperature is not None:
         out["temperature"] = temperature
     moving = (model.last.get("speed") or 0.0) >= MOVING_SPEED
-    if moving and model.battery.t is not None and model.battery.rate < 0:
+    settled = model.battery.t is not None and model.battery.rate_sigma <= MAX_DRAIN_SIGMA
+    if moving and settled and model.battery.rate < 0:
         out["drain"] = -model.battery.rate * 60
     return out
 
@@ -58,6 +67,8 @@ def scores(models: dict, now: float) -> dict[int, Anomaly]:
             continue
         median = statistics.median(values.values())
         mad = statistics.median(abs(v - median) for v in values.values())
+        if feature == "drain":
+            floor = max(floor, RELATIVE_DRAIN_FLOOR * abs(median))
         scale = max(1.4826 * mad, floor)
         for robot_id, value in values.items():
             z = (value - median) / scale

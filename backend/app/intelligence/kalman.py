@@ -95,6 +95,11 @@ class BatteryKalman:
     def rate(self) -> float:
         return self.x[1]
 
+    @property
+    def rate_sigma(self) -> float:
+        """One standard deviation of the rate estimate, %/s."""
+        return math.sqrt(max(self.p[1][1], 0.0))
+
     def runtime(self) -> Runtime | None:
         """Minutes until empty with a two-sigma range, or None if not draining."""
         b, r = self.x

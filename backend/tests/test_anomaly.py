@@ -15,6 +15,7 @@ def model(temperature, drain_per_min=None, age=0.0, speed=1.0) -> RobotModel:
     if drain_per_min is not None:
         m.battery.update(NOW - 60, 80.0)
         m.battery.x = [80.0, -drain_per_min / 60]
+        m.battery.p = [[0.25, 0.0], [0.0, 0.008**2]]  # settled, as live filters are
     return m
 
 
@@ -83,3 +84,19 @@ async def test_fleet_status_reports_the_score(client):
     assert by_id[40]["anomaly"]["score"] > 10
     assert by_id[41]["anomaly"]["score"] < 2
     assert fleet.get(40) is not None
+
+
+def test_a_drain_the_filter_is_unsure_of_is_left_out():
+    models = {i: model(35.0, drain_per_min=2.5) for i in range(8)}
+    restarted = model(35.0, drain_per_min=60.0)
+    restarted.battery.p = [[0.25, 0.0], [0.0, 0.05**2]]  # just reset
+    models[99] = restarted
+    assert anomaly.scores(models, NOW)[99].feature == "temperature"
+
+
+def test_ordinary_differences_in_drain_are_not_anomalies():
+    # Every robot drains 2.5 % a minute but one, at 2.9: within 10 % of the
+    # median spread floor, so not an outlier, though the MAD here is zero.
+    models = {i: model(35.0, drain_per_min=2.5) for i in range(8)}
+    models[99] = model(35.0, drain_per_min=2.9)
+    assert anomaly.scores(models, NOW)[99].score < 2
