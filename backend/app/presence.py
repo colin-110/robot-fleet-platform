@@ -17,8 +17,9 @@ the state if a stale will ever wins.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import orjson
 
@@ -31,6 +32,11 @@ class Presence:
 
 
 _state: dict[int, Presence] = {}
+# When each robot's recent connections came online, to spot a robot running
+# twice: two processes with one key share a client id, so each connection
+# takes over the other's session in a loop, and connection ids keep changing.
+_connections: dict[int, deque[datetime]] = {}
+MAX_TRACKED_CONNECTIONS = 20
 
 
 def parse(payload: bytes) -> tuple[bool, str | None] | None:
@@ -54,6 +60,8 @@ def apply(robot_id: int, online: bool, conn: str | None, now: datetime | None = 
     current = _state.get(robot_id)
     if not online and current and current.online and current.conn and conn and current.conn != conn:
         return False  # the will of an older connection
+    if online and conn and (current is None or current.conn != conn):
+        _connections.setdefault(robot_id, deque(maxlen=MAX_TRACKED_CONNECTIONS)).append(now)
     if current and current.online == online and (current.conn == conn or not online):
         return False
     _state[robot_id] = Presence(online, conn, now)
@@ -71,6 +79,13 @@ def saw_traffic(robot_id: int, now: datetime | None = None) -> bool:
     return current is not None
 
 
+def connections_within(robot_id: int, seconds: float, now: datetime | None = None) -> int:
+    """How many new connections the robot made in the last ``seconds``."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=seconds)
+    return sum(1 for at in _connections.get(robot_id, ()) if at > cutoff)
+
+
 def is_offline(robot_id: int) -> bool:
     """True only when the broker has told us the robot disconnected."""
     current = _state.get(robot_id)
@@ -83,3 +98,4 @@ def get(robot_id: int) -> Presence | None:
 
 def reset() -> None:
     _state.clear()
+    _connections.clear()
