@@ -42,6 +42,7 @@ def test_the_fleet_model_times_arrivals_per_batch():
         timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
         battery=50.0,
         temperature=30.0,
+        speed=1.0,
         battery_health=None,
         motor_health=None,
         sensor_health=None,
@@ -52,3 +53,14 @@ def test_the_fleet_model_times_arrivals_per_batch():
         fleet.observe([row, row], now=float(t))
     assert fleet.suspicion(7, now=9.5) == pytest.approx(fleet.get(7).arrivals.phi(9.5))
     assert len(fleet.get(7).arrivals.gaps) == 9
+
+
+def test_silence_within_the_heartbeat_is_not_suspicious():
+    model = fleet.robots().setdefault(8, fleet.RobotModel())
+    for t in range(10):
+        model.arrivals.heartbeat(float(t))  # one a second while moving
+    # 20 s of silence: alarming by its recent rhythm, normal for a 30 s heartbeat.
+    assert fleet.suspicion(8, now=29.0) > 8
+    assert fleet.suspicion(8, now=29.0, heartbeat_s=30.0) == 0.0
+    # Well past the heartbeat it counts again.
+    assert fleet.suspicion(8, now=9.0 + 60, heartbeat_s=30.0) > 8

@@ -22,12 +22,15 @@ from app.alarms.rules import RULES, Tracker
 from app.database import AsyncSessionLocal
 from app.intelligence import anomaly, fleet
 from app.models import Alarm
+from app.mqtt import predict
+from app.repositories.config_repo import applied_settings
 
 logger = logging.getLogger(__name__)
 
 ACTIVE, ACKNOWLEDGED, CLEARED = "ACTIVE", "ACKNOWLEDGED", "CLEARED"
 # Readings older than this no longer raise or clear anything.
 STALE_SECONDS = 300.0
+APPLIED_REFRESH_SECONDS = 30.0
 
 Listener = Callable[[str, dict], Awaitable[None]]
 
@@ -55,8 +58,15 @@ def alarm_dict(alarm: Alarm) -> dict:
     }
 
 
-def metrics(robot_id: int, peers: dict, now: datetime) -> tuple[dict, str | None]:
-    """Each rule's metric for one robot; None where it is unknown or stale."""
+def metrics(
+    robot_id: int, peers: dict, now: datetime, applied: dict | None = None
+) -> tuple[dict, str | None]:
+    """Each rule's metric for one robot; None where it is unknown or stale.
+
+    ``applied`` is the settings the robot reported applying (its heartbeat
+    says how long silence is normal).
+    """
+    heartbeat = predict.tolerances(applied)["heartbeat_s"]
     t = now.timestamp()
     model = fleet.get(robot_id)
     last = model.last if model else {}
@@ -70,7 +80,7 @@ def metrics(robot_id: int, peers: dict, now: datetime) -> tuple[dict, str | None
         "health": last.get("health") if fresh else None,
         "anomaly": (peer.score if peer else 0.0) if fresh else None,
         # A disconnected robot is the OFFLINE alarm's business, not SILENT's.
-        "suspicion": None if offline else fleet.suspicion(robot_id, t),
+        "suspicion": None if offline else fleet.suspicion(robot_id, t, heartbeat),
         "offline": None if state is None else float(offline),
         "connections_per_minute": float(presence.connections_within(robot_id, 60, now)),
     }
@@ -83,6 +93,9 @@ class AlarmEngine:
         self.tracker = Tracker()
         self.listeners: list[Listener] = []
         self._open: dict[tuple[int, str], int] | None = None
+        # Robots' applied settings, reread at most every APPLIED_REFRESH seconds.
+        self._applied: dict[int, dict] = {}
+        self._applied_at = float("-inf")
 
     async def _load(self) -> None:
         async with self.session_factory() as db:
@@ -96,10 +109,14 @@ class AlarmEngine:
         now = now or datetime.now(timezone.utc)
         if self._open is None:
             await self._load()
+        if now.timestamp() - self._applied_at >= APPLIED_REFRESH_SECONDS:
+            async with self.session_factory() as db:
+                self._applied = await applied_settings(db)
+            self._applied_at = now.timestamp()
         peers = anomaly.scores(fleet.robots(), now.timestamp())
         changes = []
         for robot_id in sorted(set(fleet.robots()) | set(presence.robot_ids())):
-            values, feature = metrics(robot_id, peers, now)
+            values, feature = metrics(robot_id, peers, now, self._applied.get(robot_id))
             for rule in RULES:
                 value = values.get(rule.metric)
                 is_open = (robot_id, rule.kind) in self._open
