@@ -315,14 +315,13 @@ class Agent:
             envelope = wire.Envelope(
                 self.outbox.stream, run[0][0], floor, _now_ms(), [item for _, _, item in run]
             )
+            payload = wire.encode_envelope(channel, envelope)
             info = self.client.publish(
-                self._topic(channel),
-                wire.encode_envelope(channel, envelope),
-                qos=1,
-                properties=self._publish_props,
+                self._topic(channel), payload, qos=1, properties=self._publish_props
             )
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
                 return
+            self.stats["bytes"] += len(payload)
             with self._lock:
                 if self._sent_upto <= self._stored:
                     # The first unconfirmed item: the resend clock starts now.
