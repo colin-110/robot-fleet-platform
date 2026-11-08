@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Configuration, deployment, security posture, and the scaling roadmap. For local setup see [Running Locally](../README.md#running-locally) in the README.
+Configuration, CI, security posture, and the scaling roadmap. For local setup see [Running Locally](../README.md#running-locally) in the README.
 
 ---
 
@@ -73,59 +73,12 @@ The API runs as **one process**. The broker replaces each client id with the use
 
 ---
 
-## Deployment
-
-> This section describes the deployment that is live today, which still runs the version before the MQTT redesign. Step 10 of ADR 0002 replaces it with a single small instance running the Compose stack.
-
-Production is one free-tier EC2 instance running [`docker-compose.ec2.yml`](../docker-compose.ec2.yml): just the backend and the simulator. Everything else is a managed free tier - **Neon** (Postgres), **Upstash** (Redis), **Vercel** (the static frontend build). nginx and Let's Encrypt run directly on the host, not in Compose, and proxy HTTPS to the backend on `127.0.0.1:8000`.
-
-```
-Viewer --HTTPS--> Vercel (static dashboard)
-   |
-   '--HTTPS/WSS--> EC2 nginx --> FastAPI :8000 (+ simulator container)
-                                   |--> Neon (PostgreSQL)
-                                   '--> Upstash (Redis)
-```
-
-The Docker healthcheck polls `/health/live`, which does not touch the database - `/health` runs `SELECT 1`, and polling that every 15 seconds would keep Neon awake on its own.
-
-The host **pulls pre-built images from GHCR rather than building**. Building on a t3.micro (1 GB RAM, 7.6 GB disk) filled the disk mid-`npm ci` and left the stack half-upgraded. CI only publishes images after the tests pass. `IMAGE_TAG` defaults to `latest` and can be pinned to a commit SHA for a deploy you can name and roll back to:
-
-```bash
-cd /opt/fleetops
-IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops pull
-IMAGE_TAG=<sha> docker compose -f docker-compose.ec2.yml -p fleetops up -d
-```
-
-Every container caps its logs at 30 MB (`10m` × 3 files); the json-file driver is unbounded by default, which on a 7.6 GB disk is a disk-full outage waiting to happen.
-
-### Provisioning the host
-
-[`scripts/deploy_aws.ps1`](../scripts/deploy_aws.ps1) creates (or adopts) the instance, and [`scripts/ec2_user_data.sh`](../scripts/ec2_user_data.sh) installs Docker, adds 1 GB of swap, and clones the repo to `/opt/fleetops`. Two details matter:
-
-- **Tag `role=fleet-app`.** It is the SSM target the `deploy-aws` job selects on. `send-command` treats a target that matches nothing as success, so an untagged host is a silent non-deploy.
-- **Instance profile `fleet-ssm-profile`** (`AmazonSSMManagedInstanceCore`). Without it the SSM agent never registers and the host is invisible to the pipeline.
-
-Two steps stay manual because they involve secrets: writing `/opt/fleetops/.env` (see [`backend/.env.example`](../backend/.env.example)), and `docker login ghcr.io` if the GHCR packages are private.
-
-### Gotchas hit on this stack
-
-- **`DATABASE_URL` needs the `sslmode`/`channel_binding` query params stripped.** Neon hands you a `libpq`-shaped string; asyncpg rejects `sslmode` with a `TypeError` before a single migration runs. Drop both; asyncpg negotiates TLS with Neon automatically.
-- **Health routes must answer `HEAD`.** Uptime monitors and load balancers default to `HEAD`; `@app.get` only registers `GET`, so they read a healthy service as down. Health/root routes use `@app.api_route(path, methods=["GET", "HEAD"])`.
-- **`CORS_ORIGINS` must match the browser's `Origin` exactly - no trailing slash.** `https://your-app.vercel.app/` never matches.
-- **Every write registers the robot.** Fleet status is the roster `LEFT JOIN`ed onto `robot_state`, so `persist()` upserts the roster in the same transaction or a robot would never appear.
-- **Direct batch ingest commits once per batch.** Per-row commits to a remote Postgres were slow enough to exceed the simulator's POST timeout and silently drop whole batches.
-- **Upstash URLs use `rediss://`.** `redis-py` picks TLS from the URL scheme alone.
-- **CartoDB's free basemap CDN was discontinued.** The map uses OpenStreetMap tiles, with the dark theme approximated by a CSS filter.
-
-### CI/CD
+## CI
 
 On every push and pull request to `main`:
 
 1. **`backend-test`** - `ruff check` across `backend/`, `simulator/` and `agent/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against a real TimescaleDB service container and an anonymous Mosquitto broker for the MQTT integration tests, and the agent's own tests (wire format, outbox, and the client against the broker, including a robot killed with `-9`).
 2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
-3. **`publish-images`** - builds and pushes the `backend` and `simulator` images to GHCR on `main`, tagged both `latest` and the commit SHA. These are the images the host pulls; nothing is built on the instance. The frontend is deployed by Vercel, not from an image.
-4. **`deploy-aws`** - gated SSM-based rollout, opt-in via a repository variable. The AWS identity it assumes is created by [`scripts/setup_oidc_role.ps1`](../scripts/setup_oidc_role.ps1): a GitHub OIDC provider and a role trusted only by this repository on `main`, so the pipeline holds no long-lived key. Its one permission is `ssm:SendCommand`, conditioned on `ssm:resourceTag/role = fleet-app` - without that condition the role could run shell on every instance in the account. It resolves the tagged, online instances before sending anything and fails when there are none, then polls each invocation to completion and reports the host's stdout into the job log. `send-command` on its own is fire-and-forget, so without this a deploy that ran nowhere would still report success. The host is reset to the deployed SHA rather than to `origin/main`, then runs `docker-compose.ec2.yml`, so the compose file on the box comes from the same commit as the images `IMAGE_TAG` pins.
 
 ---
 

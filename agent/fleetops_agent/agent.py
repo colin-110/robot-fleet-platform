@@ -93,6 +93,7 @@ class Agent:
         window: int = 2000,
         resend_after: float = 15.0,
         keepalive: int = 15,
+        tls: bool = False,
         ca_certs: str | None = None,
     ) -> None:
         """
@@ -102,7 +103,8 @@ class Agent:
         what a reconnect or a resend puts on the wire.
         ``resend_after``: seconds without a confirmation before everything
         unconfirmed is sent again.
-        ``ca_certs``: enables TLS, verifying the broker against this CA file.
+        ``tls``: connect with TLS, verifying the broker against the system's
+        CAs, or against ``ca_certs`` if given (which implies ``tls``).
         """
         self.robot_id = robot_id
         self.host, self.port = host, port
@@ -144,7 +146,7 @@ class Agent:
             protocol=mqtt.MQTTv5,
         )
         self.client.username_pw_set(name, key)
-        if ca_certs:
+        if tls or ca_certs:
             self.client.tls_set(ca_certs=ca_certs)
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
         self.client.max_inflight_messages_set(50)

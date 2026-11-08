@@ -24,10 +24,19 @@ telemetry, events and command progress to the FleetOps broker over MQTT.
 ~~~python
 from fleetops_agent.agent import Agent
 
-agent = Agent(7, device_key, "broker.example.com", outbox_path="/var/lib/robot/outbox.db")
+agent = Agent(
+    7,
+    device_key,
+    "broker.example.com",
+    8883,
+    tls=True,  # verified against the system's CAs; ca_certs= for your own
+    outbox_path="/var/lib/robot/outbox.db",
+)
 agent.start()
 
-agent.send_telemetry({"battery": 81.5, "temperature": 39.2, "speed": 0.8, "x": 3.1, "y": -2.0})
+# Every sensor tick: sent only when it strays from the prediction the server
+# shares (or a discrete field changes, or the heartbeat is due).
+agent.observe({"battery": 81.5, "temperature": 39.2, "speed": 0.8, "x": 3.1, "y": -2.0})
 agent.send_event("Mission M-00042 complete")
 
 for command in agent.take_commands():

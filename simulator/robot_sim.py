@@ -1098,6 +1098,8 @@ async def main_async(args, worker_index=0, total_workers=1):
                     args.mqtt_host,
                     args.mqtt_port,
                     outbox_path=os.path.join(args.outbox_dir, f"robot-{robot.robot_id}.db"),
+                    tls=args.mqtt_tls,
+                    ca_certs=args.mqtt_ca,
                 )
                 agent.on_config = _config_applier(robot)
                 agent.start()
@@ -1208,6 +1210,10 @@ def main():
         help="Send over MQTT to this broker (implies --device-keys). HTTP is used to issue keys.",
     )
     parser.add_argument("--mqtt-port", type=int, default=1883)
+    parser.add_argument("--mqtt-tls", action="store_true", help="Connect to the broker with TLS.")
+    parser.add_argument(
+        "--mqtt-ca", default=None, help="CA file to verify the broker (implies TLS)."
+    )
     parser.add_argument(
         "--every-reading",
         action="store_true",

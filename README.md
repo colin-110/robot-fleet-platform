@@ -35,8 +35,8 @@ goes through one write path that inserts it, registers the robot and updates
 its current state in a single transaction. There is no Redis and no worker
 process.
 
-This is step 8 of a redesign aimed at running a fleet on the smallest possible
-server; next is error-budgeted telemetry. See
+This is a redesign aimed at running a fleet on the smallest possible server.
+See
 [ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
 [ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
 
@@ -154,13 +154,12 @@ The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleD
 - `agent/` - the robot-side package (`fleetops-agent`)
 - `simulator/` - asynchronous robot simulator, each robot sending through its own agent
 - `mosquitto/` - broker configuration
-- `scripts/` - EC2 provisioning and CI deploy-role setup
 - `docs/` - architecture, operations, and design decisions (`docs/adr/`)
-- `docker-compose.yml` - full local stack; `docker-compose.ec2.yml` - production
+- `docker-compose.yml` - the full stack; `docker-compose.override.yml` - development settings, loaded automatically
 
 ## Limitations
 
-This is a portfolio-scale system using synthetic robot data. The hosted demo intentionally uses simplified authentication, and the deployment is single-node without high availability. The live demo still runs the previous version until the redesign is deployed.
+This is a portfolio-scale system using synthetic robot data, single-node and without high availability. The live demo still runs the previous version.
 
 ## License
 

@@ -172,6 +172,5 @@ disagree.
 | [`agent/`](../agent) | `fleetops-agent`, the robot-side package: wire format, on-disk outbox, MQTT client, settings. |
 | [`simulator/`](../simulator) | Async Python simulator with physics-based robots, each sending through its own agent. |
 | [`mosquitto/`](../mosquitto) | Broker configuration (go-auth against the API, persistence, queues). |
-| [`scripts/`](../scripts) | EC2 provisioning and the CI deploy role. |
 | [`docs/`](.) | Architecture, operations, and design decisions ([`adr/`](adr)). |
 | [`.github/workflows/`](../.github/workflows) | CI/CD pipeline. |
