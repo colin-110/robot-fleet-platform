@@ -27,4 +27,11 @@ COPY simulator/robot_sim.py ./
 # We use the python unbuffered flag so logs show up immediately in docker-compose logs
 ENV PYTHONUNBUFFERED=1
 
+# Not root. /data is where the compose file mounts the robots' outboxes; a new
+# volume takes this directory's owner. A volume created by an older, root
+# image keeps root's files; give them to this user once:
+#   docker run --rm -v robot-fleet-platform_simulator_outbox:/data alpine chown -R 10001:10001 /data
+RUN useradd --uid 10001 --create-home sim && mkdir -p /data && chown sim:sim /data
+USER sim
+
 CMD ["python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry"]
