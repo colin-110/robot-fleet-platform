@@ -1,6 +1,8 @@
 fastapi>=0.100,<1
 uvicorn>=0.22,<1
-SQLAlchemy>=2,<3
+# [asyncio] brings greenlet, which the async engine needs. It used to come
+# along by default; on Python 3.13 it no longer does.
+SQLAlchemy[asyncio]>=2,<2.1
 # asyncpg only. Both the app engine (app/database.py) and the migration engine
 # (alembic/env.py) call create_async_engine against settings.async_database_url,
 # which rewrites the DSN to postgresql+asyncpg://. psycopg2 was never imported

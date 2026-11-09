@@ -146,6 +146,8 @@ docker compose up --build -d
 
 The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleDB and the Mosquitto broker.
 
+The dashboard is at http://localhost and the API at http://localhost:8000. Every port listens on this machine only, since nothing in the local stack is encrypted; set `BIND_ADDRESS=0.0.0.0` to expose them on your network on purpose.
+
 ## Repository structure
 
 - `backend/app/` - API routes, services, repositories and authentication

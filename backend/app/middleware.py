@@ -23,15 +23,17 @@ logger = logging.getLogger(__name__)
 
 REQUEST_ID_HEADER = "x-request-id"
 
-# Two budgets: "ingest" (fleet telemetry, high volume) and "console" (ticket
+# Three budgets: "ingest" (fleet telemetry, high volume), "console" (ticket
 # minting and command dispatch, which a browser can reach without the master
-# key). Dashboard reads are not rate limited.
+# key) and "login" (password guesses). Dashboard reads are not rate limited.
 _INGEST_SUFFIXES = ("/telemetry", "/telemetry/batch")
 _CONSOLE_SUFFIXES = ("/auth/ticket",)
+_LOGIN_SUFFIXES = ("/auth/login",)
 _COMMANDS_SEGMENT = "/commands/"
 
 INGEST_BUCKET = "ingest"
 CONSOLE_BUCKET = "console"
+LOGIN_BUCKET = "login"
 
 
 def _rate_limit_bucket(method: str, path: str) -> str | None:
@@ -42,6 +44,8 @@ def _rate_limit_bucket(method: str, path: str) -> str | None:
         return INGEST_BUCKET
     if path.endswith(_CONSOLE_SUFFIXES):
         return CONSOLE_BUCKET
+    if path.endswith(_LOGIN_SUFFIXES):
+        return LOGIN_BUCKET
     # Operator dispatch: POST /api/v1/commands/{robot_id}. The robot-facing
     # /claim sub-path is excluded deliberately - robots poll it continuously and
     # a console-sized budget would throttle the fleet itself.
@@ -126,7 +130,7 @@ class RequestIDMiddleware:
 
 
 class RateLimitMiddleware:
-    """In-process sliding-window rate limiter on the ingest and console endpoints."""
+    """In-process sliding-window rate limiter on the ingest, console and login endpoints."""
 
     def __init__(
         self,
@@ -135,15 +139,21 @@ class RateLimitMiddleware:
         console_max_requests: int = 60,
         window_seconds: int = 60,
         trusted_proxy_count: int = 0,
+        login_max_requests: int = 10,
     ) -> None:
         self.app = app
         self.max_requests = max_requests
         self.console_max_requests = console_max_requests
+        self.login_max_requests = login_max_requests
         self.window_seconds = window_seconds
         self.trusted_proxy_count = trusted_proxy_count
 
     def _budget(self, bucket: str) -> int:
-        return self.console_max_requests if bucket == CONSOLE_BUCKET else self.max_requests
+        if bucket == CONSOLE_BUCKET:
+            return self.console_max_requests
+        if bucket == LOGIN_BUCKET:
+            return self.login_max_requests
+        return self.max_requests
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         bucket = (
