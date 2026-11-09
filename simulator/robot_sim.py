@@ -125,6 +125,14 @@ HEAT_SPIKE_PER_S = 0.0003
 BLACKOUT_BASE_PER_S = 0.0002
 BLACKOUT_WEAR_PER_S = 0.002
 
+# Robots one simulator process runs over MQTT. Each robot's agent holds about
+# six file descriptors (its socket, paho's wake-up socket pair, the outbox's
+# SQLite files), and paho waits on its sockets with select(), which cannot
+# watch a descriptor numbered 1024 or above: past about 160 robots in one
+# process, the rest connect, fail and reconnect forever without an error.
+# --workers is raised to keep every process under this.
+ROBOTS_PER_PROCESS = 120
+
 # Components wear down to this and no further. A battery or motor that gets
 # here has failed: the robot shuts down and a repair crew replaces it.
 HEALTH_FLOOR = 10.0
@@ -1307,6 +1315,14 @@ def main():
 
     if args.local:
         args.api_url = "http://localhost:8000/api/v1/telemetry"
+
+    if args.mqtt_host and args.robots > ROBOTS_PER_PROCESS * args.workers:
+        needed = -(-args.robots // ROBOTS_PER_PROCESS)
+        safe_print(
+            f"Running {args.robots} robots in {needed} processes instead of {args.workers} "
+            f"(at most {ROBOTS_PER_PROCESS} per process over MQTT)."
+        )
+        args.workers = needed
 
     if args.workers > 1:
         processes = []
