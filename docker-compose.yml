@@ -44,7 +44,9 @@ services:
       mqtt:
         condition: service_started
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      # Liveness only, no database query (see /health/live in app/main.py),
+      # and with Python, so the image needs no curl.
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=3)" ]
       interval: 10s
       timeout: 5s
       retries: 3

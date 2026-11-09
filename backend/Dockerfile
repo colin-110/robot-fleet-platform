@@ -20,14 +20,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN useradd -m appuser
 
-# Install curl for healthcheck
+# Security updates Debian has released since the base image was built.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get upgrade -y --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
 # Only the wheels verified above: no index, no resolving anything new.
 COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache-dir --no-index --no-deps /wheels/*.whl && rm -rf /wheels
+# pip goes too once the wheels are in: nothing needs it at run time, and it
+# carries its own copies of urllib3, msgpack and setuptools, with their own
+# vulnerabilities. (To debug inside a container: python -m ensurepip.)
+RUN pip install --no-cache-dir --no-index --no-deps /wheels/*.whl && rm -rf /wheels && \
+    pip uninstall -y pip
 
 # Copy application code AFTER installing dependencies (better cache layer)
 COPY . .
