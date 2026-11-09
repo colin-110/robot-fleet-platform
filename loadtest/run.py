@@ -269,7 +269,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--robots", type=int, required=True)
     parser.add_argument(
-        "--workers", type=int, default=0, help="Simulator processes (the simulator adds more as it needs them)."
+        "--workers",
+        type=int,
+        default=0,
+        help="Simulator processes (the simulator adds more as it needs them).",
     )
     parser.add_argument(
         "--minutes", type=float, default=5.0, help="How long to measure, after warm-up."
@@ -314,6 +317,13 @@ def main() -> None:
             print(f"\r  {time.time() - began:.0f} s", end="", flush=True)
         print()
         end, seconds = samples[-1], time.time() - began
+        started_at = {s.get("process_start_time_seconds") for s in samples}
+        if len(started_at) > 1:
+            raise SystemExit(
+                "\nThe API restarted during the run, so its counters started again from "
+                "zero and the numbers would be wrong. With the dev override, any edit "
+                "under backend/ restarts it. Run again."
+            )
         report = summarise(
             samples, stats, start, end, seconds, db_bytes() - db_start, args.robots, batch_limit
         )
