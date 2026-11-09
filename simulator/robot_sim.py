@@ -1080,11 +1080,14 @@ def _config_applier(robot: RobotState):
 
 
 async def main_async(args, worker_index=0, total_workers=1):
-    rng = random.Random(args.seed)
+    # Offset per process, or every process would start its robots with the
+    # same health and battery as the first one's. Process 0 is unchanged.
+    rng = random.Random(args.seed + worker_index)
 
     robots_count = args.robots
     if robots_count <= 0:
-        robots_count = rng.randint(35, 55)
+        # From the shared seed: every process must agree on the fleet size.
+        robots_count = random.Random(args.seed).randint(35, 55)
 
     # Calculate chunk for this worker
     chunk_size = robots_count // total_workers
