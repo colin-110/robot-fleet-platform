@@ -22,3 +22,6 @@ httptools>=0.6.0
 # Auth: JWT signing/verification and password hashing.
 PyJWT>=2.8,<3
 bcrypt>=4.1,<5
+
+# Metrics at /metrics (app/metrics.py).
+prometheus-client>=0.20,<1

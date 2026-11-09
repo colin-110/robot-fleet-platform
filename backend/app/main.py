@@ -15,12 +15,13 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, WebSocket
+from fastapi import FastAPI, Header, HTTPException, Query, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
 
-from app import device_keys
+from app import device_keys, metrics
 from app.alarms import engine as alarm_engine
 from app.alarms.webhook import WebhookSender
 from app.auth import is_valid_api_key
@@ -93,7 +94,9 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine.listeners.append(alarm_engine.broadcast)
     alarm_task = asyncio.create_task(alarm_engine.engine.run(settings.alarm_interval_seconds))
     # Exact rollups of the keyframes, every minute.
-    rollup_task = asyncio.create_task(RollupJob().run())
+    rollup_job = RollupJob()
+    metrics.sources["rollups"] = rollup_job
+    rollup_task = asyncio.create_task(rollup_job.run())
 
     # The message budget (off until an operator sets one).
     budget_controller.controller = budget_controller.BudgetController()
@@ -107,6 +110,7 @@ async def lifespan(app: FastAPI):
     elif settings.alarm_webhook_url:
         sender = WebhookSender(settings.alarm_webhook_url, settings.alarm_webhook_secret)
         alarm_engine.engine.listeners.append(sender.listener)
+        metrics.sources["webhook"] = sender
         webhook_task = asyncio.create_task(sender.run())
 
     # One consumer per process. The broker pins each client id to its
@@ -124,6 +128,7 @@ async def lifespan(app: FastAPI):
         )
         if settings.websocket_backend == "mqtt":
             manager.relay = relay_publisher(app.state.mqtt.client)
+        metrics.sources["ingest"] = app.state.mqtt
         mqtt_task = asyncio.create_task(app.state.mqtt.run())
 
     yield
@@ -147,6 +152,7 @@ async def lifespan(app: FastAPI):
     alarm_engine.engine = None
     if key_refresh_task:
         key_refresh_task.cancel()
+    metrics.sources.clear()
 
     logger.info("FleetOps shutting down")
 
@@ -243,6 +249,16 @@ async def health_check():
         database=db_status,
         mqtt=mqtt_status,
     )
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics(x_api_key: str = Header(None), authorization: str = Header(None)):
+    """Prometheus metrics. Needs the master key, as ``X-API-Key`` or a bearer
+    token (Prometheus' ``authorization`` scrape setting)."""
+    bearer = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
+    if not (is_valid_api_key(x_api_key) or is_valid_api_key(bearer)):
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # ── WebSocket ───────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app import metrics
 from app.database import AsyncSessionLocal
 from app.models import FleetSetting, Telemetry, TelemetryMinute
 from app.mqtt import predict
@@ -188,8 +189,10 @@ class RollupJob:
 
     async def run(self, interval: float = INTERVAL) -> None:
         while True:
+            started = time.perf_counter()
             try:
                 await self.run_once()
+                metrics.ROLLUP_RUN_SECONDS.observe(time.perf_counter() - started)
             except asyncio.CancelledError:
                 raise
             except Exception:

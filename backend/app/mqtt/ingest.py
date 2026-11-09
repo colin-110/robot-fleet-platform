@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -35,7 +36,7 @@ from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from pydantic import ValidationError
 
-from app import presence
+from app import metrics, presence
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.intelligence import fleet
@@ -388,8 +389,14 @@ class IngestConsumer:
                 break
         return batch
 
+    @property
+    def queue_depth(self) -> int:
+        """Messages received and not yet taken into a batch."""
+        return self._queue.qsize()
+
     async def process(self, batch: list[Delivery]) -> None:
         """Store a batch, broadcast what is new, then acknowledge it."""
+        started = time.perf_counter()
         decoded = Decoded()
         for delivery in batch:
             try:
@@ -453,6 +460,8 @@ class IngestConsumer:
                 for callback in self.on_robot_online:
                     callback(robot_id)
         self.ack(batch)
+        metrics.INGEST_BATCH_MESSAGES.observe(len(batch))
+        metrics.INGEST_BATCH_SECONDS.observe(time.perf_counter() - started)
 
     def _decode_envelope(self, delivery: Delivery, decoded: Decoded) -> None:
         """Unpack an agent envelope into ``decoded``.
@@ -552,6 +561,7 @@ class IngestConsumer:
                     await db.commit()
                     fleet.observe(readings)
                     rollups.mark_dirty(readings)
+                    metrics.observe_reading_ages(readings)
                     return readings, events
             except asyncio.CancelledError:
                 raise

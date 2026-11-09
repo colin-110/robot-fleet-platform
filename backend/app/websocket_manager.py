@@ -50,6 +50,14 @@ class ConnectionManager:
         # which it is looking at closely, which the budget allocator favours.
         self._subscriptions: dict[WebSocket, set[int] | None] = {}
         self._watching: dict[WebSocket, set[int]] = {}
+        # Read by /metrics.
+        self.frames_sent = 0
+        self.frames_dropped = 0
+
+    @property
+    def queued_frames(self) -> int:
+        """Frames waiting in every client's outbound queue."""
+        return sum(q.qsize() for q in self._queues.values())
 
     @property
     def connection_count(self) -> int:
@@ -87,6 +95,7 @@ class ConnectionManager:
                 data = await queue.get()
                 try:
                     await websocket.send_json(data)
+                    self.frames_sent += 1
                 except (WebSocketDisconnect, RuntimeError):
                     self.disconnect(websocket)
                     return
@@ -184,6 +193,7 @@ class ConnectionManager:
             except asyncio.QueueFull:
                 try:
                     queue.get_nowait()  # drop oldest
+                    self.frames_dropped += 1
                 except asyncio.QueueEmpty:
                     pass
                 try:
