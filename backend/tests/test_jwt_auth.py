@@ -240,6 +240,26 @@ async def test_unknown_user_is_indistinguishable_from_a_wrong_password(client, d
 
 
 @pytest.mark.asyncio
+async def test_password_guessing_is_rate_limited(client, db, auth_required):
+    """bcrypt makes each guess slow; the limit caps how many there are."""
+    from app.config import get_settings
+
+    await _make_user(db, "alice", "s3cret-password", OPERATOR)
+    budget = get_settings().login_rate_limit_per_minute
+
+    for _ in range(budget):
+        guess = await client.post(
+            "/api/v1/auth/login", json={"username": "alice", "password": "guess"}
+        )
+        assert guess.status_code == 401
+    # Over the budget, even the right password waits for the window.
+    blocked = await client.post(
+        "/api/v1/auth/login", json={"username": "alice", "password": "s3cret-password"}
+    )
+    assert blocked.status_code == 429
+
+
+@pytest.mark.asyncio
 async def test_disabled_account_cannot_sign_in(client, db, auth_required):
     user = await _make_user(db, "bob", "s3cret-password", OPERATOR)
     user.is_active = False

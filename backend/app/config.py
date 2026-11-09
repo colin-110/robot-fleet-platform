@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     # the hosted demo, so they need a ceiling the fleet's ingest budget would
     # not give them.
     console_rate_limit_per_minute: int = 60
+    # Sign-in attempts per client IP. Passwords are bcrypt-hashed, which slows
+    # each guess but does not limit how many are made.
+    login_rate_limit_per_minute: int = 10
     # Number of reverse proxies in front of the app (nginx, CloudFront, ALB).
     # The rate limiter takes the Nth-from-last X-Forwarded-For entry so a client
     # cannot spoof its own IP by injecting the header. 0 = no proxy, trust the

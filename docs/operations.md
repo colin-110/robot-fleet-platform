@@ -33,6 +33,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `TRUSTED_PROXY_COUNT` | `0` | Number of reverse proxies in front of the app; controls how the rate limiter resolves the client IP |
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
 | `CONSOLE_RATE_LIMIT_PER_MINUTE` | `60` | Separate, tighter budget for what a browser can reach without the master key: minting console tickets and dispatching commands |
+| `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Sign-in attempts per client IP. bcrypt slows each password guess; this caps how many there are |
 | `REQUIRE_AUTH_FOR_READS` | `false` | Whether fleet status, analytics, and events require an API key |
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |

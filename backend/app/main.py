@@ -173,6 +173,7 @@ app.add_middleware(
     RateLimitMiddleware,
     max_requests=settings.rate_limit_per_minute,
     console_max_requests=settings.console_rate_limit_per_minute,
+    login_max_requests=settings.login_rate_limit_per_minute,
     window_seconds=60,
     trusted_proxy_count=settings.trusted_proxy_count,
 )
