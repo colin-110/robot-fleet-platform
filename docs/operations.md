@@ -117,6 +117,19 @@ Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
 
 ---
 
+## Load testing
+
+`loadtest/run.py` runs the local stack (`docker compose up`) with any number of simulated robots, each on its own agent, and reports where it strains. It stops the regular simulator, waits for the robots to come online, samples `/metrics` and `docker stats` every 10 seconds, then puts the regular simulator back. It needs only Python's standard library.
+
+```bash
+python3 loadtest/run.py --robots 500 --minutes 5
+python3 loadtest/run.py --robots 2000 --minutes 5 --json run-2000.json
+```
+
+The report gives readings and messages per second, batch time and fill, how busy ingest is, the ingest queue, reading age (p50 and p95), alarm pass time, WebSocket frames, database growth per hour, and CPU and memory per container, the simulator included, so a saturated simulator is not mistaken for a slow server. The simulator runs at most 120 robots per process (`ROBOTS_PER_PROCESS` in `robot_sim.py`) and starts more processes as needed: paho waits on sockets with `select()`, which cannot watch a file descriptor above 1023.
+
+---
+
 ## Security posture
 
 | Control | Implementation |
