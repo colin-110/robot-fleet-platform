@@ -9,6 +9,11 @@ x-logging: &default-logging
 # Docker's default of 1,024 open files caps the broker below 1,000 robots (one
 # socket each), and the simulator needs several per robot (its connection and
 # outbox files). Raised for the services that hold one per robot.
+# Published ports listen on this host's loopback only: nothing here is
+# encrypted (plain HTTP and MQTT), and the API and broker should not be
+# reachable from the rest of the network by accident. Set BIND_ADDRESS=0.0.0.0
+# to expose them on purpose, for example to robots on the LAN.
+
 x-ulimits: &many-files
   nofile:
     soft: 65536
@@ -21,7 +26,7 @@ services:
     image: robot-fleet-platform-backend:latest
     command: [ "sh", "-c", "python prestart.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --no-access-log" ]
     ports:
-      - "8000:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
     env_file:
       - ./backend/.env
     environment:
@@ -49,7 +54,7 @@ services:
   frontend:
     build: ./frontend/robot-fleet-dashboard
     ports:
-      - "80:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:80:80"
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -104,7 +109,7 @@ services:
     # and every login and ACL decision is delegated to the API.
     image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
     ports:
-      - "1883:1883"
+      - "${BIND_ADDRESS:-127.0.0.1}:1883:1883"
     restart: unless-stopped
     logging: *default-logging
     ulimits: *many-files

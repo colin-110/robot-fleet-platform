@@ -29,4 +29,6 @@ services:
 
   db:
     ports:
-      - "5432:5432"  # Expose DB for local tools (pgAdmin, DBeaver, etc.)
+      # For local tools (pgAdmin, DBeaver), on this machine only: the
+      # database password is the example one in most setups.
+      - "127.0.0.1:5432:5432"
