@@ -70,13 +70,14 @@ def _dt(t: float) -> datetime:
 async def _upsert(db, model, rows: list[dict]) -> None:
     if not rows:
         return
+    # One cached statement with the rows as parameters, not built into VALUES.
+    stmt = pg_insert(model.__table__)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["robot_id", "bucket"],
+        set_={c: stmt.excluded[c] for c in rows[0] if c not in ("robot_id", "bucket")},
+    )
     for start in range(0, len(rows), 1000):
-        stmt = pg_insert(model).values(rows[start : start + 1000])
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["robot_id", "bucket"],
-            set_={c: stmt.excluded[c] for c in rows[0] if c not in ("robot_id", "bucket")},
-        )
-        await db.execute(stmt)
+        await db.execute(stmt, rows[start : start + 1000])
 
 
 async def rollup_robot(db, robot_id: int, start: float, end: float, heartbeat_s: float) -> int:

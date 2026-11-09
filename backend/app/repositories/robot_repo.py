@@ -88,8 +88,11 @@ class RobotRepository:
         """
         if not latest:
             return
-        state = RobotState.__table__.c
-        stmt = pg_insert(RobotState).values(latest)
+        # The rows go as parameters to one cached statement (see
+        # telemetry_repo.INSERT_READINGS), not into its VALUES.
+        table = RobotState.__table__
+        state = table.c
+        stmt = pg_insert(table)
         new = stmt.excluded
         minutes = func.extract("epoch", new.timestamp - state.timestamp) / 60.0
         instant = (state.battery - new.battery) / minutes
@@ -106,7 +109,7 @@ class RobotRepository:
             },
             where=new.timestamp > state.timestamp,
         )
-        await self.db.execute(stmt)
+        await self.db.execute(stmt, latest)
 
     async def list_active(self) -> list[Robot]:
         """Every robot that has not been decommissioned, lowest id first."""
@@ -134,17 +137,18 @@ class RobotRepository:
             for robot_id, seen_at in last_seen_by_robot.items()
         ]
 
-        stmt = pg_insert(Robot).values(rows)
+        table = Robot.__table__
+        stmt = pg_insert(table)
         stmt = stmt.on_conflict_do_update(
-            index_elements=[Robot.id],
+            index_elements=[table.c.id],
             set_={
                 "last_seen": func.greatest(
                     stmt.excluded.last_seen,
-                    func.coalesce(Robot.__table__.c.last_seen, stmt.excluded.last_seen),
+                    func.coalesce(table.c.last_seen, stmt.excluded.last_seen),
                 )
             },
         )
-        await self.db.execute(stmt)
+        await self.db.execute(stmt, rows)
 
     async def set_key_hash(self, robot_id: int, key_hash: str) -> None:
         """Store a new device key hash, registering the robot if needed."""
