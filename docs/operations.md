@@ -96,13 +96,37 @@ Each request also produces a structured access line (`http_method`, `http_path`,
 
 ## Monitoring
 
-There is no metrics stack. The signals that exist are:
-
 - `GET /health/live` - process liveness, no database round trip. This is what Docker polls.
 - `GET /health` - checks the database and reports the broker connection (`mqtt`: `connected`, `disconnected` or `disabled`); status is `degraded` if either is down. Use it by hand; Docker polls `/health/live`.
+- `GET /metrics` - Prometheus metrics, behind the master key (`X-API-Key`, or a bearer token for Prometheus' `authorization` scrape setting). Most values are counters the components already keep, read at scrape time, so collecting them costs the ingest path nothing.
 - Structured logs (above).
 
+| Metric | What it shows |
+| :--- | :--- |
+| `fleetops_ingest_stored_total`, `_duplicates_total`, `_rejected_total` | Readings stored, redeliveries skipped, messages dropped |
+| `fleetops_ingest_batch_seconds`, `fleetops_ingest_batch_messages` | Time per batch and messages per batch; batches at the size limit mean ingest is running flat out |
+| `fleetops_ingest_queue_depth` | Messages received and waiting for a batch: growing means ingest is behind |
+| `fleetops_reading_age_seconds` | From a reading's device time to its commit (network, broker queue and outbox together) |
+| `fleetops_websocket_clients`, `_frames_sent_total`, `_frames_dropped_total`, `_queued_frames` | Dashboard fan-out; drops mean a dashboard cannot keep up |
+| `fleetops_alarm_pass_seconds`, `fleetops_alarms_open` | One alarm pass over the fleet, and alarms not yet cleared |
+| `fleetops_rollup_run_seconds`, `fleetops_rollup_minutes_written_total` | The rollup job |
+| `fleetops_robots_online`, `fleetops_robots_modelled` | Robots connected, and robots with an in-memory model |
+| `process_*` | CPU, memory and open files of the API process |
+
 Alerting is absent - see [Scaling roadmap](#scaling-roadmap).
+
+---
+
+## Load testing
+
+`loadtest/run.py` runs the local stack (`docker compose up`) with any number of simulated robots, each on its own agent, and reports where it strains. It stops the regular simulator, waits for the robots to come online, samples `/metrics` and `docker stats` every 10 seconds, then puts the regular simulator back. It needs only Python's standard library.
+
+```bash
+python3 loadtest/run.py --robots 500 --minutes 5
+python3 loadtest/run.py --robots 2000 --minutes 5 --json run-2000.json
+```
+
+The report gives readings and messages per second, batch time and fill, how busy ingest is, the ingest queue, reading age (p50 and p95), alarm pass time, WebSocket frames, database growth per hour, and CPU and memory per container, the simulator included, so a saturated simulator is not mistaken for a slow server. The simulator runs at most 120 robots per process (`ROBOTS_PER_PROCESS` in `robot_sim.py`) and starts more processes as needed: paho waits on sockets with `select()`, which cannot watch a file descriptor above 1023.
 
 ---
 
@@ -136,4 +160,4 @@ In priority order, if this needed to handle a genuinely large fleet:
 4. **Multi-tenancy.** Per-fleet isolation, OIDC for operators, and per-key rate limiting.
 5. **Managed high-availability data tier.** Multi-AZ Postgres with read replicas and PgBouncer for the read path.
 6. **Dedicated realtime gateway.** Move WebSocket fan-out to its own horizontally scaled tier so it scales independently of the ingest API.
-7. **Observability.** Metrics (Prometheus or a hosted equivalent), alerting, and distributed tracing (OpenTelemetry) across the ingest and database path.
+7. **Observability.** Metrics are at `/metrics` (above); still missing are alerting on them and distributed tracing (OpenTelemetry) across the ingest and database path.

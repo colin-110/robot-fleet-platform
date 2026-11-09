@@ -23,18 +23,19 @@ async def save_watermarks(db: AsyncSession, marks: dict[int, tuple[str, int]]) -
     if not marks:
         return
     now = datetime.now(timezone.utc)
-    stmt = pg_insert(StoredWatermark).values(
-        [
-            {"robot_id": robot_id, "stream": stream, "seq": seq, "updated_at": now}
-            for robot_id, (stream, seq) in marks.items()
-        ]
-    )
+    rows = [
+        {"robot_id": robot_id, "stream": stream, "seq": seq, "updated_at": now}
+        for robot_id, (stream, seq) in marks.items()
+    ]
+    # One cached statement with the rows as parameters, not built into VALUES.
+    table = StoredWatermark.__table__
+    stmt = pg_insert(table)
     stmt = stmt.on_conflict_do_update(
-        index_elements=[StoredWatermark.robot_id],
+        index_elements=[table.c.robot_id],
         set_={
             "stream": stmt.excluded.stream,
             "seq": stmt.excluded.seq,
             "updated_at": stmt.excluded.updated_at,
         },
     )
-    await db.execute(stmt)
+    await db.execute(stmt, rows)

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app import metrics
 from app.database import AsyncSessionLocal
 from app.models import FleetSetting, Telemetry, TelemetryMinute
 from app.mqtt import predict
@@ -69,13 +70,14 @@ def _dt(t: float) -> datetime:
 async def _upsert(db, model, rows: list[dict]) -> None:
     if not rows:
         return
+    # One cached statement with the rows as parameters, not built into VALUES.
+    stmt = pg_insert(model.__table__)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["robot_id", "bucket"],
+        set_={c: stmt.excluded[c] for c in rows[0] if c not in ("robot_id", "bucket")},
+    )
     for start in range(0, len(rows), 1000):
-        stmt = pg_insert(model).values(rows[start : start + 1000])
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["robot_id", "bucket"],
-            set_={c: stmt.excluded[c] for c in rows[0] if c not in ("robot_id", "bucket")},
-        )
-        await db.execute(stmt)
+        await db.execute(stmt, rows[start : start + 1000])
 
 
 async def rollup_robot(db, robot_id: int, start: float, end: float, heartbeat_s: float) -> int:
@@ -188,8 +190,10 @@ class RollupJob:
 
     async def run(self, interval: float = INTERVAL) -> None:
         while True:
+            started = time.perf_counter()
             try:
                 await self.run_once()
+                metrics.ROLLUP_RUN_SECONDS.observe(time.perf_counter() - started)
             except asyncio.CancelledError:
                 raise
             except Exception:

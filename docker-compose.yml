@@ -6,6 +6,14 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# Docker's default of 1,024 open files caps the broker below 1,000 robots (one
+# socket each), and the simulator needs several per robot (its connection and
+# outbox files). Raised for the services that hold one per robot.
+x-ulimits: &many-files
+  nofile:
+    soft: 65536
+    hard: 65536
+
 services:
 
   backend:
@@ -24,6 +32,7 @@ services:
       - MQTT_HOST=mqtt
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *many-files
     depends_on:
       db:
         condition: service_healthy
@@ -65,6 +74,7 @@ services:
       - simulator_outbox:/data
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *many-files
     depends_on:
       backend:
         condition: service_healthy
@@ -97,6 +107,7 @@ services:
       - "1883:1883"
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *many-files
     volumes:
       - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
       # Owned by the broker's user in the image, so a new volume is writable.

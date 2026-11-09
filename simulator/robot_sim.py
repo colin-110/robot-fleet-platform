@@ -125,8 +125,30 @@ HEAT_SPIKE_PER_S = 0.0003
 BLACKOUT_BASE_PER_S = 0.0002
 BLACKOUT_WEAR_PER_S = 0.002
 
+# Robots one simulator process runs over MQTT. Each robot's agent holds about
+# six file descriptors (its socket, paho's wake-up socket pair, the outbox's
+# SQLite files), and paho waits on its sockets with select(), which cannot
+# watch a descriptor numbered 1024 or above: past about 160 robots in one
+# process, the rest connect, fail and reconnect forever without an error.
+# --workers is raised to keep every process under this.
+ROBOTS_PER_PROCESS = 120
+
+# Components wear down to this and no further. A battery or motor that gets
+# here has failed: the robot shuts down and a repair crew replaces it.
+HEALTH_FLOOR = 10.0
+
 # Set from --time-scale in main().
 TIME_SCALE = 1.0
+
+
+def has_failed(robot) -> bool:
+    """Flat battery, meltdown, or a battery or motor worn out."""
+    return (
+        robot.battery <= 5.0
+        or robot.temperature >= 95.0
+        or robot.battery_health <= HEALTH_FLOOR
+        or robot.motor_health <= HEALTH_FLOOR
+    )
 
 
 def initial_component_health(rng: random.Random, service_age: float | None = None):
@@ -605,14 +627,7 @@ async def robot_loop(
                 logger.error(f"[R{robot.robot_id:02d}] Command poll error: {e}", exc_info=True)
 
             # Meltdown / Battery exhaustion DEAD checks
-            is_dead = (
-                robot.battery <= 5.0
-                or robot.temperature >= 95.0
-                or robot.battery_health < 10.0
-                or robot.motor_health < 10.0
-            )
-
-            if is_dead:
+            if has_failed(robot):
                 if robot.status != "DEAD":
                     robot.status = "DEAD"
                     robot.online = False
@@ -866,19 +881,19 @@ async def robot_loop(
             # hour each before WEAR_SPEEDUP; motors wear faster on a mission.
             wear = dt * WEAR_SPEEDUP * TIME_SCALE
             robot.battery_health = clamp(
-                robot.battery_health - rng.uniform(0.00034, 0.00069) * wear, 10.0, 100.0
+                robot.battery_health - rng.uniform(0.00034, 0.00069) * wear, HEALTH_FLOOR, 100.0
             )
             robot.motor_health = clamp(
                 robot.motor_health
                 - rng.uniform(0.00046, 0.0008) * (1.3 if robot.mission else 0.5) * wear,
-                10.0,
+                HEALTH_FLOOR,
                 100.0,
             )
             robot.sensor_health = clamp(
-                robot.sensor_health - rng.uniform(0.00029, 0.00057) * wear, 10.0, 100.0
+                robot.sensor_health - rng.uniform(0.00029, 0.00057) * wear, HEALTH_FLOOR, 100.0
             )
             robot.network_health = clamp(
-                robot.network_health - rng.uniform(0.00034, 0.00063) * wear, 10.0, 100.0
+                robot.network_health - rng.uniform(0.00034, 0.00063) * wear, HEALTH_FLOOR, 100.0
             )
 
             if rng.random() < HEAT_SPIKE_PER_S * dt:
@@ -1065,11 +1080,14 @@ def _config_applier(robot: RobotState):
 
 
 async def main_async(args, worker_index=0, total_workers=1):
-    rng = random.Random(args.seed)
+    # Offset per process, or every process would start its robots with the
+    # same health and battery as the first one's. Process 0 is unchanged.
+    rng = random.Random(args.seed + worker_index)
 
     robots_count = args.robots
     if robots_count <= 0:
-        robots_count = rng.randint(35, 55)
+        # From the shared seed: every process must agree on the fleet size.
+        robots_count = random.Random(args.seed).randint(35, 55)
 
     # Calculate chunk for this worker
     chunk_size = robots_count // total_workers
@@ -1300,6 +1318,14 @@ def main():
 
     if args.local:
         args.api_url = "http://localhost:8000/api/v1/telemetry"
+
+    if args.mqtt_host and args.robots > ROBOTS_PER_PROCESS * args.workers:
+        needed = -(-args.robots // ROBOTS_PER_PROCESS)
+        safe_print(
+            f"Running {args.robots} robots in {needed} processes instead of {args.workers} "
+            f"(at most {ROBOTS_PER_PROCESS} per process over MQTT)."
+        )
+        args.workers = needed
 
     if args.workers > 1:
         processes = []

@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app import metrics as prom
 from app import presence
 from app.alarms.rules import RULES, Tracker
 from app.database import AsyncSessionLocal
@@ -104,8 +106,20 @@ class AlarmEngine:
             )
             self._open = {(robot_id, kind): alarm_id for robot_id, kind, alarm_id in rows}
 
+    @property
+    def open_count(self) -> int | None:
+        """Alarms not yet cleared; None before the first pass loads them."""
+        return None if self._open is None else len(self._open)
+
     async def evaluate(self, now: datetime | None = None) -> list[tuple[str, dict]]:
         """One pass over every known robot. Returns the changes made."""
+        started = time.perf_counter()
+        try:
+            return await self._evaluate(now)
+        finally:
+            prom.ALARM_PASS_SECONDS.observe(time.perf_counter() - started)
+
+    async def _evaluate(self, now: datetime | None) -> list[tuple[str, dict]]:
         now = now or datetime.now(timezone.utc)
         if self._open is None:
             await self._load()
