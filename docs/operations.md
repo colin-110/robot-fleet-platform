@@ -131,6 +131,33 @@ The report gives readings and messages per second, batch time and fill, how busy
 
 ---
 
+## Backups
+
+**None are set up, on purpose.** Every reading in the local stack and the demo comes from the simulator, so a lost database costs nothing: restart the stack and new data arrives within minutes.
+
+What is and is not protected today:
+
+| Failure | Outcome |
+| :--- | :--- |
+| A process crashes (API, broker, database restart) | Nothing lost: robots keep readings until the API confirms they are committed (see [Architecture](architecture.md#message-flow)) |
+| The database's disk is lost | All history is gone. There is no replica and no backup |
+
+A manual snapshot, and its restore, if you want to keep one:
+
+```bash
+docker compose exec -T db pg_dump -U postgres -d robotfleet -Fc > robotfleet.dump
+docker compose exec -T db pg_restore -U postgres -d robotfleet --clean < robotfleet.dump
+```
+
+A deployment with real fleet data would need, before anything else:
+
+1. **Continuous WAL archiving** (for example with pgBackRest or a managed database's point-in-time recovery) to object storage, so the database can be restored to any moment, not only to the last nightly dump.
+2. **A daily full backup** kept for an agreed period, stored in a different account or region from the database.
+3. **A tested restore**: run one on a schedule and time it. A backup that has never been restored is not known to work.
+4. **A replica** if downtime matters as well as data, so a failed disk is a failover rather than a restore.
+
+---
+
 ## Security posture
 
 | Control | Implementation |
