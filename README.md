@@ -140,13 +140,13 @@ Prerequisites: Docker and Docker Compose.
 ~~~bash
 git clone https://github.com/colin-110/robot-fleet-platform.git
 cd robot-fleet-platform
-cp backend/.env.example backend/.env
+python3 backend/make_env.py    # backend/.env with random secrets; prints the admin password
 docker compose up --build -d
 ~~~
 
 The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleDB and the Mosquitto broker.
 
-The dashboard is at http://localhost and the API at http://localhost:8000. Every port listens on this machine only, since nothing in the local stack is encrypted; set `BIND_ADDRESS=0.0.0.0` to expose them on your network on purpose.
+The dashboard is at http://localhost; sign in as `admin` with the password the script printed (it is also in `backend/.env`). The API is at http://localhost:8000. Every port listens on this machine only, since nothing in the local stack is encrypted; set `BIND_ADDRESS=0.0.0.0` to expose them on your network on purpose.
 
 ## Repository structure
 

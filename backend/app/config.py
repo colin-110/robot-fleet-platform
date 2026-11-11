@@ -13,6 +13,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Marks every secret in .env.example; the app refuses to start with one.
+PLACEHOLDER = "change-me"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -242,6 +245,26 @@ class Settings(BaseSettings):
                 )
             if self.jwt_secret is not None and len(self.jwt_secret) < 32:
                 raise ValueError("JWT_SECRET must be at least 32 characters in production.")
+
+        # The example file's placeholders are public, so a copy that was never
+        # filled in would run with credentials anyone can read. In every
+        # environment, not only production: a local stack is reachable too.
+        placeholders = [
+            name
+            for name, value in (
+                ("TELEMETRY_API_KEY", self.telemetry_api_key),
+                ("DATABASE_URL", self.database_url),
+                ("BOOTSTRAP_ADMIN_PASSWORD", self.bootstrap_admin_password),
+                ("JWT_SECRET", self.jwt_secret),
+            )
+            if value and PLACEHOLDER in value
+        ]
+        if placeholders:
+            raise ValueError(
+                f"{', '.join(placeholders)} still hold the example's placeholder "
+                f"('{PLACEHOLDER}...'). Run `python3 backend/make_env.py` to fill "
+                "them with random values."
+            )
 
         if self.websocket_backend not in ("direct", "mqtt"):
             raise ValueError(

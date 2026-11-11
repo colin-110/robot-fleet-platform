@@ -22,9 +22,9 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `MQTT_BATCH_SIZE` / `MQTT_BATCH_WAIT_MS` | `200` / `250` | A batch is written when it reaches this size or age |
 | `MQTT_INGEST_GROUP` | unset | Use shared subscriptions in this group, for several API processes. Mosquitto does not restore shared subscriptions after a restart, so leave unset unless you need it |
 | `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
-| `ALLOW_SHARED_INGEST_KEY` | `true` | Whether the master key still works on robot endpoints. Set `false` once every robot has a device key |
+| `ALLOW_SHARED_INGEST_KEY` | `true` (`false` in `.env.example`) | Whether the master key still works on robot endpoints. `false` once every robot has a device key; the simulator issues its own |
 | `DEVICE_KEY_REFRESH_SECONDS` | `60` | How often each instance reloads device keys (multi-instance only), which bounds how long a revoked key keeps working on other instances |
-| `AUTH_MODE` | `open` (`required` in production) | `open` = public console, no accounts; `required` = every console action needs a JWT |
+| `AUTH_MODE` | `open` (`required` in production and in `.env.example`) | `open` = public console, no accounts; `required` = every console action, and every read, needs a JWT |
 | `JWT_SECRET` | derived from `TELEMETRY_API_KEY` | Access-token signing key. 32+ chars required in production |
 | `JWT_TTL_SECONDS` | `3600` | Access-token lifetime |
 | `BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | unset | Creates the first admin at startup, only while the users table is empty |
@@ -34,7 +34,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
 | `CONSOLE_RATE_LIMIT_PER_MINUTE` | `60` | Separate, tighter budget for what a browser can reach without the master key: minting console tickets and dispatching commands |
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Sign-in attempts per client IP. bcrypt slows each password guess; this caps how many there are |
-| `REQUIRE_AUTH_FOR_READS` | `false` | Whether fleet status, analytics, and events require an API key |
+| `REQUIRE_AUTH_FOR_READS` | follows `AUTH_MODE` | Whether fleet status, positions, history, analytics, events and alarms need a signed-in user (any role) or the master key. Set `false` explicitly for a public read-only demo |
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
 | `MAX_CLOCK_SKEW_SECONDS` | `300` | Plain JSON readings dated further ahead than this are clamped to server time. Agent messages are corrected by the robot's measured clock offset instead |
@@ -173,7 +173,8 @@ A deployment with real fleet data would need, before anything else:
 | Client IP resolution | The rate limiter reads `X-Forwarded-For` using a configured trusted-proxy count, taking the Nth entry from the right. Trusting the leftmost entry would let a client spoof its own address; trusting the socket peer would collapse the entire fleet into one bucket behind a proxy. |
 | Rate limiting | In-process sliding window per client IP on the HTTP ingest and console endpoints, exact for one process. Idle clients are pruned once 10,000 are tracked. The broker has no per-client rate limit yet. |
 | State transitions | Atomic compare-and-set `UPDATE` statements, so concurrent writers cannot both commit a transition. |
-| Read endpoints | Fleet status, analytics, and events are public by default so the hosted demo works without shipping a key to every browser. This is a setting (`REQUIRE_AUTH_FOR_READS`), not a hardcoded exemption; it is the wrong default for real fleet positions. |
+| Read endpoints | Protected whenever sign-in is required: a signed-in user of any role, or the master key. A public read-only demo must set `REQUIRE_AUTH_FOR_READS=false` on purpose. |
+| Secrets in the example file | Every secret in `.env.example` is a `change-me` placeholder, and the API refuses to start while one remains. `python3 backend/make_env.py` fills them with random values and writes `.env` readable by its owner only. |
 | Secret hygiene | `.env`, `*.pem`, `*.key`, and `*.tfvars` are gitignored |
 
 ---
