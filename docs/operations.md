@@ -79,7 +79,13 @@ The API runs as **one process**. The broker replaces each client id with the use
 On every push and pull request to `main`:
 
 1. **`backend-test`** - `ruff check` across `backend/`, `simulator/` and `agent/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against a real TimescaleDB service container and an anonymous Mosquitto broker for the MQTT integration tests, and the agent's own tests (wire format, outbox, and the client against the broker, including a robot killed with `-9`).
-2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
+2. **`frontend-test`** - `npm audit` (fails on a moderate or worse known vulnerability), ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
+3. **`security`** - all blocking:
+   - **gitleaks** over the whole git history, since a secret deleted from the files is still in it (`.gitleaks.toml` allows two known false positives, nothing else).
+   - **pip-audit** on both Python lockfiles, checked by hash.
+   - **Trivy** on the API, simulator, database and dashboard images as built: fails on any high or critical vulnerability that has a fix available. Ones the distribution has not fixed yet are reported but cannot fail the build, since there is nothing to upgrade to.
+
+Actions are pinned to commits rather than tags. Dependabot (`.github/dependabot.yml`) proposes weekly updates for npm packages, Docker base images and the actions; Python packages are pinned with hashes in `requirements.lock` files and regenerated with `pip-compile` (command in each Dockerfile).
 
 ---
 
