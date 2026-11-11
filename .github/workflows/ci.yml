@@ -145,9 +145,35 @@ jobs:
           docker build -t fleet-simulator -f simulator/Dockerfile .
           docker build -t fleet-db timescaledb
           docker build -t fleet-frontend frontend/robot-fleet-dashboard
+          docker build -t fleet-mqtt mosquitto
       - name: Image vulnerabilities (Trivy)
         run: |
-          for image in fleet-backend fleet-simulator fleet-db fleet-frontend; do
+          for image in fleet-backend fleet-simulator fleet-db fleet-frontend fleet-mqtt; do
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.2 \
               image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$image"
           done
+      # Trivy only reads executables, so it cannot see the broker's Go plugin
+      # (a shared library). govulncheck reports the vulnerabilities in code the
+      # plugin actually calls. One has no fix and is allowed, see
+      # mosquitto/go-updates.txt; anything else fails the build.
+      - name: Broker plugin vulnerabilities (govulncheck)
+        run: |
+          id=$(docker create fleet-mqtt) && docker cp "$id":/mosquitto/go-auth.so . && docker rm "$id"
+          docker run --rm -v "$PWD":/s golang:1.27.4-trixie sh -c '
+            go install golang.org/x/vuln/cmd/govulncheck@latest &&
+            /go/bin/govulncheck -mode=binary -format json /s/go-auth.so' > govulncheck.json
+          python3 - <<'PY'
+          import json, sys
+          allowed = {"GO-2025-3553"}
+          text = open("govulncheck.json").read()
+          found, decoder, i = set(), json.JSONDecoder(), 0
+          while i < len(text):
+              if text[i].isspace():
+                  i += 1
+                  continue
+              message, i = decoder.raw_decode(text, i)
+              if "finding" in message and message["finding"].get("trace", [{}])[0].get("function"):
+                  found.add(message["finding"]["osv"])
+          print("reachable:", sorted(found) or "none")
+          sys.exit(1 if found - allowed else 0)
+          PY

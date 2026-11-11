@@ -17,4 +17,5 @@ updates:
       - /simulator
       - /timescaledb
       - /frontend/robot-fleet-dashboard
+      - /mosquitto
     schedule: { interval: weekly }
