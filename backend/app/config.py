@@ -6,6 +6,7 @@ The app will fail fast at startup if required settings are missing.
 """
 
 import logging
+import os
 from functools import lru_cache
 
 from pydantic import Field, model_validator
@@ -19,7 +20,10 @@ PLACEHOLDER = "change-me"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # ENV_FILE="" reads no file at all: the test suite sets it, so tests
+        # mean the same on a developer machine (with its own backend/.env) as
+        # in CI (with none).
+        env_file=os.environ.get("ENV_FILE", ".env") or None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
