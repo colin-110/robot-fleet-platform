@@ -31,6 +31,12 @@ services:
       - ./backend/.env
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-https://localhost}
+      # The dashboard's nginx is always in front, so the client's address is
+      # the last X-Forwarded-For entry it appends. With 0, every browser was
+      # nginx's one address: one person guessing passwords would have used up
+      # the sign-in limit for everyone. (Port 8000 is published on this
+      # machine only, so nothing else can reach the API to forge the header.)
+      - TRUSTED_PROXY_COUNT=1
       - PYTHONPATH=.
       # One process: it owns the broker session that ingest runs on.
       - MQTT_ENABLED=true
