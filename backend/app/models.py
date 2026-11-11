@@ -16,6 +16,7 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    SmallInteger,
     String,
     UniqueConstraint,
     func,
@@ -310,6 +311,24 @@ class TelemetryHour(_RollupColumns, Base):
     """One row per robot per hour, built from the minutes. Kept indefinitely."""
 
     __tablename__ = "telemetry_1h"
+
+
+class TelemetryLine(Base):
+    """One field of one robot as a straight line over a stretch of time.
+
+    ``value(t) = v0 + slope * (t - t0)`` for ``t0 <= t <= t1``, within the
+    field's tolerance of the stored keyframes' path (app/storage/lines.py).
+    ``field`` is ``lines.FIELD_IDS``. Time no segment covers is unknown.
+    """
+
+    __tablename__ = "telemetry_lines"
+
+    robot_id = Column(Integer, primary_key=True)
+    field = Column(SmallInteger, primary_key=True)
+    t0 = Column(DateTime(timezone=True), primary_key=True)
+    t1 = Column(DateTime(timezone=True), nullable=False)
+    v0 = Column(Float, nullable=False)
+    slope = Column(Float, nullable=False)
 
 
 class User(Base):

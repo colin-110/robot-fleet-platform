@@ -53,6 +53,7 @@ from app.services.telemetry_service import (
     resolve_timestamp,
 )
 from app.storage import job as rollups
+from app.storage import lines_job
 from app.websocket_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -561,6 +562,7 @@ class IngestConsumer:
                     await db.commit()
                     fleet.observe(readings)
                     rollups.mark_dirty(readings)
+                    lines_job.mark_dirty(readings)
                     metrics.observe_reading_ages(readings)
                     return readings, events
             except asyncio.CancelledError:

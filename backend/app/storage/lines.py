@@ -25,6 +25,7 @@ the first) is not covered by any segment: unknown, never guessed.
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 
 # Fields stored as segments, with their rate on the keyframe (None: held).
@@ -183,14 +184,21 @@ def lines_for(
 
 def worst_error(lines: list[Line], runs: list[list]) -> float:
     """The largest gap between the segments and the stored path, checked at
-    every point of it (enough, since both are straight between points)."""
+    every point of it (enough, since both are straight between points).
+    ``inf`` if a known point has no segment. ``lines`` sorted by ``t0``."""
+    starts = [ln.t0 for ln in lines]
     worst = 0.0
     for run in runs:
         for t, v in run:
-            covering = [ln for ln in lines if ln.t0 - 1e-9 <= t <= ln.t1 + 1e-9]
+            i = bisect.bisect_right(starts, t + 1e-9) - 1
+            # At a boundary the segment before may also claim the instant; a
+            # jump there is shared, so the closer one is the stored value.
+            covering = [
+                lines[k]
+                for k in (i - 1, i)
+                if k >= 0 and lines[k].t0 - 1e-9 <= t <= lines[k].t1 + 1e-9
+            ]
             if not covering:
                 return float("inf")
-            # At a segment boundary either segment may claim the instant; a
-            # jump there is shared, so the closer one is the stored value.
             worst = max(worst, min(abs(ln.value(t) - v) for ln in covering))
     return worst

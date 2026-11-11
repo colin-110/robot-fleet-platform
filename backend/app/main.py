@@ -46,6 +46,7 @@ from app.routes.robots import router as robots_router
 from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
 from app.storage.job import RollupJob
+from app.storage.lines_job import LinesJob
 from app.tickets import SCOPE_CONSOLE, verify_ticket
 from app.websocket_manager import manager
 
@@ -97,6 +98,10 @@ async def lifespan(app: FastAPI):
     rollup_job = RollupJob()
     metrics.sources["rollups"] = rollup_job
     rollup_task = asyncio.create_task(rollup_job.run())
+    # Each field as line segments within a guaranteed error, hour by hour.
+    lines_job = LinesJob()
+    metrics.sources["lines"] = lines_job
+    lines_task = asyncio.create_task(lines_job.run())
 
     # The message budget (off until an operator sets one).
     budget_controller.controller = budget_controller.BudgetController()
@@ -146,6 +151,7 @@ async def lifespan(app: FastAPI):
     alarm_task.cancel()
     budget_task.cancel()
     rollup_task.cancel()
+    lines_task.cancel()
     budget_controller.controller = None
     if webhook_task:
         webhook_task.cancel()

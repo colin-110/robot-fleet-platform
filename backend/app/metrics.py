@@ -40,6 +40,11 @@ ALARM_PASS_SECONDS = Histogram(
     "Time for one alarm evaluation over every robot.",
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5),
 )
+LINES_RUN_SECONDS = Histogram(
+    "fleetops_lines_run_seconds",
+    "Time for one run of the line segments job.",
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120),
+)
 ROLLUP_RUN_SECONDS = Histogram(
     "fleetops_rollup_run_seconds",
     "Time for one rollup run.",
@@ -133,6 +138,16 @@ class FleetCollector:
                 "Robot-minutes of rollups written.",
                 rollups.stats["minutes_written"],
             )
+
+        job = sources.get("lines")
+        if job is not None:
+            for key, doc in (
+                ("hours", "Robot-hours of line segments computed."),
+                ("keyframes_read", "Keyframes read to compute line segments."),
+                ("lines_written", "Line segments written."),
+                ("verify_failures", "Segments found further from the stored path than allowed."),
+            ):
+                yield _counter(f"fleetops_lines_{key}", doc, job.stats[key])
 
         webhook = sources.get("webhook")
         if webhook is not None:
