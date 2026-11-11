@@ -30,7 +30,7 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://localhost}
       - PYTHONPATH=.
       # One process: it owns the broker session that ingest runs on.
       - MQTT_ENABLED=true
@@ -56,10 +56,16 @@ services:
   frontend:
     build: ./frontend/robot-fleet-dashboard
     ports:
+      # HTTPS; plain HTTP only redirects to it.
+      - "${BIND_ADDRESS:-127.0.0.1}:443:443"
       - "${BIND_ADDRESS:-127.0.0.1}:80:80"
     restart: unless-stopped
     logging: *default-logging
+    volumes:
+      - tls_certs:/etc/nginx/certs:ro
     depends_on:
+      certs:
+        condition: service_completed_successfully
       backend:
         condition: service_healthy
     networks:
@@ -73,10 +79,12 @@ services:
     # No --api-key: a command-line secret is visible in `ps aux` and
     # `docker inspect`. The simulator reads TELEMETRY_API_KEY from the
     # environment, which env_file already provides.
-    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "40", "--mqtt-host", "mqtt", "--outbox-dir", "/data" ]
+    command: [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "40", "--mqtt-host", "mqtt", "--mqtt-port", "8883", "--mqtt-ca", "/certs/ca.crt", "--outbox-dir", "/data" ]
     env_file:
       - ./backend/.env
     volumes:
+      # The local CA, to verify the broker over TLS as a real robot would.
+      - tls_certs:/certs:ro
       # Each robot's outbox, so readings not yet stored survive a restart.
       - simulator_outbox:/data
     restart: unless-stopped
@@ -114,7 +122,8 @@ services:
     build: ./mosquitto
     image: robot-fleet-platform-mqtt:latest
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:1883:1883"
+      # TLS only. Plain MQTT (1883) stays inside the Docker network, for the API.
+      - "${BIND_ADDRESS:-127.0.0.1}:8883:8883"
     restart: unless-stopped
     logging: *default-logging
     ulimits: *many-files
@@ -122,10 +131,30 @@ services:
       - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
       # Owned by the broker's user in the image, so a new volume is writable.
       - mosquitto_data:/var/lib/mosquitto
+      - tls_certs:/mosquitto/certs:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
     networks:
       - fleet_net
 
+  # One-off: makes the local CA and the broker's and dashboard's certificate on
+  # first start, then exits (tls/make-certs.sh). Later starts keep them.
+  certs:
+    image: alpine:3.22
+    command: [ "sh", "-c", "apk add --no-cache -q openssl && sh /scripts/make-certs.sh" ]
+    environment:
+      - TLS_EXTRA_SANS=${TLS_EXTRA_SANS:-}
+    volumes:
+      - ./tls/make-certs.sh:/scripts/make-certs.sh:ro
+      - tls_certs:/certs
+      # The CA's private key: in no other service's volume.
+      - tls_ca:/ca
+    logging: *default-logging
+
 volumes:
+  tls_certs:
+  tls_ca:
   timescale_data:
   mosquitto_data:
   simulator_outbox:
