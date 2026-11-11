@@ -8,8 +8,9 @@ RUN npm run build
 
 # Serve stage
 FROM nginx:alpine
-# Remove default nginx static assets
-RUN rm -rf /usr/share/nginx/html/*
+# Security patches Alpine has released since the base image was built, and
+# no default nginx static assets.
+RUN apk upgrade --no-cache && rm -rf /usr/share/nginx/html/*
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html
 # Add custom nginx config for SPA routing and API proxy

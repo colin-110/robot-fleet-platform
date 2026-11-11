@@ -1,0 +1,14 @@
+# Secret scanning (gitleaks, run in CI over the whole history). The default
+# rules, minus two known false positives found by scanning every commit:
+# - the broker image name, which contains "auth" and a version string;
+# - the empty, commented-out JWT_SECRET= line in backend/.env.example.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives, matched against the whole finding"
+regexTarget = "match"
+regexes = [
+  '''mosquitto-go-auth:[0-9.]+-mosquitto_[0-9.]+''',
+  '''JWT_SECRET=\s*\n''',
+]

@@ -16,6 +16,10 @@ export ``DATABASE_URL`` to a throwaway Postgres database whose name contains
 
 import os
 
+# Before the app is imported: settings come from the environment CI and the
+# test commands set, never from a developer's backend/.env.
+os.environ["ENV_FILE"] = ""
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine

@@ -13,6 +13,8 @@
  * no longer in the bundle at all.
  */
 
+import axios from "axios";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 const STORAGE_KEY = "fleet.session";
 
@@ -72,6 +74,39 @@ export function getSession() {
 export function authHeaders() {
   const current = getSession();
   return current ? { Authorization: `Bearer ${current.token}` } : {};
+}
+
+function isApiUrl(url) {
+  return typeof url === "string" && url.startsWith(`${API_BASE}/api/`);
+}
+
+/**
+ * Send the session's token with every axios request to the API, reads
+ * included, and sign out when the API rejects it (expired or revoked), which
+ * returns the console to the login screen. Installed once, from main.jsx.
+ * Returns a function that removes both interceptors.
+ */
+export function installAuthInterceptors(client = axios) {
+  const request = client.interceptors.request.use((config) => {
+    if (isApiUrl(config.url)) {
+      const { Authorization } = authHeaders();
+      if (Authorization && !config.headers?.Authorization) {
+        config.headers = config.headers ?? {};
+        config.headers.Authorization = Authorization;
+      }
+    }
+    return config;
+  });
+  const response = client.interceptors.response.use(undefined, (error) => {
+    if (error?.response?.status === 401 && isApiUrl(error.config?.url) && session) {
+      logout();
+    }
+    return Promise.reject(error);
+  });
+  return () => {
+    client.interceptors.request.eject(request);
+    client.interceptors.response.eject(response);
+  };
 }
 
 /** Ask the backend whether this deployment expects a login. */

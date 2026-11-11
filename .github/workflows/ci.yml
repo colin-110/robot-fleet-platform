@@ -15,6 +15,10 @@ concurrency:
 permissions:
   contents: read
 
+# Actions are pinned to a commit, not a tag: a tag can be moved to different
+# code by whoever controls the action's repository. Dependabot proposes
+# updates (.github/dependabot.yml).
+
 jobs:
   # ── CI: Backend Lint & Tests ───────────────────────────────────────
   backend-test:
@@ -32,7 +36,7 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # An anonymous broker for the MQTT integration tests. Not a service
       # container: those cannot pass the config file the broker needs.
       - name: Start MQTT broker
@@ -41,7 +45,7 @@ jobs:
       # October 2026 and gets no more security fixes. The agent still supports
       # 3.10 (robots often run an older system Python), see agent/pyproject.toml.
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
           cache: 'pip'
@@ -89,8 +93,8 @@ jobs:
     name: Frontend Test, Lint & Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # Matches the frontend Dockerfile's node:22-alpine build stage, so CI
           # and the shipped image agree. Node 20 reached end of life in April
@@ -100,9 +104,76 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/robot-fleet-dashboard/package-lock.json
       - run: cd frontend/robot-fleet-dashboard && npm ci
+      # Fails on any known vulnerability of moderate severity or worse, in
+      # runtime and build dependencies alike.
+      - run: cd frontend/robot-fleet-dashboard && npm audit --audit-level=moderate
       - run: cd frontend/robot-fleet-dashboard && npm run lint
       # Blocking, like the backend suite. Vitest reads its env from
       # vite.config.js, so the run does not depend on a local .env.
       - name: Run Vitest
         run: cd frontend/robot-fleet-dashboard && npm run test:coverage
       - run: cd frontend/robot-fleet-dashboard && npm run build
+
+  # ── CI: Security ───────────────────────────────────────────────────
+  security:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history: a secret removed from the files is still in it.
+          fetch-depth: 0
+      - name: Secrets in the code and its history (gitleaks)
+        run: >-
+          docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.24.3
+          git /repo --config /repo/.gitleaks.toml --redact --no-banner
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      # Every pinned Python package the images install, checked by hash.
+      - name: Python dependencies (pip-audit)
+        run: |
+          pip install "pip-audit>=2.7,<3"
+          pip-audit --require-hashes --disable-pip -r backend/requirements.lock
+          pip-audit --require-hashes --disable-pip -r simulator/requirements.lock
+      # The images as built: OS packages and everything installed in them.
+      # Fails on a high or critical vulnerability that has a fix available;
+      # ones the distribution has not fixed yet are reported, not failed on.
+      - name: Build images
+        run: |
+          docker build -t fleet-backend backend
+          docker build -t fleet-simulator -f simulator/Dockerfile .
+          docker build -t fleet-db timescaledb
+          docker build -t fleet-frontend frontend/robot-fleet-dashboard
+          docker build -t fleet-mqtt mosquitto
+      - name: Image vulnerabilities (Trivy)
+        run: |
+          for image in fleet-backend fleet-simulator fleet-db fleet-frontend fleet-mqtt; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.76.2 \
+              image --quiet --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$image"
+          done
+      # Trivy only reads executables, so it cannot see the broker's Go plugin
+      # (a shared library). govulncheck reports the vulnerabilities in code the
+      # plugin actually calls. One has no fix and is allowed, see
+      # mosquitto/go-updates.txt; anything else fails the build.
+      - name: Broker plugin vulnerabilities (govulncheck)
+        run: |
+          id=$(docker create fleet-mqtt) && docker cp "$id":/mosquitto/go-auth.so . && docker rm "$id"
+          docker run --rm -v "$PWD":/s golang:1.27.4-trixie sh -c '
+            go install golang.org/x/vuln/cmd/govulncheck@latest &&
+            /go/bin/govulncheck -mode=binary -format json /s/go-auth.so' > govulncheck.json
+          python3 - <<'PY'
+          import json, sys
+          allowed = {"GO-2025-3553"}
+          text = open("govulncheck.json").read()
+          found, decoder, i = set(), json.JSONDecoder(), 0
+          while i < len(text):
+              if text[i].isspace():
+                  i += 1
+                  continue
+              message, i = decoder.raw_decode(text, i)
+              if "finding" in message and message["finding"].get("trace", [{}])[0].get("function"):
+                  found.add(message["finding"]["osv"])
+          print("reachable:", sorted(found) or "none")
+          sys.exit(1 if found - allowed else 0)
+          PY

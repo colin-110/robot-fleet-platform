@@ -1,0 +1,21 @@
+# Weekly update proposals. Python packages are not listed: they are pinned
+# with hashes in requirements.lock files (regenerated with pip-compile, see the
+# Dockerfiles), and CI's pip-audit fails on any known vulnerability in them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /frontend/robot-fleet-dashboard
+    schedule: { interval: weekly }
+    groups:
+      dev-tools: { dependency-type: development }
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /simulator
+      - /timescaledb
+      - /frontend/robot-fleet-dashboard
+      - /mosquitto
+    schedule: { interval: weekly }

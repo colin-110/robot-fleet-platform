@@ -17,14 +17,14 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
 | `TELEMETRY_API_KEY` | *required* | Master key: the API's broker password, accepted on robot HTTP endpoints while `ALLOW_SHARED_INGEST_KEY` is on, and the signing key that console tickets are derived from |
 | `MQTT_ENABLED` | `false` (`true` in Compose) | Run the ingest consumer and command publisher in the API |
-| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker address |
+| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker address for the API's own connection (plain, inside the Docker network) |
 | `MQTT_SERVICE_USERNAME` | `fleetops` | The API's broker account (it and `fleetops-<name>` are the only superusers) |
 | `MQTT_BATCH_SIZE` / `MQTT_BATCH_WAIT_MS` | `200` / `250` | A batch is written when it reaches this size or age |
 | `MQTT_INGEST_GROUP` | unset | Use shared subscriptions in this group, for several API processes. Mosquitto does not restore shared subscriptions after a restart, so leave unset unless you need it |
 | `TICKET_TTL_SECONDS` | `300` | Lifetime of a browser console ticket |
-| `ALLOW_SHARED_INGEST_KEY` | `true` | Whether the master key still works on robot endpoints. Set `false` once every robot has a device key |
+| `ALLOW_SHARED_INGEST_KEY` | `true` (`false` in `.env.example`) | Whether the master key still works on robot endpoints. `false` once every robot has a device key; the simulator issues its own |
 | `DEVICE_KEY_REFRESH_SECONDS` | `60` | How often each instance reloads device keys (multi-instance only), which bounds how long a revoked key keeps working on other instances |
-| `AUTH_MODE` | `open` (`required` in production) | `open` = public console, no accounts; `required` = every console action needs a JWT |
+| `AUTH_MODE` | `open` (`required` in production and in `.env.example`) | `open` = public console, no accounts; `required` = every console action, and every read, needs a JWT |
 | `JWT_SECRET` | derived from `TELEMETRY_API_KEY` | Access-token signing key. 32+ chars required in production |
 | `JWT_TTL_SECONDS` | `3600` | Access-token lifetime |
 | `BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | unset | Creates the first admin at startup, only while the users table is empty |
@@ -34,7 +34,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
 | `CONSOLE_RATE_LIMIT_PER_MINUTE` | `60` | Separate, tighter budget for what a browser can reach without the master key: minting console tickets and dispatching commands |
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Sign-in attempts per client IP. bcrypt slows each password guess; this caps how many there are |
-| `REQUIRE_AUTH_FOR_READS` | `false` | Whether fleet status, analytics, and events require an API key |
+| `REQUIRE_AUTH_FOR_READS` | follows `AUTH_MODE` | Whether fleet status, positions, history, analytics, events and alarms need a signed-in user (any role) or the master key. Set `false` explicitly for a public read-only demo |
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |
 | `MAX_CLOCK_SKEW_SECONDS` | `300` | Plain JSON readings dated further ahead than this are clamped to server time. Agent messages are corrected by the robot's measured clock offset instead |
@@ -79,7 +79,14 @@ The API runs as **one process**. The broker replaces each client id with the use
 On every push and pull request to `main`:
 
 1. **`backend-test`** - `ruff check` across `backend/`, `simulator/` and `agent/`, plus `ruff format --check`. Both are blocking. Then pytest with coverage against a real TimescaleDB service container and an anonymous Mosquitto broker for the MQTT integration tests, and the agent's own tests (wire format, outbox, and the client against the broker, including a robot killed with `-9`).
-2. **`frontend-test`** - ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
+2. **`frontend-test`** - `npm audit` (fails on a moderate or worse known vulnerability), ESLint (zero errors, zero warnings), Vitest with coverage, and a production Vite build. All blocking.
+3. **`security`** - all blocking:
+   - **gitleaks** over the whole git history, since a secret deleted from the files is still in it (`.gitleaks.toml` allows two known false positives, nothing else).
+   - **pip-audit** on both Python lockfiles, checked by hash.
+   - **Trivy** on the API, simulator, database, dashboard and broker images as built: fails on any high or critical vulnerability that has a fix available. Ones the distribution has not fixed yet are reported but cannot fail the build, since there is nothing to upgrade to.
+   - **govulncheck** on the broker's go-auth plugin, which Trivy cannot read (it is a shared library, not an executable). Fails on any vulnerability in code the plugin calls, except one with no fixed release that only go-auth's unused JWT backend reaches (`mosquitto/go-updates.txt`).
+
+Actions are pinned to commits rather than tags. Dependabot (`.github/dependabot.yml`) proposes weekly updates for npm packages, Docker base images and the actions; Python packages are pinned with hashes in `requirements.lock` files and regenerated with `pip-compile` (command in each Dockerfile).
 
 ---
 
@@ -131,6 +138,45 @@ The report gives readings and messages per second, batch time and fill, how busy
 
 ---
 
+## Backups
+
+**None are set up, on purpose.** Every reading in the local stack and the demo comes from the simulator, so a lost database costs nothing: restart the stack and new data arrives within minutes.
+
+What is and is not protected today:
+
+| Failure | Outcome |
+| :--- | :--- |
+| A process crashes (API, broker, database restart) | Nothing lost: robots keep readings until the API confirms they are committed (see [Architecture](architecture.md#message-flow)) |
+| The database's disk is lost | All history is gone. There is no replica and no backup |
+
+A manual snapshot, and its restore, if you want to keep one:
+
+```bash
+docker compose exec -T db pg_dump -U postgres -d robotfleet -Fc > robotfleet.dump
+docker compose exec -T db pg_restore -U postgres -d robotfleet --clean < robotfleet.dump
+```
+
+A deployment with real fleet data would need, before anything else:
+
+1. **Continuous WAL archiving** (for example with pgBackRest or a managed database's point-in-time recovery) to object storage, so the database can be restored to any moment, not only to the last nightly dump.
+2. **A daily full backup** kept for an agreed period, stored in a different account or region from the database.
+3. **A tested restore**: run one on a schedule and time it. A backup that has never been restored is not known to work.
+4. **A replica** if downtime matters as well as data, so a failed disk is a failover rather than a restore.
+
+---
+
+## TLS
+
+| Connection | Encrypted | How |
+| :--- | :--- | :--- |
+| Robots to the broker | Yes, port 8883 | TLS 1.2 or later; robots verify the broker's certificate. The simulator connects this way |
+| Browsers to the dashboard and its API and WebSocket | Yes, port 443 | TLS 1.2 or 1.3; port 80 only redirects. HSTS for a day |
+| The API to the broker, database and itself | No | Inside the Docker network only; plain MQTT on 1883 is not published |
+
+The one-off compose service `certs` runs `tls/make-certs.sh` on every start: on the first it creates a local certificate authority and a server certificate (localhost, 127.0.0.1, and the service names `mqtt` and `frontend`, plus anything in `TLS_EXTRA_SANS`); afterwards it keeps both and renews the server certificate when under 30 days remain. The CA's private key lives in its own volume (`tls_ca`) that no running service mounts. A public deployment would replace the local CA with certificates from a trusted authority (for example Let's Encrypt) and raise HSTS to a year.
+
+---
+
 ## Security posture
 
 | Control | Implementation |
@@ -146,7 +192,8 @@ The report gives readings and messages per second, batch time and fill, how busy
 | Client IP resolution | The rate limiter reads `X-Forwarded-For` using a configured trusted-proxy count, taking the Nth entry from the right. Trusting the leftmost entry would let a client spoof its own address; trusting the socket peer would collapse the entire fleet into one bucket behind a proxy. |
 | Rate limiting | In-process sliding window per client IP on the HTTP ingest and console endpoints, exact for one process. Idle clients are pruned once 10,000 are tracked. The broker has no per-client rate limit yet. |
 | State transitions | Atomic compare-and-set `UPDATE` statements, so concurrent writers cannot both commit a transition. |
-| Read endpoints | Fleet status, analytics, and events are public by default so the hosted demo works without shipping a key to every browser. This is a setting (`REQUIRE_AUTH_FOR_READS`), not a hardcoded exemption; it is the wrong default for real fleet positions. |
+| Read endpoints | Protected whenever sign-in is required: a signed-in user of any role, or the master key. A public read-only demo must set `REQUIRE_AUTH_FOR_READS=false` on purpose. |
+| Secrets in the example file | Every secret in `.env.example` is a `change-me` placeholder, and the API refuses to start while one remains. `python3 backend/make_env.py` fills them with random values and writes `.env` readable by its owner only. |
 | Secret hygiene | `.env`, `*.pem`, `*.key`, and `*.tfvars` are gitignored |
 
 ---

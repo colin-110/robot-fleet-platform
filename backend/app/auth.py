@@ -87,19 +87,28 @@ async def verify_console_access(
     raise HTTPException(status_code=401, detail="Invalid API key or console ticket")
 
 
-async def verify_read_access(x_api_key: str = Header(None)):
-    """Auth for read-only endpoints, gated by ``REQUIRE_AUTH_FOR_READS``.
+async def verify_read_access(x_api_key: str = Header(None), authorization: str = Header(None)):
+    """Auth for read-only endpoints, when ``reads_require_auth`` is on.
 
-    The hosted demo serves fleet status and analytics publicly so the dashboard
-    works without shipping a key to every browser. That is a deliberate choice
-    for a demo with synthetic data, not an oversight - but it is the wrong
-    default for real fleet positions, so it is a setting rather than a
-    hardcoded exemption.
+    It follows AUTH_MODE unless REQUIRE_AUTH_FOR_READS says otherwise, so a
+    deployment that requires sign-in protects its fleet's positions and
+    history as well as its commands. Accepts the master key (server-side
+    callers) or a signed-in user's token, of any role: viewers may read.
+    Before, only the master key was accepted, so protecting reads locked the
+    dashboard out and leaving them public was the only workable choice.
     """
-    if not settings.require_auth_for_reads:
+    from app.security import decode_access_token
+
+    if not settings.reads_require_auth:
         return
-    if not is_valid_api_key(x_api_key):
-        raise HTTPException(status_code=401, detail="Invalid API Key")
+    if is_valid_api_key(x_api_key):
+        return
+    token = _bearer_token(authorization)
+    if token is not None and decode_access_token(token) is not None:
+        return
+    raise HTTPException(
+        status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"}
+    )
 
 
 # ── Identity (JWT) ──────────────────────────────────────────────────

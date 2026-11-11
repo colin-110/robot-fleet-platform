@@ -14,7 +14,7 @@ import RobotCard from "./components/RobotCard";
 import Sidebar from "./components/Sidebar";
 import LoadingSkeleton from "./components/LoadingSkeleton";
 import LoginScreen from "./components/LoginScreen";
-import { fetchAuthConfig, getSession, restoreSession } from "./utils/auth";
+import { fetchAuthConfig, getSession, onSessionChange, restoreSession } from "./utils/auth";
 
 // Leaflet (map) and Recharts (both chart components) are the two heaviest
 // dependencies in the bundle. Splitting them into their own chunks keeps the
@@ -259,6 +259,8 @@ function FleetConsole() {
 function App() {
   const { status, loginRequired } = useAuthGate();
   const [session, setSession] = useState(() => getSession());
+  // Sign-out, or an expired token the API rejected, returns to the login screen.
+  useEffect(() => onSessionChange(setSession), []);
 
   if (status === "checking") return null;
   if (loginRequired && !session) {

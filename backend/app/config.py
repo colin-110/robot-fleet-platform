@@ -6,6 +6,7 @@ The app will fail fast at startup if required settings are missing.
 """
 
 import logging
+import os
 from functools import lru_cache
 
 from pydantic import Field, model_validator
@@ -13,10 +14,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+# Marks every secret in .env.example; the app refuses to start with one.
+PLACEHOLDER = "change-me"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # ENV_FILE="" reads no file at all: the test suite sets it, so tests
+        # mean the same on a developer machine (with its own backend/.env) as
+        # in CI (with none).
+        env_file=os.environ.get("ENV_FILE", ".env") or None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -155,10 +162,11 @@ class Settings(BaseSettings):
 
     # ── Access control ──────────────────────────────────────────────
 
-    # Whether the read-only endpoints (fleet status, analytics, events) require
-    # an API key. Defaults to public so the hosted demo works without shipping
-    # a key to every browser; set true for any deployment with real data.
-    require_auth_for_reads: bool = False
+    # Whether the read-only endpoints (fleet status, positions, telemetry,
+    # analytics, events, alarms) need a signed-in user or the master key.
+    # Unset follows AUTH_MODE: required sign-in protects the data too, not
+    # only the commands. Set false explicitly for a public read-only demo.
+    require_auth_for_reads: bool | None = None
 
     # ── Derived / validated ─────────────────────────────────────────
 
@@ -208,6 +216,12 @@ class Settings(BaseSettings):
         return self.resolved_auth_mode == "required"
 
     @property
+    def reads_require_auth(self) -> bool:
+        if self.require_auth_for_reads is not None:
+            return self.require_auth_for_reads
+        return self.auth_required
+
+    @property
     def async_database_url(self) -> str:
         """Return the database URL with the asyncpg driver."""
         if self.database_url.startswith("postgresql://"):
@@ -235,6 +249,26 @@ class Settings(BaseSettings):
                 )
             if self.jwt_secret is not None and len(self.jwt_secret) < 32:
                 raise ValueError("JWT_SECRET must be at least 32 characters in production.")
+
+        # The example file's placeholders are public, so a copy that was never
+        # filled in would run with credentials anyone can read. In every
+        # environment, not only production: a local stack is reachable too.
+        placeholders = [
+            name
+            for name, value in (
+                ("TELEMETRY_API_KEY", self.telemetry_api_key),
+                ("DATABASE_URL", self.database_url),
+                ("BOOTSTRAP_ADMIN_PASSWORD", self.bootstrap_admin_password),
+                ("JWT_SECRET", self.jwt_secret),
+            )
+            if value and PLACEHOLDER in value
+        ]
+        if placeholders:
+            raise ValueError(
+                f"{', '.join(placeholders)} still hold the example's placeholder "
+                f"('{PLACEHOLDER}...'). Run `python3 backend/make_env.py` to fill "
+                "them with random values."
+            )
 
         if self.websocket_backend not in ("direct", "mqtt"):
             raise ValueError(

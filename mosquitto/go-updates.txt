@@ -1,0 +1,15 @@
+# Go modules to update past their known-vulnerable versions, one per line
+# (module@version), applied with `go get` before building go-auth. Found with
+# govulncheck on the built plugin (vulnerabilities in code it calls):
+#   docker run --rm -v "$PWD":/s golang:1.27.4-trixie sh -c \
+#     'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck -mode=binary /s/go-auth.so'
+# Not fixable here: github.com/golang-jwt/jwt v3 (GO-2025-3553) has no fixed
+# release. Only go-auth's JWT backend uses it, and this broker runs the HTTP
+# backend alone (auth_opt_backends http in mosquitto.conf).
+github.com/klauspost/compress@v1.20.2
+golang.org/x/net@v0.60.0
+golang.org/x/text@v0.42.0
+google.golang.org/grpc@v1.83.2
+github.com/Azure/go-ntlmssp@v0.1.1
+go.mongodb.org/mongo-driver@v1.17.7
+github.com/sirupsen/logrus@v1.9.3
