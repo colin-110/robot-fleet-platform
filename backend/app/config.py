@@ -155,10 +155,11 @@ class Settings(BaseSettings):
 
     # ── Access control ──────────────────────────────────────────────
 
-    # Whether the read-only endpoints (fleet status, analytics, events) require
-    # an API key. Defaults to public so the hosted demo works without shipping
-    # a key to every browser; set true for any deployment with real data.
-    require_auth_for_reads: bool = False
+    # Whether the read-only endpoints (fleet status, positions, telemetry,
+    # analytics, events, alarms) need a signed-in user or the master key.
+    # Unset follows AUTH_MODE: required sign-in protects the data too, not
+    # only the commands. Set false explicitly for a public read-only demo.
+    require_auth_for_reads: bool | None = None
 
     # ── Derived / validated ─────────────────────────────────────────
 
@@ -206,6 +207,12 @@ class Settings(BaseSettings):
     @property
     def auth_required(self) -> bool:
         return self.resolved_auth_mode == "required"
+
+    @property
+    def reads_require_auth(self) -> bool:
+        if self.require_auth_for_reads is not None:
+            return self.require_auth_for_reads
+        return self.auth_required
 
     @property
     def async_database_url(self) -> str:

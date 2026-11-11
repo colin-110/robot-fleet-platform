@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import axios from "axios";
 import {
   authHeaders,
+  installAuthInterceptors,
   fetchAuthConfig,
   getSession,
   login,
@@ -184,5 +186,68 @@ describe("fetchAuthConfig", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 503 }));
 
     await expect(fetchAuthConfig()).rejects.toThrow("503");
+  });
+});
+
+describe("installAuthInterceptors", () => {
+  // An axios instance whose adapter records each request and answers with
+  // the given status, so nothing goes over the network.
+  function client(status = 200) {
+    const seen = [];
+    const instance = axios.create({
+      adapter: async (config) => {
+        seen.push(config);
+        const response = { data: {}, status, statusText: "", headers: {}, config };
+        if (status >= 400) {
+          const error = new Error(`status ${status}`);
+          error.config = config;
+          error.response = response;
+          throw error;
+        }
+        return response;
+      },
+    });
+    installAuthInterceptors(instance);
+    return { instance, seen };
+  }
+
+  async function signIn() {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(loginResponse()));
+    await login("alice", "pw");
+    vi.unstubAllGlobals();
+  }
+
+  it("sends the token with reads to the API", async () => {
+    await signIn();
+    const { instance, seen } = client();
+    await instance.get("/api/v1/robots/status");
+    expect(seen[0].headers.Authorization).toBe("Bearer token-abc");
+  });
+
+  it("sends nothing when signed out, and nothing to other hosts", async () => {
+    const { instance, seen } = client();
+    await instance.get("/api/v1/robots/status");
+    expect(seen[0].headers.Authorization).toBeUndefined();
+
+    await signIn();
+    await instance.get("https://tile.openstreetmap.org/1/1/1.png");
+    expect(seen[1].headers.Authorization).toBeUndefined();
+  });
+
+  it("signs out when the API rejects the token", async () => {
+    await signIn();
+    const changes = [];
+    onSessionChange((next) => changes.push(next));
+    const { instance } = client(401);
+    await expect(instance.get("/api/v1/robots/status")).rejects.toThrow();
+    expect(getSession()).toBeNull();
+    expect(changes).toEqual([null]);
+  });
+
+  it("keeps the session on other errors", async () => {
+    await signIn();
+    const { instance } = client(500);
+    await expect(instance.get("/api/v1/robots/status")).rejects.toThrow();
+    expect(getSession()).not.toBeNull();
   });
 });

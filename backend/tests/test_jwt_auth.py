@@ -31,6 +31,9 @@ settings = get_settings()
 @pytest.fixture
 def auth_required(monkeypatch):
     monkeypatch.setattr(settings, "auth_mode", "required")
+    # Reads follow the mode, whatever a local backend/.env says, so these
+    # tests mean the same on a developer machine as in CI.
+    monkeypatch.setattr(settings, "require_auth_for_reads", None)
 
 
 async def _make_user(db, username: str, password: str, role: str):
@@ -441,3 +444,55 @@ async def test_bootstrap_warns_when_required_mode_has_no_credentials(
 
     assert any("nobody can sign in" in record.getMessage() for record in caplog.records)
     assert await UserRepository(db).count() == 0
+
+
+# ── Reads ───────────────────────────────────────────────────────────
+
+READ_PATHS = [
+    "/api/v1/robots/status",
+    "/api/v1/analytics/fleet",
+    "/api/v1/events",
+    "/api/v1/alarms",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", READ_PATHS)
+async def test_required_sign_in_protects_the_fleet_data_too(client, auth_required, path):
+    """Before, only commands needed a sign-in: positions and history stayed public."""
+    response = await client.get(path)
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [VIEWER, OPERATOR])
+async def test_a_signed_in_user_can_read(client, auth_required, role):
+    token, _ = issue_access_token("alice", role)
+    for path in READ_PATHS:
+        response = await client.get(path, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, path
+
+
+@pytest.mark.asyncio
+async def test_the_master_key_can_read(client, auth_required):
+    headers = {"X-API-Key": settings.telemetry_api_key}
+    assert (await client.get("/api/v1/robots/status", headers=headers)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_bad_or_expired_token_cannot_read(client, auth_required):
+    expired, _ = issue_access_token("alice", VIEWER, ttl_seconds=-10)
+    for value in ("Bearer not-a-token", f"Bearer {expired}", "Basic abc"):
+        response = await client.get("/api/v1/robots/status", headers={"Authorization": value})
+        assert response.status_code == 401, value
+
+
+@pytest.mark.asyncio
+async def test_open_mode_keeps_reads_public(client):
+    assert (await client.get("/api/v1/robots/status")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_reads_can_be_made_public_on_purpose(client, auth_required, monkeypatch):
+    monkeypatch.setattr(settings, "require_auth_for_reads", False)
+    assert (await client.get("/api/v1/robots/status")).status_code == 200

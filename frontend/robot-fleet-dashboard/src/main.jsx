@@ -9,6 +9,9 @@ import "./styles/global.css";
 
 import ErrorBoundary from "./components/ErrorBoundary";
 import App from "./App.jsx";
+import { installAuthInterceptors } from "./utils/auth";
+
+installAuthInterceptors();
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
