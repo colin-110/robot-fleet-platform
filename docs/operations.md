@@ -17,7 +17,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `DATABASE_URL` | *required* | PostgreSQL connection string |
 | `TELEMETRY_API_KEY` | *required* | Master key: the API's broker password, accepted on robot HTTP endpoints while `ALLOW_SHARED_INGEST_KEY` is on, and the signing key that console tickets are derived from |
 | `MQTT_ENABLED` | `false` (`true` in Compose) | Run the ingest consumer and command publisher in the API |
-| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker address |
+| `MQTT_HOST` / `MQTT_PORT` | `localhost` / `1883` | Broker address for the API's own connection (plain, inside the Docker network) |
 | `MQTT_SERVICE_USERNAME` | `fleetops` | The API's broker account (it and `fleetops-<name>` are the only superusers) |
 | `MQTT_BATCH_SIZE` / `MQTT_BATCH_WAIT_MS` | `200` / `250` | A batch is written when it reaches this size or age |
 | `MQTT_INGEST_GROUP` | unset | Use shared subscriptions in this group, for several API processes. Mosquitto does not restore shared subscriptions after a restart, so leave unset unless you need it |
@@ -162,6 +162,18 @@ A deployment with real fleet data would need, before anything else:
 2. **A daily full backup** kept for an agreed period, stored in a different account or region from the database.
 3. **A tested restore**: run one on a schedule and time it. A backup that has never been restored is not known to work.
 4. **A replica** if downtime matters as well as data, so a failed disk is a failover rather than a restore.
+
+---
+
+## TLS
+
+| Connection | Encrypted | How |
+| :--- | :--- | :--- |
+| Robots to the broker | Yes, port 8883 | TLS 1.2 or later; robots verify the broker's certificate. The simulator connects this way |
+| Browsers to the dashboard and its API and WebSocket | Yes, port 443 | TLS 1.2 or 1.3; port 80 only redirects. HSTS for a day |
+| The API to the broker, database and itself | No | Inside the Docker network only; plain MQTT on 1883 is not published |
+
+The one-off compose service `certs` runs `tls/make-certs.sh` on every start: on the first it creates a local certificate authority and a server certificate (localhost, 127.0.0.1, and the service names `mqtt` and `frontend`, plus anything in `TLS_EXTRA_SANS`); afterwards it keeps both and renews the server certificate when under 30 days remain. The CA's private key lives in its own volume (`tls_ca`) that no running service mounts. A public deployment would replace the local CA with certificates from a trusted authority (for example Let's Encrypt) and raise HSTS to a year.
 
 ---
 
