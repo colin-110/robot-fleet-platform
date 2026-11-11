@@ -83,7 +83,8 @@ On every push and pull request to `main`:
 3. **`security`** - all blocking:
    - **gitleaks** over the whole git history, since a secret deleted from the files is still in it (`.gitleaks.toml` allows two known false positives, nothing else).
    - **pip-audit** on both Python lockfiles, checked by hash.
-   - **Trivy** on the API, simulator, database and dashboard images as built: fails on any high or critical vulnerability that has a fix available. Ones the distribution has not fixed yet are reported but cannot fail the build, since there is nothing to upgrade to.
+   - **Trivy** on the API, simulator, database, dashboard and broker images as built: fails on any high or critical vulnerability that has a fix available. Ones the distribution has not fixed yet are reported but cannot fail the build, since there is nothing to upgrade to.
+   - **govulncheck** on the broker's go-auth plugin, which Trivy cannot read (it is a shared library, not an executable). Fails on any vulnerability in code the plugin calls, except one with no fixed release that only go-auth's unused JWT backend reaches (`mosquitto/go-updates.txt`).
 
 Actions are pinned to commits rather than tags. Dependabot (`.github/dependabot.yml`) proposes weekly updates for npm packages, Docker base images and the actions; Python packages are pinned with hashes in `requirements.lock` files and regenerated with `pip-compile` (command in each Dockerfile).
 
