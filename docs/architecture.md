@@ -2,46 +2,51 @@
 
 [← Back to README](../README.md)
 
-Robots talk to an MQTT broker; the API consumes from it, writes every reading
-through one function into TimescaleDB, and pushes commands back through the
-broker. Dashboards get updates over WebSocket. The design is in
-[ADR 0001](adr/0001-mqtt-and-timescale.md) and
-[ADR 0002](adr/0002-efficiency-and-error-budgeted-telemetry.md).
+Robots talk to an MQTT broker over TLS; the API consumes from it, writes every
+reading through one function into TimescaleDB, and pushes commands back
+through the broker. Background jobs watch the fleet (alarms), keep exact
+rollups, and store each field as line segments with a guaranteed error.
+Dashboards connect over HTTPS and get updates over a WebSocket. The design is
+in [ADR 0001](adr/0001-mqtt-and-timescale.md),
+[ADR 0002](adr/0002-efficiency-and-error-budgeted-telemetry.md) and
+[ADR 0003](adr/0003-line-segment-storage.md).
 
 ```mermaid
 graph TB
   subgraph Robots["Robots (one MQTT connection each)"]
-    SIM["Simulator on fleetops-agent<br/>device key, persistent session,<br/>last will"]
+    SIM["Simulator on fleetops-agent<br/>dual prediction, device key,<br/>persistent session, last will"]
     OUTBOX[("On-disk outbox<br/>(SQLite)")]
   end
 
-  BROKER["Mosquitto + go-auth<br/>QoS 1 queues, retained presence"]
+  BROKER["Mosquitto 2.0.23 + go-auth<br/>TLS on 8883, QoS 1 queues,<br/>retained presence"]
 
   subgraph API["FastAPI (one process)"]
     AUTH["/internal/mqtt/*<br/>login + ACL callbacks"]
     INGEST["Ingest consumer<br/>micro-batches, ack after commit"]
     PERSIST["persist()<br/>insert + roster + robot_state"]
-    CMDS["Command publisher"]
-    PRES["Presence (in memory)"]
+    MODEL["Fleet model (in memory)<br/>battery filter, silence, peer scores"]
+    ALARMS["Alarm engine<br/>+ signed webhooks"]
+    BUDGET["Message budget<br/>sets robots' tolerances"]
+    JOBS["Background jobs<br/>rollups, line segments,<br/>raw retention, command timeouts"]
     WS["WebSocket manager<br/>(bounded per-client queues)"]
-    TIMEOUTS["Command timeout sweep"]
+    METRICS["/metrics (Prometheus)"]
   end
 
-  PG["TimescaleDB<br/>telemetry hypertable, robot_state,<br/>robots, commands, events, users"]
+  PG["TimescaleDB 2.31<br/>keyframes, segments, state changes,<br/>rollups, incidents, robots, commands,<br/>events, alarms, users"]
+  NGINX["nginx: HTTPS on 443<br/>security headers"]
   DASH["Dashboard<br/>(React + Leaflet)"]
 
   SIM --- OUTBOX
-  SIM <-->|"MQTT, CBOR envelopes"| BROKER
+  SIM <-->|"MQTT over TLS, CBOR envelopes"| BROKER
   BROKER -->|"login / ACL checks"| AUTH
-  BROKER -->|"telemetry, events,<br/>command status, presence"| INGEST
+  BROKER -->|"telemetry, events, command status,<br/>presence (plain, inside Docker)"| INGEST
   INGEST --> PERSIST --> PG
-  INGEST --> PRES
-  CMDS -->|"fleet/&lt;id&gt;/commands"| BROKER
+  INGEST --> MODEL --> ALARMS
   INGEST -->|"fleet/&lt;id&gt;/stored"| BROKER
+  BUDGET -->|"fleet/&lt;id&gt;/config"| BROKER
+  JOBS --> PG
   INGEST --> WS
-  DASH <-->|"WebSocket"| WS
-  DASH -->|"REST"| API
-  TIMEOUTS --> PG
+  DASH -->|"HTTPS + WSS"| NGINX --> API
 ```
 
 ## Topics
@@ -142,7 +147,7 @@ disagree.
 
 **A roster, so absence is detectable.** Fleet status is the robot roster LEFT JOINed onto each robot's latest state, not a `GROUP BY` over recent telemetry. The distinction is the difference between a working monitor and a broken one: deriving the fleet from telemetry alone means a robot that stops reporting eventually falls outside the query window and silently disappears from the dashboard, so a unit that died an hour ago is indistinguishable from one that never existed. Registered robots are always listed, and missing telemetry renders `OFFLINE` with the roster's last-seen time. The roster populates itself: every write registers the robot in the same transaction.
 
-**Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. A fast clock is corrected: the agent's envelope says when it was sent by the robot's clock, and a message cannot have been sent after it arrived, so every time in it moves back by the difference and readings keep their spacing. Plain JSON readings dated beyond a configurable skew are clamped to the receive time instead, since a device with a fast clock would otherwise sit permanently at the head of "most recent" and make a dead robot look alive.
+**Device-reported timestamps.** A reading carries when the *device* measured it, not when the server received it. This is what makes store-and-forward possible: a robot that buffers readings through a network outage can upload them with their real times instead of collapsing an entire outage onto one instant. A fast clock is corrected: the agent's envelope says when it was sent by the robot's clock, and a message cannot have been sent after it arrived, so every time in it moves back by the difference and readings keep their spacing. Plain JSON readings carry no send time, so when a robot's newest reading is dated beyond a configurable skew, all of that robot's readings in the batch move back by the same amount, keeping their spacing; otherwise a device with a fast clock would sit permanently at the head of "most recent" and make a dead robot look alive.
 
 **Dual prediction.** The robot sends a keyframe (values and rates) only when what it measures strays from what the server is predicting. Between keyframes, fleet status carries position and battery forward to now and reports the bound (`bounds`, from the robot's applied tolerances), and `GET /api/v1/robots/<id>/track` rebuilds any time range from the stored keyframes. The same predictor runs in Python on both sides and in JavaScript on the dashboard, held together by shared test vectors.
 
@@ -160,6 +165,10 @@ disagree.
 
 **Pushed commands with compare-and-set transitions.** Commands move through an explicit state machine (`PENDING` to `DISPATCHED` to `ACKNOWLEDGED` to `EXECUTING` to `COMPLETED`). Dispatching a command and advancing its status are each a single conditional `UPDATE ... WHERE status = :expected`, so when two writers race, exactly one matches a row and the loser receives a `409`. A command is dispatched when the broker acknowledges it into the robot's session; a robot may acknowledge straight from `PENDING`, since the push can reach it before the server processes that acknowledgement. Doing the validation in application code and writing afterwards would allow both writers to observe the same state and both commit. Expired commands are swept to `TIMEOUT` by the API, with a Postgres advisory lock so several processes do not scan at once.
 
+**Each field as line segments with a guaranteed error.** An hourly job stores every numeric field on its own as straight lines, each within a tolerance of the keyframes at every instant (checked at every corner of the stored path, and re-anchored at a real value for each new segment), and status and mission as their changes. Measured: about half the disk of the raw keyframes after compression. Raw keyframes are then dropped only for hours whose segments verified, after copying the data around alarms to a year-long archive ([ADR 0003](adr/0003-line-segment-storage.md)).
+
+**Secure by default.** Sign-in is required for commands and for reading the fleet's data; each robot has its own key; robots and browsers connect over TLS; every published port listens on localhost unless told otherwise; the API refuses to start with placeholder secrets; and CI fails on leaked secrets or known-vulnerable dependencies and images ([SECURITY.md](../SECURITY.md)).
+
 ---
 
 ## Repository structure
@@ -171,6 +180,9 @@ disagree.
 | [`frontend/robot-fleet-dashboard/`](../frontend/robot-fleet-dashboard) | React 19 and Vite dashboard (Leaflet map, Recharts, WebSocket hooks), served by nginx. |
 | [`agent/`](../agent) | `fleetops-agent`, the robot-side package: wire format, on-disk outbox, MQTT client, settings. |
 | [`simulator/`](../simulator) | Async Python simulator with physics-based robots, each sending through its own agent. |
-| [`mosquitto/`](../mosquitto) | Broker configuration (go-auth against the API, persistence, queues). |
+| [`mosquitto/`](../mosquitto) | The broker, built from source (Mosquitto and the go-auth plugin), and its configuration: go-auth against the API, TLS, persistence, queues. |
+| [`timescaledb/`](../timescaledb) | The database image: TimescaleDB on Postgres 16 with its outdated helper tools removed. |
+| [`tls/`](../tls) | Makes the local certificate authority and the broker's and dashboard's certificate on first start. |
+| [`loadtest/`](../loadtest) | Runs the stack with any number of simulated robots and reports where it strains. |
 | [`docs/`](.) | Architecture, operations, and design decisions ([`adr/`](adr)). |
-| [`.github/workflows/`](../.github/workflows) | CI/CD pipeline. |
+| [`.github/workflows/`](../.github/workflows) | CI: lint, tests, and security scans (secrets, dependencies, images). |
