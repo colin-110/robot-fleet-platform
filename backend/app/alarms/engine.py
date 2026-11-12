@@ -26,6 +26,7 @@ from app.intelligence import anomaly, fleet
 from app.models import Alarm
 from app.mqtt import predict
 from app.repositories.config_repo import applied_settings
+from app.repositories.robot_repo import RobotRepository
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,10 @@ class AlarmEngine:
         # Robots' applied settings, reread at most every APPLIED_REFRESH seconds.
         self._applied: dict[int, dict] = {}
         self._applied_at = float("-inf")
+        # Retired robots raise nothing (reread with the applied settings).
+        self._retired: set[int] = set()
+        # Alarms ``retire`` cleared, told to listeners once the caller commits.
+        self._pending_events: list[tuple[str, dict]] = []
 
     async def _load(self) -> None:
         async with self.session_factory() as db:
@@ -126,10 +131,11 @@ class AlarmEngine:
         if now.timestamp() - self._applied_at >= APPLIED_REFRESH_SECONDS:
             async with self.session_factory() as db:
                 self._applied = await applied_settings(db)
+                self._retired = await RobotRepository(db).retired_ids()
             self._applied_at = now.timestamp()
         peers = anomaly.scores(fleet.robots(), now.timestamp())
         changes = []
-        for robot_id in sorted(set(fleet.robots()) | set(presence.robot_ids())):
+        for robot_id in sorted((set(fleet.robots()) | set(presence.robot_ids())) - self._retired):
             values, feature = metrics(robot_id, peers, now, self._applied.get(robot_id))
             for rule in RULES:
                 value = values.get(rule.metric)
@@ -193,6 +199,30 @@ class AlarmEngine:
                     await listener(event, alarm)
                 except Exception:
                     logger.exception("Alarm listener failed")
+
+    async def retire(self, db, robot_id: int) -> int:
+        """Clear a retired robot's open alarms and stop watching it. The
+        caller commits. Returns how many were cleared."""
+        now = datetime.now(timezone.utc)
+        stmt = (
+            update(Alarm)
+            .where(Alarm.robot_id == robot_id, Alarm.state != CLEARED)
+            .values(state=CLEARED, cleared_at=now)
+            .returning(Alarm)
+        )
+        cleared = [alarm_dict(a) for a in (await db.execute(stmt)).scalars()]
+        self._retired.add(robot_id)
+        if self._open is not None:
+            for key in [k for k in self._open if k[0] == robot_id]:
+                del self._open[key]
+        self.tracker.pending = {k: v for k, v in self.tracker.pending.items() if k[0] != robot_id}
+        self._pending_events = [("cleared", a) for a in cleared]
+        return len(cleared)
+
+    async def notify_pending(self) -> None:
+        """Tell listeners about alarms ``retire`` cleared, once committed."""
+        events, self._pending_events = self._pending_events, []
+        await self._notify(events)
 
     async def acknowledge(self, db, alarm_id: int, by: str) -> dict | None:
         """ACTIVE to ACKNOWLEDGED. None if the alarm is not ACTIVE."""

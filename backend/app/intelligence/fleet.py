@@ -126,6 +126,11 @@ def robots() -> dict[int, RobotModel]:
     return _robots
 
 
+def forget(robot_id: int) -> None:
+    """Drop a retired robot's model."""
+    _robots.pop(robot_id, None)
+
+
 def reset() -> None:
     _robots.clear()
     _arrivals.clear()

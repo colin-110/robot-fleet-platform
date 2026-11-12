@@ -100,6 +100,12 @@ def get(robot_id: int) -> Presence | None:
     return _state.get(robot_id)
 
 
+def forget(robot_id: int) -> None:
+    """Drop a retired robot."""
+    _state.pop(robot_id, None)
+    _connections.pop(robot_id, None)
+
+
 def reset() -> None:
     _state.clear()
     _connections.clear()

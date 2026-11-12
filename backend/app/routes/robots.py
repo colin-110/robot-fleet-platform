@@ -5,10 +5,10 @@ API v1 routes - Robot status and fleet overview.
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import device_keys
+from app import device_keys, presence
 from app.auth import require_role, verify_console_access, verify_key_admin, verify_read_access
 from app.database import get_db
 from app.mqtt import config as mqtt_config
@@ -76,6 +76,39 @@ async def revoke_device_key(
     await db.commit()
     device_keys.set_hash(robot_id, None)
     logger.info("Revoked device keys for robot %d", robot_id)
+
+
+@router.delete("/robots/{robot_id}", status_code=204)
+async def retire_robot(
+    request: Request,
+    robot_id: int = Path(..., ge=0),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_key_admin),
+):
+    """Retire a robot: off the fleet view, its key revoked, its open alarms
+    cleared, and its retained broker messages removed so it is not announced
+    again. Its history is kept. Issuing it a new key brings it back."""
+    from app.alarms import engine as alarm_engine
+    from app.intelligence import fleet
+    from app.mqtt import topics
+
+    if not await RobotRepository(db).retire(robot_id):
+        raise HTTPException(status_code=404, detail="Robot not found")
+    engine = alarm_engine.engine
+    if engine is not None:
+        await engine.retire(db, robot_id)
+    await db.commit()
+    if engine is not None:
+        await engine.notify_pending()
+    device_keys.set_hash(robot_id, None)
+    presence.forget(robot_id)
+    fleet.forget(robot_id)
+    consumer = getattr(request.app.state, "mqtt", None)
+    if consumer is not None:
+        # An empty retained message deletes the retained one.
+        for channel in (topics.PRESENCE, topics.CONFIG_REPORTED, topics.CONFIG, topics.STORED):
+            consumer.client.publish(topics.topic(robot_id, channel), b"", qos=1, retain=True)
+    logger.info("Retired robot %d", robot_id)
 
 
 def _config_response(robot_id: int, row) -> RobotConfigResponse:
