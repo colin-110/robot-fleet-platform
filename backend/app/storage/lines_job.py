@@ -89,14 +89,15 @@ def _dt(t: float) -> datetime:
     return datetime.fromtimestamp(t, tz=timezone.utc)
 
 
-def _keyframe(row: Telemetry) -> dict:
-    return {
-        "timestamp": row.timestamp.timestamp(),
-        **{name: getattr(row, name) for name in lines.FIELDS},
-        "vx": row.vx,
-        "vy": row.vy,
-        "battery_rate": row.battery_rate,
-    }
+# Read as plain tuples, not ORM objects: an hour of a large fleet is tens of
+# thousands of rows, and building objects for them held up the event loop.
+COLUMNS = ("robot_id", "timestamp", *lines.FIELDS, "vx", "vy", "battery_rate")
+
+
+def _keyframe(row) -> dict:
+    frame = dict(zip(COLUMNS[2:], row[2:], strict=True))
+    frame["timestamp"] = row[1].timestamp()
+    return frame
 
 
 def tolerances(applied: dict | None, scale: float) -> tuple[dict[str, float], float]:
@@ -130,7 +131,7 @@ class LinesJob:
             + [predict.DEFAULTS["heartbeat_s"]]
         )
         query = (
-            select(Telemetry)
+            select(*(getattr(Telemetry, c) for c in COLUMNS))
             .where(
                 Telemetry.timestamp >= _dt(start - longest * lines.HEARTBEAT_GRACE),
                 Telemetry.timestamp < _dt(end),
@@ -140,10 +141,36 @@ class LinesJob:
         if robot_ids is not None:
             query = query.where(Telemetry.robot_id.in_(list(robot_ids)))
         by_robot: dict[int, list[dict]] = {}
-        for row in (await db.execute(query)).scalars():
-            by_robot.setdefault(row.robot_id, []).append(_keyframe(row))
+        # Streamed in batches with a pause between, so a large fleet's hour
+        # does not hold the event loop while it is read.
+        result = await db.stream(query)
+        async for batch in result.partitions(2000):
+            for row in batch:
+                by_robot.setdefault(row[0], []).append(_keyframe(row))
+            await asyncio.sleep(0)
         self.stats["keyframes_read"] += sum(len(f) for f in by_robot.values())
 
+        # The fitting is plain Python and takes seconds for a large fleet: in
+        # a worker thread, so the event loop (ingest, dashboards) keeps going.
+        rows = await asyncio.to_thread(self._fit, by_robot, applied, start, end)
+
+        old = delete(TelemetryLine).where(
+            TelemetryLine.t0 >= _dt(start), TelemetryLine.t0 < _dt(end)
+        )
+        if robot_ids is not None:
+            old = old.where(TelemetryLine.robot_id.in_(list(robot_ids)))
+        await db.execute(old)
+        table = TelemetryLine.__table__
+        for i in range(0, len(rows), 1000):
+            await db.execute(pg_insert(table), rows[i : i + 1000])
+            # Let ingest and dashboards in between batches.
+            await asyncio.sleep(0)
+        self.stats["hours"] += 1
+        self.stats["lines_written"] += len(rows)
+        return len(rows)
+
+    def _fit(self, by_robot: dict, applied: dict, start: float, end: float) -> list[dict]:
+        """Segments for every robot and field in one hour, each verified."""
         rows = []
         for robot_id, frames in by_robot.items():
             field_tol, heartbeat = tolerances(applied.get(robot_id), self.scale)
@@ -174,19 +201,7 @@ class LinesJob:
                     }
                     for ln in found
                 )
-
-        old = delete(TelemetryLine).where(
-            TelemetryLine.t0 >= _dt(start), TelemetryLine.t0 < _dt(end)
-        )
-        if robot_ids is not None:
-            old = old.where(TelemetryLine.robot_id.in_(list(robot_ids)))
-        await db.execute(old)
-        table = TelemetryLine.__table__
-        for i in range(0, len(rows), 1000):
-            await db.execute(pg_insert(table), rows[i : i + 1000])
-        self.stats["hours"] += 1
-        self.stats["lines_written"] += len(rows)
-        return len(rows)
+        return rows
 
     async def run_once(self, now: float | None = None) -> int:
         """Do every finished hour not done yet, and any redone by late data."""
