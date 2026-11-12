@@ -60,7 +60,22 @@ The rules (`backend/app/alarms/rules.py`): `BATTERY_CRITICAL` below 10 %, `BATTE
 
 ### History
 
-`GET /api/v1/robots/<id>/history?start=&end=&resolution=minute|hour` returns exact time-weighted rollups: averages, minimum and maximum battery, distance and how many seconds of the bucket the robot was heard from. A job recomputes the last ten minutes every minute, and further back for keyframes that arrive late. Retention: keyframes 30 days, minutes a year, hours indefinitely.
+`GET /api/v1/robots/<id>/history?start=&end=&resolution=minute|hour` returns exact time-weighted rollups: averages, minimum and maximum battery, distance and how many seconds of the bucket the robot was heard from. A job recomputes the last ten minutes every minute, and further back for keyframes that arrive late.
+
+`GET /api/v1/robots/<id>/series?field=&start=&end=` returns one field as line segments (`value(t) = v0 + slope * (t - t0)`), or status and mission as their changes, with the error bound: the robot's tolerance plus the server's. An hourly job writes the segments, about half the disk of the raw keyframes after compression at the default tolerance ([ADR 0003](adr/0003-line-segment-storage.md)).
+
+| Data | Kept |
+| :--- | :--- |
+| Raw keyframes | `RAW_RETENTION_DAYS` (30), and only once their hours' segments are done and verified |
+| Keyframes around alarms (`telemetry_incidents`) | A year |
+| Line segments and state changes | Indefinitely (compressed after a week) |
+| Minute rollups / hour rollups | A year / indefinitely |
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `LINE_TOLERANCE_SCALE` | `1.0` | Segments stay within the robot's own tolerance times this. 1 stores 62% fewer numbers than the keyframe rows, 2 stores 74%, 3 stores 80% (simulated fleet) |
+| `RAW_RETENTION_DAYS` | `30` | Raw keyframes older than this are dropped, subject to the conditions above. History beyond it comes from the segments |
+| `INCIDENT_MARGIN_MINUTES` | `10` | How far either side of an alarm counts as part of the incident kept in `telemetry_incidents` |
 
 ### Robot settings
 

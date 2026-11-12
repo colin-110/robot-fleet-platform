@@ -18,12 +18,12 @@ emergency stop.
 ## Architecture
 
 ~~~text
-Robot agent ──MQTT (QoS 1, CBOR, device keys, last will)──► Mosquitto ──► FastAPI ──► TimescaleDB
- on-disk outbox                                                 │  ack after    │     telemetry (hypertable)
-  ▲  ▲                                                          │  commit       │     robot_state, commands,
-  │  └──── commands, settings, "stored up to N" ◄───────────────┘               │     events, robots, users
-  └─ deletes only what the server confirmed                                     ▼
-                                                                WebSocket ──► Dashboard (React, Vercel)
+Robot agent ──MQTT over TLS (QoS 1, CBOR, device keys, last will)──► Mosquitto ──► FastAPI ──► TimescaleDB
+ on-disk outbox                                                         │  ack after    │     keyframes, line segments,
+  ▲  ▲                                                                  │  commit       │     rollups, robot_state,
+  │  └──── commands, settings, "stored up to N" ◄───────────────────────┘               │     commands, events, alarms
+  └─ deletes only what the server confirmed                                             ▼
+                                                                HTTPS + WebSocket ──► Dashboard (React)
 ~~~
 
 The broker is the queue: the API acknowledges a message only after it is
@@ -37,8 +37,9 @@ process.
 
 This is a redesign aimed at running a fleet on the smallest possible server.
 See
-[ADR 0001](docs/adr/0001-mqtt-and-timescale.md) and
-[ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md).
+[ADR 0001](docs/adr/0001-mqtt-and-timescale.md),
+[ADR 0002](docs/adr/0002-efficiency-and-error-budgeted-telemetry.md) and
+[ADR 0003](docs/adr/0003-line-segment-storage.md).
 
 ## Engineering decisions
 
@@ -65,6 +66,14 @@ See
   chooses every robot's tolerance to meet it, tighter where an alarm,
   an anomaly or a watching operator makes accuracy matter, with feedback on
   what the fleet actually sends.
+- **Each field as line segments.** An hourly job stores every numeric field
+  as straight lines, each within a tolerance of the stored keyframes at every
+  instant, re-anchored at a real value for each new segment, and checked
+  before anything relies on it. About half the disk of the keyframes after
+  compression; raw keyframes are dropped only for hours that verified, after
+  the data around alarms is copied to a year-long archive. This is the
+  swinging-door idea industrial historians use, combined with the robots'
+  dual prediction under one error budget.
 - **Exact rollups.** Minutes and hours are time-weighted integrals of the
   prediction between keyframes, not averages of unevenly spaced rows; minutes
   kept a year, hours indefinitely.
@@ -81,8 +90,8 @@ See
   sent while the robot is offline is delivered when it reconnects.
 - **Current state on write.** `robot_state` holds one row per robot, updated
   only by newer readings, so fleet status never scans history.
-- **TimescaleDB.** One-day chunks, compression after a day, and a 30-day
-  retention policy that drops whole chunks instead of deleting rows.
+- **TimescaleDB.** One-day chunks, compression after a day, and old raw
+  keyframes dropped as whole chunks instead of deleted row by row.
 - **Per-robot device keys.** Random keys stored only as hashes. They are the
   robots' broker credentials: a robot can only use its own topics and cannot
   take over another robot's session.
@@ -91,6 +100,13 @@ See
 - **Bounded WebSocket queues.** A slow client drops its oldest frames instead of
   stalling fan-out for everyone else.
 - **Short-lived console tickets.** The browser never holds the master API key.
+- **Secure by default.** Sign-in for commands and data, TLS for robots and
+  browsers, ports on localhost only, no placeholder secrets accepted, current
+  patched images, non-root containers, and CI that fails on leaked secrets or
+  known-vulnerable packages and images. See [SECURITY.md](SECURITY.md).
+- **Measured.** Prometheus metrics at `/metrics`, and a load test that runs
+  any number of robots and reports where the stack strains: 1,000 robots at
+  about 40% of one CPU core.
 
 ## Testing
 

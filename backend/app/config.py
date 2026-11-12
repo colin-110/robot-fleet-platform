@@ -153,6 +153,20 @@ class Settings(BaseSettings):
     # ── Alarms ──────────────────────────────────────────────────────
     # How often every robot is checked against the alarm rules (in memory).
     alarm_interval_seconds: float = 2.0
+
+    # ── Line segments (app/storage/lines_job.py) ────────────────────
+    # Each field's segments stay within the robot's own tolerance times this,
+    # so the total error against what the robot measured is at most (1 +
+    # scale) times its tolerance. Measured on the simulator's fleet: 1 stores
+    # 62% fewer numbers than the keyframe rows, 2 stores 74%, 3 stores 80%.
+    line_tolerance_scale: float = 1.0
+    # Raw keyframes older than this are dropped (app/storage/retention.py),
+    # but only for hours whose line segments are done and verified, and after
+    # copying the keyframes around every alarm to telemetry_incidents (kept a
+    # year). History beyond it is served from the segments.
+    raw_retention_days: float = 30.0
+    # How far either side of an alarm counts as part of the incident.
+    incident_margin_minutes: float = 10.0
     # POST every alarm change here, signed with the secret (app/alarms/webhook.py).
     alarm_webhook_url: str | None = None
     alarm_webhook_secret: str | None = None
