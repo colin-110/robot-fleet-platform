@@ -151,10 +151,28 @@ class RobotRepository:
         await self.db.execute(stmt, rows)
 
     async def set_key_hash(self, robot_id: int, key_hash: str) -> None:
-        """Store a new device key hash, registering the robot if needed."""
+        """Store a new device key hash, registering the robot if needed, or
+        bringing it back if it was retired."""
         stmt = pg_insert(Robot).values(id=robot_id, is_active=True, key_hash=key_hash)
-        stmt = stmt.on_conflict_do_update(index_elements=[Robot.id], set_={"key_hash": key_hash})
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[Robot.id],
+            set_={"key_hash": key_hash, "is_active": True, "decommissioned_at": None},
+        )
         await self.db.execute(stmt)
+
+    async def retire(self, robot_id: int) -> bool:
+        """Mark a robot decommissioned and revoke its key. False if unknown."""
+        stmt = (
+            update(Robot)
+            .where(Robot.id == robot_id)
+            .values(is_active=False, decommissioned_at=func.now(), key_hash=None)
+            .returning(Robot.id)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none() is not None
+
+    async def retired_ids(self) -> set[int]:
+        rows = await self.db.execute(select(Robot.id).where(Robot.is_active.is_(False)))
+        return set(rows.scalars())
 
     async def revoke_key(self, robot_id: int) -> bool:
         """Clear the device key hash. Returns False if the robot is unknown."""

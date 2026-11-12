@@ -380,6 +380,15 @@
   font-size: 13px;
 }
 
+.loginDemo {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-line);
+  color: var(--text);
+  font-size: 12px;
+}
+
 .loginField {
   display: flex;
   flex-direction: column;

@@ -26,12 +26,13 @@ from app.database import get_db
 from app.repositories.user_repo import UserRepository
 from app.schemas import (
     AuthConfigResponse,
+    DemoAccount,
     LoginRequest,
     PrincipalResponse,
     TicketResponse,
     TokenResponse,
 )
-from app.security import hash_password, issue_access_token, verify_password
+from app.security import OPERATOR, hash_password, issue_access_token, verify_password
 from app.tickets import SCOPE_CONSOLE, issue_ticket
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,13 @@ _DUMMY_HASH = hash_password("timing-equalizer-not-a-real-password")
 async def auth_config():
     """Whether this deployment expects a login. Public by necessity - the
     dashboard has to ask before it can know what to render."""
+    demo = None
+    if _demo_ready and settings.auth_required:
+        demo = DemoAccount(username=settings.demo_username, password=settings.demo_password)
     return AuthConfigResponse(
         auth_mode=settings.resolved_auth_mode,
         login_required=settings.auth_required,
+        demo=demo,
     )
 
 
@@ -127,6 +132,58 @@ async def create_console_ticket(
     """
     ticket, expires_at = issue_ticket(SCOPE_CONSOLE)
     return TicketResponse(ticket=ticket, expires_at=expires_at, scope=SCOPE_CONSOLE)
+
+
+# Whether the demo account exists as an operator, so it may be shown.
+_demo_ready = False
+
+
+async def ensure_demo_user(session_factory=None) -> bool:
+    """Create the demo account (an operator) if it is configured, or set its
+    password to the configured one. Returns whether it may be shown.
+
+    Never touches, or reveals, an account with another role: if the demo name
+    is taken by an admin, the demo is off and the log says why.
+    """
+    global _demo_ready
+    _demo_ready = False
+    if not (settings.auth_required and settings.demo_username and settings.demo_password):
+        return False
+    from app.database import AsyncSessionLocal
+
+    try:
+        async with (session_factory or AsyncSessionLocal)() as session:
+            repo = UserRepository(session)
+            user = await repo.get_by_username(settings.demo_username)
+            if user is None:
+                await repo.create(
+                    username=settings.demo_username,
+                    password_hash=hash_password(settings.demo_password),
+                    role=OPERATOR,
+                )
+            elif user.role != OPERATOR:
+                logger.error(
+                    "DEMO_USERNAME %r belongs to a %s account; the demo account is off, "
+                    "so its credentials are not shown. Choose another name.",
+                    settings.demo_username,
+                    user.role,
+                )
+                return False
+            elif not verify_password(settings.demo_password, user.password_hash):
+                user.password_hash = hash_password(settings.demo_password)
+                await session.commit()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Demo account setup failed")
+        return False
+    logger.warning(
+        "Demo account %r is on: its password is shown on the login screen, so anyone "
+        "who can reach the dashboard can sign in as an operator.",
+        settings.demo_username,
+    )
+    _demo_ready = True
+    return True
 
 
 async def bootstrap_admin_user() -> None:

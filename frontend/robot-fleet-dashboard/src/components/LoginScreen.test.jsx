@@ -79,4 +79,23 @@ describe("LoginScreen", () => {
 
     expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
   });
+
+  it("fills in and shows a demo account when the deployment offers one", async () => {
+    const user = userEvent.setup();
+    vi.mocked(login).mockResolvedValue({ username: "demo", role: "operator" });
+    render(<LoginScreen demo={{ username: "demo", password: "fleetops-demo" }} />);
+
+    expect(screen.getByLabelText("Username")).toHaveValue("demo");
+    expect(screen.getByLabelText("Password")).toHaveValue("fleetops-demo");
+    expect(screen.getByText(/Demo account/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(login).toHaveBeenCalledWith("demo", "fleetops-demo"));
+  });
+
+  it("starts empty without a demo account", () => {
+    render(<LoginScreen />);
+    expect(screen.getByLabelText("Username")).toHaveValue("");
+    expect(screen.queryByText(/Demo account/)).not.toBeInTheDocument();
+  });
 });

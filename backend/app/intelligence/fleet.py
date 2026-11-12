@@ -22,6 +22,9 @@ class RobotModel:
     # Server arrival time of each recent keyframe, for the budget allocator.
     keyframes: deque = field(default_factory=lambda: deque(maxlen=RATE_SAMPLES))
     first_seen: float | None = None
+    # The robot's drain while it was last moving, and when (anomaly.py): a
+    # property of its battery that does not stop being true when it parks.
+    moving_drain: tuple[float, float] | None = None
 
     def restart_rate(self, now: float) -> None:
         """Forget the keyframe rate, e.g. because the robot's tolerances changed."""
@@ -121,6 +124,11 @@ def get(robot_id: int) -> RobotModel | None:
 
 def robots() -> dict[int, RobotModel]:
     return _robots
+
+
+def forget(robot_id: int) -> None:
+    """Drop a retired robot's model."""
+    _robots.pop(robot_id, None)
 
 
 def reset() -> None:

@@ -32,6 +32,10 @@ RATE_Q = 1e-7
 RATE_Q_OBSERVED = 2e-6
 # A rise larger than this means the battery is charging or was swapped.
 JUMP = 2.0
+# A reported rate beyond this (%/s) is impossible, a battery empty in under two
+# minutes, and is ignored; the level alone updates the filter. Robots with an
+# older agent could report one when two readings came milliseconds apart.
+MAX_REPORTED_RATE = 1.0
 
 
 @dataclass
@@ -71,7 +75,7 @@ class BatteryKalman:
         # Update with the level, then with the rate if there is one.
         self.x, self.p = [b, r], [[p00, p01], [p01, p11]]
         self._measure(0, level, LEVEL_SIGMA**2)
-        if rate is not None:
+        if rate is not None and abs(rate) <= MAX_REPORTED_RATE:
             self._measure(1, rate, RATE_SIGMA**2)
 
     def _measure(self, i: int, z: float, noise: float) -> None:

@@ -101,3 +101,13 @@ def test_a_drain_that_speeds_up_is_followed_and_the_range_admits_it():
     true_minutes = level / 0.4 / 60
     runtime = kf.runtime()
     assert runtime.low <= true_minutes <= runtime.high
+
+
+def test_an_impossible_reported_rate_is_ignored():
+    from app.intelligence.kalman import BatteryKalman
+
+    f = BatteryKalman()
+    for t in range(0, 300, 10):
+        f.update(float(t), 80.0 - 0.01 * t, -0.01)
+    f.update(305.0, 76.95, -12.0)  # 720 %/min: two readings milliseconds apart
+    assert f.rate == pytest.approx(-0.01, abs=0.005)

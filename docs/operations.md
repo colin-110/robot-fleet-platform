@@ -34,6 +34,7 @@ All settings are environment variables, loaded and validated by `pydantic-settin
 | `RATE_LIMIT_PER_MINUTE` | `600` | Ingest requests permitted per client per minute |
 | `CONSOLE_RATE_LIMIT_PER_MINUTE` | `60` | Separate, tighter budget for what a browser can reach without the master key: minting console tickets and dispatching commands |
 | `LOGIN_RATE_LIMIT_PER_MINUTE` | `10` | Sign-in attempts per client IP. bcrypt slows each password guess; this caps how many there are |
+| `DEMO_USERNAME` / `DEMO_PASSWORD` | unset (`demo` / `fleetops-demo` in `.env.example`) | A demo account shown and filled in on the login screen: an operator, never an admin, and refused if the name belongs to another role. Public by design, so only for synthetic data |
 | `REQUIRE_AUTH_FOR_READS` | follows `AUTH_MODE` | Whether fleet status, positions, history, analytics, events and alarms need a signed-in user (any role) or the master key. Set `false` explicitly for a public read-only demo |
 | `OFFLINE_AFTER_SECONDS` | `60` | Seconds of silence before a robot is reported OFFLINE |
 | `FLEET_WINDOW_MINUTES` | `15` | How far back fleet status scans for telemetry |

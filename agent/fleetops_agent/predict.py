@@ -142,6 +142,12 @@ class RateEstimator:
     restarts its estimate instead of averaging across the jump.
     """
 
+    # Readings closer together than this (seconds) do not update the rates:
+    # over a few milliseconds sensor noise dominates, and a 0.06 % difference
+    # 5 ms apart read as a drain of over 700 % a minute. The next reading is
+    # measured from the earlier one instead.
+    MIN_INTERVAL = 0.5
+
     def __init__(self, position_alpha: float = 0.8, battery_alpha: float = 0.2) -> None:
         self.alphas = {"vx": position_alpha, "vy": position_alpha, "battery_rate": battery_alpha}
         self._last: dict | None = None
@@ -153,6 +159,8 @@ class RateEstimator:
         last = self._last
         if last is not None:
             dt = reading["timestamp"] - last["timestamp"]
+            if 0 < dt < self.MIN_INTERVAL:
+                return self._filled(out)
             if dt > 0:
                 for name, rate in LINEAR.items():
                     now, before = reading.get(name), last.get(name)
@@ -169,6 +177,9 @@ class RateEstimator:
                         else alpha * instant + (1 - alpha) * previous
                     )
         self._last = reading
+        return self._filled(out)
+
+    def _filled(self, out: dict) -> dict:
         for rate in LINEAR.values():
             if out.get(rate) is None and rate in self._rates:
                 out[rate] = self._rates[rate]
