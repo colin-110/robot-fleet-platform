@@ -123,3 +123,16 @@ def test_tighter_tolerances_from_the_server_mean_more_keyframes(tmp_path):
         counts.append(agent.stats["keyframes"])
         agent.outbox.close()
     assert counts[0] < counts[1]
+
+
+def test_readings_milliseconds_apart_do_not_make_an_absurd_rate():
+    from fleetops_agent.predict import RateEstimator
+
+    est = RateEstimator()
+    est.update({"timestamp": 0.0, "battery": 66.0})
+    est.update({"timestamp": 2.0, "battery": 65.93})  # -0.035 %/s
+    burst = est.update({"timestamp": 2.005, "battery": 65.87})  # 5 ms later
+    assert abs(burst["battery_rate"]) < 0.1
+    after = est.update({"timestamp": 4.0, "battery": 65.86})
+    # Measured from the reading 2 s before, not from the one 5 ms before.
+    assert after["battery_rate"] == pytest.approx(-0.035, abs=0.01)
