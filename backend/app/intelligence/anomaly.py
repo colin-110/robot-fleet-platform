@@ -8,9 +8,14 @@ for, as a mean and standard deviation would be. The spread has a floor so a
 fleet that reads almost identically does not flag tiny differences.
 
 Features: temperature, and battery drain (percent per minute, from the
-Kalman filter). Drain is compared only among robots that are moving: an idle
-robot drains a fraction of what a driving one does, and comparing the two
-flags whichever is in the minority, which says nothing about either robot.
+Kalman filter). Drain is compared only while moving: an idle robot drains a
+fraction of what a driving one does, and comparing the two flags whichever is
+in the minority, which says nothing about either robot. A robot's drain while
+moving is a property of its battery, though, so it is kept for
+``MOVING_DRAIN_HOLD`` seconds after the robot stops. Without that, a robot
+with a worn battery left the comparison at every stop, its score fell back to
+its ordinary temperature, and its alarm cleared and was raised again on every
+mission.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ MAX_DRAIN_SIGMA = 0.015
 # The drain's spread is at least this share of the fleet's median drain, so
 # ordinary differences between robots are not anomalies.
 RELATIVE_DRAIN_FLOOR = 0.1
+# How long a robot's drain while moving still counts after it stops (s).
+MOVING_DRAIN_HOLD = 600.0
 
 
 @dataclass(frozen=True)
@@ -41,7 +48,7 @@ class Anomaly:
     z: float
 
 
-def _features(model) -> dict[str, float]:
+def _features(model, now: float) -> dict[str, float]:
     out = {}
     temperature = model.last.get("temperature")
     if temperature is not None:
@@ -49,14 +56,16 @@ def _features(model) -> dict[str, float]:
     moving = (model.last.get("speed") or 0.0) >= MOVING_SPEED
     settled = model.battery.t is not None and model.battery.rate_sigma <= MAX_DRAIN_SIGMA
     if moving and settled and model.battery.rate < 0:
-        out["drain"] = -model.battery.rate * 60
+        model.moving_drain = (-model.battery.rate * 60, now)
+    if model.moving_drain is not None and now - model.moving_drain[1] <= MOVING_DRAIN_HOLD:
+        out["drain"] = model.moving_drain[0]
     return out
 
 
 def scores(models: dict, now: float) -> dict[int, Anomaly]:
     """The anomaly score of every robot with recent readings."""
     fresh = {
-        robot_id: _features(model)
+        robot_id: _features(model, now)
         for robot_id, model in models.items()
         if now - model.last.get("t", 0.0) <= MAX_AGE_SECONDS
     }

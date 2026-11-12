@@ -100,3 +100,33 @@ def test_ordinary_differences_in_drain_are_not_anomalies():
     models = {i: model(35.0, drain_per_min=2.5) for i in range(8)}
     models[99] = model(35.0, drain_per_min=2.9)
     assert anomaly.scores(models, NOW)[99].score < 2
+
+
+def test_a_worn_battery_stays_flagged_while_the_robot_is_parked():
+    """It used to leave the comparison at every stop, so its alarm flapped."""
+    models = {i: model(35.0, drain_per_min=1.0 + 0.02 * (i % 3)) for i in range(10)}
+    models[99] = model(35.0, drain_per_min=2.0)
+    assert anomaly.scores(models, NOW)[99].feature == "drain"
+
+    models[99].last["speed"] = 0.0  # parks between missions
+    later = NOW + 60
+    for m in models.values():
+        m.last["t"] = later
+    parked = anomaly.scores(models, later)[99]
+    assert parked.feature == "drain" and parked.z > 4
+
+
+def test_a_parked_robots_drain_expires():
+    models = {i: model(35.0, drain_per_min=1.0 + 0.02 * (i % 3)) for i in range(10)}
+    models[99] = model(35.0, drain_per_min=2.0)
+    anomaly.scores(models, NOW)
+    models[99].last["speed"] = 0.0
+    much_later = NOW + anomaly.MOVING_DRAIN_HOLD + 60
+    for m in models.values():
+        m.last["t"] = much_later
+        m.moving_drain = (m.moving_drain[0], NOW) if m.moving_drain else None
+    # The others are still moving: their drain is refreshed, the parked one's is not.
+    for i in range(10):
+        models[i].moving_drain = None
+    result = anomaly.scores(models, much_later)
+    assert result[99].feature == "temperature"
