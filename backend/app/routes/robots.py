@@ -24,7 +24,7 @@ from app.schemas import (
     TrackPoint,
 )
 from app.security import OPERATOR
-from app.services import track_service
+from app.services import series_service, track_service
 from app.services.robot_service import RobotService
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,29 @@ async def robot_track(
     config = await config_repo.get_config(db, robot_id)
     applied = config.reported if config else None
     return track_service.reconstruct(rows, start, end, step_s, applied)
+
+
+@router.get("/robots/{robot_id}/series")
+async def robot_series(
+    field: str,
+    start: datetime,
+    end: datetime,
+    robot_id: int = Path(..., ge=0),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(verify_read_access),
+):
+    """One field over time, from line segments (``app/services/series_service.py``).
+
+    Numeric fields come back as ``segments`` (``value(t) = v0 + slope * (t -
+    t0)`` for ``t0 <= t <= t1``) with their ``error_bound``; status and
+    mission fields as ``changes``. Time no segment covers is unknown. At most
+    seven days per request.
+    """
+    start, end = _utc(start), _utc(end)
+    problem = series_service.check(field, start, end)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    return await series_service.series(db, robot_id, field, start, end)
 
 
 @router.get("/robots/{robot_id}/history")
