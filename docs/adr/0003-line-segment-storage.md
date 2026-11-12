@@ -1,6 +1,6 @@
 # ADR 0003: Storing each field as line segments with a guaranteed error
 
-Status: accepted; segments are written and verified, raw keyframes are still kept 30 days and still serve every read. Builds on [ADR 0002](0002-efficiency-and-error-budgeted-telemetry.md).
+Status: accepted and built. Raw keyframes are still kept 30 days by default; lowering `RAW_RETENTION_DAYS` is what turns the saving below into freed disk. Builds on [ADR 0002](0002-efficiency-and-error-budgeted-telemetry.md).
 
 ## Problem
 
@@ -44,11 +44,13 @@ Zero verification failures over the run. Counting stored numbers instead of byte
 
 The saving is smaller than an early estimate (86%) that fitted lines through the stored points only. Following the prediction between them is what the guarantee needs, and the stored path has a jump of about one tolerance at almost every keyframe, because that is exactly when a robot sends one. Dual prediction had already removed the predictable part.
 
-## Not done yet
+## Around the segments
 
-1. **Status and mission fields.** Keyframe rows also hold the robot's status and mission; segments do not. They change rarely and need only their changes stored.
-2. **Reading from segments.** History, charts and rollups still read keyframes.
-3. **Shorter raw retention.** Only after the two steps above, and only for hours whose segments verified, should raw keyframes be dropped sooner than 30 days. Raw data around alarms and anomalies should stay longer, for investigations.
+- **Status and mission** are stored as their changes (`telemetry_states`): each hour's value in force at its start, then each change, and NULL where it becomes unknown.
+- **Reading.** `GET /api/v1/robots/<id>/series?field=&start=&end=` returns a field's segments (or changes) with its error bound: stored ones for finished hours, fitted from raw keyframes on the fly for the hour in progress and for any finished hour with nothing stored. `/track` rebuilds a route from the position and battery segments once its raw keyframes are gone.
+- **Raw retention** (`app/storage/retention.py`) replaces the fixed 30-day policy. Raw keyframes are dropped only when older than `RAW_RETENTION_DAYS`, only for hours the segments job has finished, and never for an hour with a segment that failed verification (saved, and cleared only by a full redo that passes). Before dropping, the keyframes within `INCIDENT_MARGIN_MINUTES` of any alarm on the same robot are copied to `telemetry_incidents`, kept a year, so incidents keep their exact data.
+
+Not built: precision that falls with age, or that follows importance beyond keeping alarm data raw; curves for position (measured 25% fewer pieces than lines for x and y); the minute and hour rollups still read raw keyframes, so they are computed before raw data goes.
 
 ## Consequences
 
