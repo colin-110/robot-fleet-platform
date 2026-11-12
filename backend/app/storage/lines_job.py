@@ -46,6 +46,9 @@ BLOCK = 3600.0
 SETTLE = 120.0
 INTERVAL = 300.0
 WATERMARK_KEY = "lines"
+# Hours with a segment that failed verification. Their raw keyframes are never
+# dropped (app/storage/retention.py) until a full redo of the hour passes.
+FAILED_KEY = "lines_failed"
 # Where a fresh install starts, and the most a restarted job catches up.
 FIRST_RUN_BACKFILL = 6 * 3600.0
 MAX_CATCH_UP = 48 * 3600.0
@@ -110,6 +113,22 @@ def _keyframe(row) -> dict:
     return frame
 
 
+async def failed_hours(db) -> list[float]:
+    saved = await db.get(FleetSetting, FAILED_KEY)
+    return saved.value["hours"] if saved else []
+
+
+async def failed_hours_save(db, hours: list[float]) -> None:
+    stmt = pg_insert(FleetSetting).values(
+        key=FAILED_KEY, value={"hours": hours}, updated_at=datetime.now(timezone.utc)
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["key"],
+        set_={"value": stmt.excluded.value, "updated_at": stmt.excluded.updated_at},
+    )
+    await db.execute(stmt)
+
+
 def tolerances(applied: dict | None, scale: float) -> tuple[dict[str, float], float]:
     """Each field's tolerance and the heartbeat, from a robot's applied settings."""
     tol = predict.tolerances(applied)
@@ -163,7 +182,9 @@ class LinesJob:
 
         # The fitting is plain Python and takes seconds for a large fleet: in
         # a worker thread, so the event loop (ingest, dashboards) keeps going.
+        failures_before = self.stats["verify_failures"]
         rows, states = await asyncio.to_thread(self._fit, by_robot, applied, start, end)
+        await self._record(db, start, self.stats["verify_failures"] > failures_before, robot_ids)
 
         for model, when, new in (
             (TelemetryLine, TelemetryLine.t0, rows),
@@ -181,6 +202,20 @@ class LinesJob:
         self.stats["hours"] += 1
         self.stats["lines_written"] += len(rows)
         return len(rows)
+
+    async def _record(self, db, hour: float, failed: bool, robot_ids) -> None:
+        """Keep the set of hours with failed segments: added on a failure;
+        cleared only by a redo of the whole hour (a partial one did not
+        recheck the other robots)."""
+        saved = await db.get(FleetSetting, FAILED_KEY)
+        hours = set(saved.value["hours"]) if saved else set()
+        before = set(hours)
+        if failed:
+            hours.add(hour)
+        elif robot_ids is None:
+            hours.discard(hour)
+        if hours != before:
+            await failed_hours_save(db, sorted(hours))
 
     def _fit(self, by_robot: dict, applied: dict, start: float, end: float):
         """Segments for every robot and numeric field in one hour, each

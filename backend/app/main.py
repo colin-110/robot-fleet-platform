@@ -47,6 +47,7 @@ from app.routes.telemetry import router as telemetry_router
 from app.schemas import HealthResponse
 from app.storage.job import RollupJob
 from app.storage.lines_job import LinesJob
+from app.storage.retention import RetentionJob
 from app.tickets import SCOPE_CONSOLE, verify_ticket
 from app.websocket_manager import manager
 
@@ -102,6 +103,10 @@ async def lifespan(app: FastAPI):
     lines_job = LinesJob()
     metrics.sources["lines"] = lines_job
     lines_task = asyncio.create_task(lines_job.run())
+    # Old raw keyframes go only once their segments are done and verified.
+    retention_job = RetentionJob()
+    metrics.sources["retention"] = retention_job
+    retention_task = asyncio.create_task(retention_job.run())
 
     # The message budget (off until an operator sets one).
     budget_controller.controller = budget_controller.BudgetController()
@@ -152,6 +157,7 @@ async def lifespan(app: FastAPI):
     budget_task.cancel()
     rollup_task.cancel()
     lines_task.cancel()
+    retention_task.cancel()
     budget_controller.controller = None
     if webhook_task:
         webhook_task.cancel()

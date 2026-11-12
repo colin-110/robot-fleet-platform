@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Table,
     UniqueConstraint,
     func,
     text,
@@ -168,6 +169,16 @@ class Telemetry(Base):
             f"<Telemetry robot_id={self.robot_id} timestamp={self.timestamp} "
             f"status={self.status!r} battery={self.battery}>"
         )
+
+
+# Raw keyframes around alarms, copied here before old raw keyframes are dropped
+# (app/storage/retention.py), so an incident keeps its exact data for a year.
+# The same columns as telemetry.
+telemetry_incidents = Table(
+    "telemetry_incidents",
+    Base.metadata,
+    *(column._copy() for column in Telemetry.__table__.columns),
+)
 
 
 class Event(Base):

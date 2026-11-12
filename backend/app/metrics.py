@@ -150,6 +150,19 @@ class FleetCollector:
             ):
                 yield _counter(f"fleetops_lines_{key}", doc, job.stats[key])
 
+        retention = sources.get("retention")
+        if retention is not None:
+            yield _counter(
+                "fleetops_retention_chunks_dropped",
+                "Chunks of raw keyframes dropped.",
+                retention.stats["chunks_dropped"],
+            )
+            yield _counter(
+                "fleetops_retention_incident_rows_kept",
+                "Raw keyframes around alarms copied to telemetry_incidents.",
+                retention.stats["incident_rows_kept"],
+            )
+
         webhook = sources.get("webhook")
         if webhook is not None:
             for key in ("delivered", "failed", "dropped"):
