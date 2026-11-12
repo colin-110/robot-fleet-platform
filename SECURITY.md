@@ -24,7 +24,6 @@ Details: [docs/operations.md](docs/operations.md#security-posture).
 ## Known limitations
 
 - **The demo account is public.** `.env.example` sets one (`demo` / `fleetops-demo`) and the login screen shows it, so anyone who can reach the dashboard can watch the fleet and send commands. It can never be an admin. Remove `DEMO_USERNAME` and `DEMO_PASSWORD` for a real fleet.
-
 - **No backups and no replica.** A lost database disk loses all history. Fine for synthetic data; see [Backups](docs/operations.md#backups) for what real data needs.
 - **A local certificate authority.** Browsers warn until it is trusted. A public deployment needs certificates from a trusted authority.
 - **Inside the Docker network nothing is encrypted**: the API's connections to the broker and the database are plain.
