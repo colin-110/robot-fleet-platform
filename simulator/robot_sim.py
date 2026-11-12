@@ -1094,7 +1094,9 @@ async def main_async(args, worker_index=0, total_workers=1):
     remainder = robots_count % total_workers
     my_robots = chunk_size + (1 if worker_index < remainder else 0)
 
-    start_id = sum(chunk_size + (1 if i < remainder else 0) for i in range(worker_index)) + 1
+    start_id = (
+        sum(chunk_size + (1 if i < remainder else 0) for i in range(worker_index)) + args.first_id
+    )
     end_id = start_id + my_robots
 
     safe_print(
@@ -1251,6 +1253,12 @@ def main():
     )
     parser.add_argument("--local", action="store_true", help="Use local API URL")
     parser.add_argument("--robots", type=int, default=0)
+    parser.add_argument(
+        "--first-id",
+        type=int,
+        default=1,
+        help="Number the robots from here (the load test uses its own range).",
+    )
     parser.add_argument("--workers", type=int, default=1)
     # Read from the environment, never a flag. A default here was a working key
     # published in a public repo, and passing one on the command line puts it in

@@ -22,11 +22,15 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOAD_CONTAINER = "fleetops-load"
+# The load test's robots are numbered from here, apart from the regular fleet,
+# and retired (with their outboxes deleted) when the test ends.
+FIRST_ID = 100_001
 SERVICES = ("backend", "db", "mqtt")
 SAMPLE_SECONDS = 10
 
@@ -147,7 +151,7 @@ def start_load(robots: int, workers: int, time_scale: float) -> None:
         "--api-url", "http://backend:8000/api/v1/telemetry",
         "--mqtt-host", "mqtt", "--outbox-dir", "/data",
         "--robots", str(robots), "--workers", str(workers),
-        "--time-scale", str(time_scale),
+        "--first-id", str(FIRST_ID), "--time-scale", str(time_scale),
     )  # fmt: skip
 
 
@@ -156,6 +160,29 @@ def stop_load(restore: bool) -> None:
     sh("docker", "rm", "-f", LOAD_CONTAINER, check=False)
     if restore:
         sh("docker", "compose", "start", "simulator", check=False)
+
+
+def clean_up(api: str, key: str, robots: int) -> None:
+    """Retire the load test's robots, so they do not stay in the fleet as
+    offline robots with an alarm each, and delete their outboxes."""
+    retired = 0
+    for robot_id in range(FIRST_ID, FIRST_ID + robots):
+        request = urllib.request.Request(
+            f"{api}/api/v1/robots/{robot_id}", method="DELETE", headers={"X-API-Key": key}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10):
+                retired += 1
+        except urllib.error.HTTPError as error:
+            if error.code != 404:  # 404: never registered
+                print(f"  could not retire robot {robot_id}: HTTP {error.code}")
+    sh(
+        "docker", "compose", "run", "--rm", "--no-deps", "--entrypoint", "sh", "simulator", "-c",
+        f"cd /data && for f in robot-*.db*; do n=${{f#robot-}}; n=${{n%%.db*}}; "
+        f'[ "$n" -ge {FIRST_ID} ] && rm -f "$f"; done; true',
+        check=False,
+    )  # fmt: skip
+    print(f"  retired {retired} load-test robots and deleted their outboxes")
 
 
 def check_load_running() -> None:
@@ -330,6 +357,7 @@ def main() -> None:
     finally:
         if not args.keep:
             stop_load(restore=True)
+            clean_up(args.api, key, args.robots)
     print_report(report)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=2))
