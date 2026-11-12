@@ -331,6 +331,22 @@ class TelemetryLine(Base):
     slope = Column(Float, nullable=False)
 
 
+class TelemetryState(Base):
+    """A robot's non-numeric field (status, mission) from ``t`` on.
+
+    Each hour starts with the value in force, then each change; ``value`` NULL
+    means unknown from ``t`` (no keyframe in force). ``field`` is
+    ``lines.STATE_IDS``.
+    """
+
+    __tablename__ = "telemetry_states"
+
+    robot_id = Column(Integer, primary_key=True)
+    field = Column(SmallInteger, primary_key=True)
+    t = Column(DateTime(timezone=True), primary_key=True)
+    value = Column(String(64), nullable=True)
+
+
 class User(Base):
     """An operator account.
 

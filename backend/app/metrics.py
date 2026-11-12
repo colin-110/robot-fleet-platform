@@ -145,6 +145,7 @@ class FleetCollector:
                 ("hours", "Robot-hours of line segments computed."),
                 ("keyframes_read", "Keyframes read to compute line segments."),
                 ("lines_written", "Line segments written."),
+                ("states_written", "Status and mission changes written."),
                 ("verify_failures", "Segments found further from the stored path than allowed."),
             ):
                 yield _counter(f"fleetops_lines_{key}", doc, job.stats[key])

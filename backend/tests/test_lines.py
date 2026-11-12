@@ -134,3 +134,29 @@ def test_windows_stay_within_tolerance(seed):
     lines = lines_for(frames, "x", end, HEARTBEAT, 0.5, start)
     assert all(ln.t0 >= start - 1e-9 for ln in lines)
     assert worst_error(lines, runs) <= 0.5 + 1e-9
+
+
+def test_a_state_is_stored_as_its_changes():
+    from app.storage.lines import changes
+
+    frames = [kf(t, status="ACTIVE") for t in range(0, 120, 20)]
+    frames += [kf(t, status="CHARGING") for t in range(120, 300, 20)]
+    assert changes(frames, "status", 300, HEARTBEAT, 0) == [(0.0, "ACTIVE"), (120.0, "CHARGING")]
+
+
+def test_a_state_window_starts_with_the_value_in_force():
+    from app.storage.lines import changes
+
+    frames = [kf(0, mission_id="M-1"), kf(20, mission_id="M-1"), kf(40, mission_id="M-2")]
+    assert changes(frames, "mission_id", 60, HEARTBEAT, 30) == [(30.0, "M-1"), (40.0, "M-2")]
+
+
+def test_silence_makes_a_state_unknown():
+    from app.storage.lines import changes
+
+    frames = [kf(0, status="ACTIVE"), kf(300, status="ACTIVE")]
+    assert changes(frames, "status", 330, HEARTBEAT, 0) == [
+        (0.0, "ACTIVE"),
+        (45.0, None),  # heartbeat 30 s with its 1.5x grace
+        (300.0, "ACTIVE"),
+    ]

@@ -32,7 +32,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app import metrics
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import FleetSetting, Telemetry, TelemetryLine
+from app.models import FleetSetting, Telemetry, TelemetryLine, TelemetryState
 from app.mqtt import predict
 from app.repositories import config_repo
 from app.storage import lines
@@ -91,12 +91,22 @@ def _dt(t: float) -> datetime:
 
 # Read as plain tuples, not ORM objects: an hour of a large fleet is tens of
 # thousands of rows, and building objects for them held up the event loop.
-COLUMNS = ("robot_id", "timestamp", *lines.FIELDS, "vx", "vy", "battery_rate")
+COLUMNS = (
+    "robot_id",
+    "timestamp",
+    *lines.FIELDS,
+    "vx",
+    "vy",
+    "battery_rate",
+    *lines.STATE_FIELDS,
+)
 
 
 def _keyframe(row) -> dict:
     frame = dict(zip(COLUMNS[2:], row[2:], strict=True))
     frame["timestamp"] = row[1].timestamp()
+    if frame["mission_start_time"] is not None:
+        frame["mission_start_time"] = frame["mission_start_time"].isoformat()
     return frame
 
 
@@ -115,6 +125,7 @@ class LinesJob:
             "hours": 0,
             "keyframes_read": 0,
             "lines_written": 0,
+            "states_written": 0,
             # A segment further from the stored path than its tolerance. Never
             # expected; counted and logged so a bug cannot pass silently.
             "verify_failures": 0,
@@ -152,28 +163,36 @@ class LinesJob:
 
         # The fitting is plain Python and takes seconds for a large fleet: in
         # a worker thread, so the event loop (ingest, dashboards) keeps going.
-        rows = await asyncio.to_thread(self._fit, by_robot, applied, start, end)
+        rows, states = await asyncio.to_thread(self._fit, by_robot, applied, start, end)
 
-        old = delete(TelemetryLine).where(
-            TelemetryLine.t0 >= _dt(start), TelemetryLine.t0 < _dt(end)
-        )
-        if robot_ids is not None:
-            old = old.where(TelemetryLine.robot_id.in_(list(robot_ids)))
-        await db.execute(old)
-        table = TelemetryLine.__table__
-        for i in range(0, len(rows), 1000):
-            await db.execute(pg_insert(table), rows[i : i + 1000])
-            # Let ingest and dashboards in between batches.
-            await asyncio.sleep(0)
+        for model, when, new in (
+            (TelemetryLine, TelemetryLine.t0, rows),
+            (TelemetryState, TelemetryState.t, states),
+        ):
+            old = delete(model).where(when >= _dt(start), when < _dt(end))
+            if robot_ids is not None:
+                old = old.where(model.robot_id.in_(list(robot_ids)))
+            await db.execute(old)
+            for i in range(0, len(new), 1000):
+                await db.execute(pg_insert(model.__table__), new[i : i + 1000])
+                # Let ingest and dashboards in between batches.
+                await asyncio.sleep(0)
+        self.stats["states_written"] += len(states)
         self.stats["hours"] += 1
         self.stats["lines_written"] += len(rows)
         return len(rows)
 
-    def _fit(self, by_robot: dict, applied: dict, start: float, end: float) -> list[dict]:
-        """Segments for every robot and field in one hour, each verified."""
-        rows = []
+    def _fit(self, by_robot: dict, applied: dict, start: float, end: float):
+        """Segments for every robot and numeric field in one hour, each
+        verified, and the changes of the non-numeric ones."""
+        rows, states = [], []
         for robot_id, frames in by_robot.items():
             field_tol, heartbeat = tolerances(applied.get(robot_id), self.scale)
+            for name, field_id in lines.STATE_IDS.items():
+                states.extend(
+                    {"robot_id": robot_id, "field": field_id, "t": _dt(t), "value": value}
+                    for t, value in lines.changes(frames, name, end, heartbeat, start)
+                )
             for name, field_id in lines.FIELD_IDS.items():
                 tol = field_tol[name]
                 found = lines.lines_for(frames, name, end, heartbeat, tol, start=start)
@@ -201,7 +220,7 @@ class LinesJob:
                     }
                     for ln in found
                 )
-        return rows
+        return rows, states
 
     async def run_once(self, now: float | None = None) -> int:
         """Do every finished hour not done yet, and any redone by late data."""

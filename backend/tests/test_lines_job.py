@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import func, select
 
-from app.models import TelemetryLine
+from app.models import TelemetryLine, TelemetryState
 from app.schemas import TelemetryCreate
 from app.services.telemetry_service import store_readings
 from app.storage import lines, lines_job
@@ -17,9 +17,10 @@ BATTERY = lines.FIELD_IDS["battery"]
 TEMPERATURE = lines.FIELD_IDS["temperature"]
 
 
-def reading(seconds, battery=None, rate=None, temperature=40.0, robot_id=1):
+def reading(seconds, battery=None, rate=None, temperature=40.0, robot_id=1, status="ACTIVE"):
     return TelemetryCreate(
         robot_id=robot_id,
+        status=status,
         battery=battery,
         battery_rate=rate,
         temperature=temperature,
@@ -147,3 +148,31 @@ async def test_robots_are_held_to_their_own_tolerance_times_the_scale():
         few = await loose.block(db, HOUR.timestamp())
         await db.rollback()
     assert many > few
+
+
+async def test_status_is_stored_as_its_changes():
+    async with TestSessionLocal() as db:
+        await store_readings(
+            db,
+            [
+                reading(t, 50.0, 0.0, status="ACTIVE" if t < 1800 else "CHARGING")
+                for t in range(0, 3600, 20)
+            ],
+        )
+    await LinesJob(TestSessionLocal).run_once(after())
+    async with TestSessionLocal() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(TelemetryState)
+                    .where(TelemetryState.field == lines.STATE_IDS["status"])
+                    .order_by(TelemetryState.t)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(r.t, r.value) for r in rows] == [
+        (HOUR, "ACTIVE"),
+        (HOUR + timedelta(seconds=1800), "CHARGING"),
+    ]

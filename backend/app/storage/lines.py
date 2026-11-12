@@ -43,6 +43,9 @@ FIELDS = {
 }
 # Small integer ids for the table (stable: never renumber).
 FIELD_IDS = {name: i for i, name in enumerate(FIELDS)}
+# Fields that are not numbers: stored as their changes (``changes``), not lines.
+STATE_FIELDS = ("status", "mission_id", "mission_type", "mission_start_time")
+STATE_IDS = {name: i for i, name in enumerate(STATE_FIELDS)}
 
 
 @dataclass(frozen=True)
@@ -202,3 +205,34 @@ def worst_error(lines: list[Line], runs: list[list]) -> float:
                 return float("inf")
             worst = max(worst, min(abs(ln.value(t) - v) for ln in covering))
     return worst
+
+
+def changes(
+    keyframes: list[dict], name: str, end: float, heartbeat_s: float, start: float
+) -> list[tuple[float, str | None]]:
+    """A non-numeric field over ``[start, end)`` as ``(t, value)`` changes.
+
+    The value in force at ``start`` comes first, so every window stands on its
+    own; then each change; ``None`` marks where it becomes unknown (no
+    keyframe in force, by the same heartbeat rule as the lines).
+    """
+    cover = heartbeat_s * HEARTBEAT_GRACE
+    out: list[tuple[float, str | None]] = []
+    current: object = object()  # nothing recorded yet
+    for i, kf in enumerate(keyframes):
+        t0 = kf["timestamp"]
+        nxt = keyframes[i + 1]["timestamp"] if i + 1 < len(keyframes) else end
+        t1 = min(nxt, t0 + cover, end)
+        if t1 <= start or t0 >= end:
+            continue
+        value = kf.get(name)
+        value = None if value is None else str(value)
+        at = max(t0, start)
+        if value != current:
+            out.append((at, value))
+            current = value
+        if t1 < nxt and t1 < end and current is not None:
+            # Past the heartbeat with no new keyframe: unknown from here.
+            out.append((t1, None))
+            current = None
+    return out
