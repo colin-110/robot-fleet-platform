@@ -7,6 +7,7 @@ measured. As on the dashboard, prediction stops at the heartbeat: past it a
 keyframe was overdue and the value is held, not extrapolated.
 """
 
+import bisect
 from datetime import datetime, timedelta, timezone
 
 from app.models import Telemetry
@@ -67,3 +68,40 @@ def check_window(start: datetime, end: datetime, step_s: float) -> str | None:
     if (end - start) / timedelta(seconds=step_s) > MAX_POINTS:
         return f"at most {MAX_POINTS} points; use a larger step"
     return None
+
+
+def _value_at(segments: list[dict], starts: list[float], t: float) -> float | None:
+    i = bisect.bisect_right(starts, t) - 1
+    for k in (i, i - 1):
+        if k >= 0:
+            seg = segments[k]
+            t0, t1 = seg["t0"].timestamp(), seg["t1"].timestamp()
+            if t0 <= t <= t1:
+                return seg["v0"] + seg["slope"] * (t - t0)
+    return None
+
+
+def from_segments(series: dict, start: datetime, end: datetime, step_s: float) -> list[dict]:
+    """Points every ``step_s`` seconds from line segments (``series_service``),
+    for windows whose raw keyframes have been dropped. Within each field's
+    error bound; points where position is unknown are left out."""
+    by_field = {name: s["segments"] for name, s in series.items()}
+    starts = {name: [seg["t0"].timestamp() for seg in segs] for name, segs in by_field.items()}
+    points = []
+    t, stop = start.timestamp(), end.timestamp()
+    while t <= stop + 1e-9:
+        x = _value_at(by_field["x"], starts["x"], t)
+        y = _value_at(by_field["y"], starts["y"], t)
+        if x is not None and y is not None:
+            battery = _value_at(by_field["battery"], starts["battery"], t)
+            points.append(
+                {
+                    "timestamp": datetime.fromtimestamp(t, tz=timezone.utc),
+                    "x": x,
+                    "y": y,
+                    "battery": battery,
+                    "keyframe": False,
+                }
+            )
+        t += step_s
+    return points

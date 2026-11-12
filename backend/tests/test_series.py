@@ -122,3 +122,46 @@ async def test_a_finished_hour_with_nothing_stored_is_fitted_from_raw_keyframes(
     ).json()
     assert body["changes"][0]["value"] == "ACTIVE"
     assert [c["value"] for c in body["changes"]].count("CHARGING") == 1
+
+
+async def test_a_track_is_rebuilt_from_segments_once_raw_keyframes_are_gone(client):
+    from sqlalchemy import delete
+
+    from app.models import Telemetry
+
+    async with TestSessionLocal() as db:
+        # Driving east at 0.5 m/s for the hour.
+        await store_readings(
+            db,
+            [
+                TelemetryCreate(
+                    robot_id=1,
+                    battery=80.0,
+                    temperature=40.0,
+                    speed=0.5,
+                    x=0.5 * t,
+                    y=3.0,
+                    vx=0.5,
+                    vy=0.0,
+                    timestamp=HOUR + timedelta(seconds=t),
+                )
+                for t in range(0, 3600, 20)
+            ],
+        )
+    await LinesJob(TestSessionLocal).run_once((HOUR + timedelta(hours=1, minutes=5)).timestamp())
+    async with TestSessionLocal() as db:
+        await db.execute(delete(Telemetry))  # what the retention job does to old raw rows
+        await db.commit()
+
+    params = {
+        "start": (HOUR + timedelta(minutes=10)).isoformat(),
+        "end": (HOUR + timedelta(minutes=20)).isoformat(),
+        "step_s": 60,
+    }
+    points = (await client.get("/api/v1/robots/1/track", params=params)).json()
+    assert len(points) == 11
+    for p in points:
+        t = (datetime.fromisoformat(p["timestamp"]) - HOUR).total_seconds()
+        assert p["x"] == pytest.approx(0.5 * t, abs=0.5)
+        assert p["y"] == pytest.approx(3.0, abs=0.5)
+        assert p["keyframe"] is False

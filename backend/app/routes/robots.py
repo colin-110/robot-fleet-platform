@@ -147,6 +147,14 @@ async def robot_track(
     if problem:
         raise HTTPException(status_code=422, detail=problem)
     rows = await TelemetryRepository(db).keyframes_between(robot_id, start, end)
+    if not rows:
+        # Raw keyframes older than RAW_RETENTION_DAYS are gone; their history
+        # is in the line segments, within each field's error bound.
+        series = {
+            name: await series_service.series(db, robot_id, name, start, end)
+            for name in ("x", "y", "battery")
+        }
+        return track_service.from_segments(series, start, end, step_s)
     config = await config_repo.get_config(db, robot_id)
     applied = config.reported if config else None
     return track_service.reconstruct(rows, start, end, step_s, applied)
