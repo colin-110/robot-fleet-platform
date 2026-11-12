@@ -36,7 +36,7 @@ from app.mqtt import config as mqtt_config
 from app.mqtt.ingest import IngestConsumer, relay_publisher
 from app.routes.alarms import router as alarms_router
 from app.routes.analytics import router as analytics_router
-from app.routes.auth import bootstrap_admin_user
+from app.routes.auth import bootstrap_admin_user, ensure_demo_user
 from app.routes.auth import router as auth_router
 from app.routes.commands import router as commands_router
 from app.routes.events import router as events_router
@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
     )
 
     await bootstrap_admin_user()
+    await ensure_demo_user()
 
     try:
         loaded = await device_keys.load_hashes()

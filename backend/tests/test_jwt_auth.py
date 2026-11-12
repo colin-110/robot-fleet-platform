@@ -156,14 +156,14 @@ async def test_config_endpoint_reports_open_mode(client):
     response = await client.get("/api/v1/auth/config")
 
     assert response.status_code == 200
-    assert response.json() == {"auth_mode": "open", "login_required": False}
+    assert response.json() == {"auth_mode": "open", "login_required": False, "demo": None}
 
 
 @pytest.mark.asyncio
 async def test_config_endpoint_reports_required_mode(client, auth_required):
     response = await client.get("/api/v1/auth/config")
 
-    assert response.json() == {"auth_mode": "required", "login_required": True}
+    assert response.json() == {"auth_mode": "required", "login_required": True, "demo": None}
 
 
 @pytest.mark.asyncio
@@ -496,3 +496,73 @@ async def test_open_mode_keeps_reads_public(client):
 async def test_reads_can_be_made_public_on_purpose(client, auth_required, monkeypatch):
     monkeypatch.setattr(settings, "require_auth_for_reads", False)
     assert (await client.get("/api/v1/robots/status")).status_code == 200
+
+
+# ── Demo account ────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def demo(monkeypatch, auth_required):
+    from app.routes import auth as auth_routes
+
+    monkeypatch.setattr(settings, "demo_username", "demo")
+    monkeypatch.setattr(settings, "demo_password", "fleetops-demo")
+    yield
+    auth_routes._demo_ready = False
+
+
+@pytest.mark.asyncio
+async def test_the_demo_account_is_offered_and_signs_in_as_an_operator(client, demo):
+    from app.routes.auth import ensure_demo_user
+    from tests.conftest import TestSessionLocal
+
+    assert await ensure_demo_user(TestSessionLocal)
+    config = (await client.get("/api/v1/auth/config")).json()
+    assert config["demo"] == {"username": "demo", "password": "fleetops-demo"}
+
+    body = (
+        await client.post(
+            "/api/v1/auth/login", json={"username": "demo", "password": "fleetops-demo"}
+        )
+    ).json()
+    assert body["role"] == OPERATOR
+
+
+@pytest.mark.asyncio
+async def test_an_admin_is_never_offered_as_the_demo(client, db, demo):
+    from app.routes.auth import ensure_demo_user
+    from tests.conftest import TestSessionLocal
+
+    await _make_user(db, "demo", "the-admins-real-password", ADMIN)
+    assert not await ensure_demo_user(TestSessionLocal)
+    assert (await client.get("/api/v1/auth/config")).json()["demo"] is None
+    # And the admin's password was not touched.
+    login = await client.post(
+        "/api/v1/auth/login", json={"username": "demo", "password": "fleetops-demo"}
+    )
+    assert login.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_a_changed_demo_password_takes_effect(client, monkeypatch, demo):
+    from app.routes.auth import ensure_demo_user
+    from tests.conftest import TestSessionLocal
+
+    await ensure_demo_user(TestSessionLocal)
+    monkeypatch.setattr(settings, "demo_password", "a-new-demo-password")
+    await ensure_demo_user(TestSessionLocal)
+    login = await client.post(
+        "/api/v1/auth/login", json={"username": "demo", "password": "a-new-demo-password"}
+    )
+    assert login.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_no_demo_is_offered_without_sign_in(client, monkeypatch):
+    from app.routes.auth import ensure_demo_user
+    from tests.conftest import TestSessionLocal
+
+    monkeypatch.setattr(settings, "demo_username", "demo")
+    monkeypatch.setattr(settings, "demo_password", "fleetops-demo")
+    assert not await ensure_demo_user(TestSessionLocal)
+    assert (await client.get("/api/v1/auth/config")).json()["demo"] is None

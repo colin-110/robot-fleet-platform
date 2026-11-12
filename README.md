@@ -162,7 +162,7 @@ docker compose up --build -d
 
 The stack starts the API, dashboard, simulator (40 robots over MQTT), TimescaleDB and the Mosquitto broker.
 
-The dashboard is at https://localhost; sign in as `admin` with the password the script printed (it is also in `backend/.env`). Robots connect to the broker over TLS on port 8883. Both use certificates from a local certificate authority made on first start, so the browser warns until you trust it:
+The dashboard is at https://localhost; the login screen comes filled in with the demo account (`demo` / `fleetops-demo`, an operator), so signing in is one click. The `admin` account's password is the one the script printed (also in `backend/.env`). Robots connect to the broker over TLS on port 8883. Both use certificates from a local certificate authority made on first start, so the browser warns until you trust it:
 
 ~~~bash
 docker compose cp mqtt:/mosquitto/certs/ca.crt ./fleetops-ca.crt   # then import it into your browser or OS

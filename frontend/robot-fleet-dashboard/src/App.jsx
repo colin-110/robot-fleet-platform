@@ -75,7 +75,7 @@ function SectionLabel({ title, count }) {
  * and guessing "required" would flash a login screen the demo never needs.
  */
 function useAuthGate() {
-  const [state, setState] = useState({ status: "checking", loginRequired: false });
+  const [state, setState] = useState({ status: "checking", loginRequired: false, demo: null });
 
   useEffect(() => {
     let cancelled = false;
@@ -84,13 +84,17 @@ function useAuthGate() {
     fetchAuthConfig()
       .then((config) => {
         if (cancelled) return;
-        setState({ status: "ready", loginRequired: Boolean(config.login_required) });
+        setState({
+          status: "ready",
+          loginRequired: Boolean(config.login_required),
+          demo: config.demo ?? null,
+        });
       })
       .catch(() => {
         // The backend is unreachable. Fall through to the dashboard, which has
         // its own "Backend is unreachable" banner - a login screen here would
         // blame the operator for an outage.
-        if (!cancelled) setState({ status: "ready", loginRequired: false });
+        if (!cancelled) setState({ status: "ready", loginRequired: false, demo: null });
       });
 
     return () => {
@@ -257,14 +261,14 @@ function FleetConsole() {
 }
 
 function App() {
-  const { status, loginRequired } = useAuthGate();
+  const { status, loginRequired, demo } = useAuthGate();
   const [session, setSession] = useState(() => getSession());
   // Sign-out, or an expired token the API rejected, returns to the login screen.
   useEffect(() => onSessionChange(setSession), []);
 
   if (status === "checking") return null;
   if (loginRequired && !session) {
-    return <LoginScreen onSignedIn={setSession} />;
+    return <LoginScreen onSignedIn={setSession} demo={demo} />;
   }
 
   return <FleetConsole />;

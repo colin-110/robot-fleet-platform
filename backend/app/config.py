@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # empty. Without it, a fresh deployment in required mode has no way in.
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
+    # A demo account, shown and filled in on the login screen so a visitor
+    # signs in with one click. An operator (watches the fleet, sends
+    # commands), never an admin. Public by design: only for synthetic data.
+    demo_username: str | None = None
+    demo_password: str | None = None
 
     # ── Application ─────────────────────────────────────────────────
     app_env: str = "development"

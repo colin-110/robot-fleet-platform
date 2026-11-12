@@ -249,6 +249,11 @@ class PrincipalResponse(BaseModel):
     authenticated: bool
 
 
+class DemoAccount(BaseModel):
+    username: str
+    password: str
+
+
 class AuthConfigResponse(BaseModel):
     """What the dashboard needs to know before rendering anything.
 
@@ -258,6 +263,9 @@ class AuthConfigResponse(BaseModel):
 
     auth_mode: str
     login_required: bool
+    # Set when the deployment offers a public demo account: shown, and filled
+    # in, on the login screen.
+    demo: DemoAccount | None = None
 
 
 class TicketResponse(BaseModel):
