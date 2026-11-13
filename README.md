@@ -4,8 +4,9 @@ Real-time robot fleet monitoring and control: telemetry ingestion, live
 dashboards over WebSocket, and command dispatch, built on FastAPI and
 TimescaleDB.
 
-Not hosted at the moment: [run it locally](#run-locally) with Docker in a few
-minutes, with a simulated fleet of 40 robots.
+**[Live demo](https://98-86-250-37.sslip.io)**: the login screen comes filled
+in with the demo account (`demo` / `fleetops-demo`), and 40 simulated robots
+are running. Hosted on one ARM server on AWS ([deploy/](deploy/README.md)).
 
 ![Fleet dashboard](docs/images/dashboard-overview.png)
 
