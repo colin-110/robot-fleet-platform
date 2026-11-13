@@ -1,12 +1,13 @@
 #!/bin/sh
 # Deploy or update FleetOps on the server made by deploy/fleetops.yaml.
-# Run as root on the server (the README shows how, through Session Manager):
+# Run as root on the server (deploy/remote.sh does, from your machine):
 #
 #   sh /opt/fleetops/deploy/deploy.sh <hostname>
 #
 # <hostname> is the stack's Hostname output (a-b-c-d.sslip.io) or your own
 # domain pointed at its IP. Safe to re-run: it pulls the latest main, keeps the
-# secrets it made the first time, and builds and restarts what changed.
+# secrets it made the first time, and restarts what changed with the images CI
+# published for that commit (the server is too small to build them).
 set -eu
 HOST=${1:?usage: deploy.sh <hostname>}
 cd /opt/fleetops
@@ -35,7 +36,14 @@ set_env CORS_ORIGINS "https://$HOST"
 chmod 600 backend/.env
 
 echo "== Images"
-$COMPOSE build --quiet
+# The images CI built for exactly this commit, kept in .env (next to the
+# compose files) so later commands, such as the renewal timer, use the same.
+TAG=$(git rev-parse HEAD)
+printf 'IMAGE_TAG=%s\n' "$TAG" > .env
+if ! $COMPOSE pull --quiet; then
+    echo "No images for $TAG yet: CI publishes them once its tests pass. Try again in a few minutes."
+    exit 1
+fi
 
 echo "== Certificate"
 # The deploy hook copies each new certificate to where nginx reads it. It is
@@ -53,7 +61,8 @@ else
 fi
 
 echo "== Start"
-$COMPOSE up -d --remove-orphans
+$COMPOSE up -d --no-build --remove-orphans
+docker image prune -f >/dev/null
 
 echo "== Renewal timer"
 # Twice a day (deploy/renew-cert.sh); certbot renews only within 30 days of expiry.
