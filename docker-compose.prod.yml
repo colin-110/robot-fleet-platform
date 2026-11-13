@@ -1,0 +1,40 @@
+# Production overlay for the hosted server (deploy/README.md):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Instead of docker-compose.override.yml (development: hot reload, mounted
+# code, the database port open). Differences from the base file:
+# - The dashboard is published on 80 and 443 on every interface; nothing else
+#   is (the API, broker and database stay on localhost, and the AWS security
+#   group opens 80 and 443 only).
+# - Its certificate comes from Let's Encrypt (the `certbot` service below)
+#   instead of the local CA, so browsers trust it. The broker keeps the local
+#   CA: only the simulator, inside Docker, connects to it.
+
+services:
+  frontend:
+    ports: !override
+      - "80:80"
+      - "443:443"
+    volumes: !override
+      - web_certs:/etc/nginx/certs:ro
+      - acme_webroot:/var/www/certbot:ro
+
+  # Run on demand by deploy/deploy.sh (first certificate) and the renewal
+  # timer (deploy/renew-cert.sh); never started by `up`.
+  certbot:
+    image: certbot/certbot:v5.10.0
+    profiles: [ "certbot" ]
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme_webroot:/var/www/certbot
+      # Where the deploy hook copies a new certificate for nginx.
+      - web_certs:/web-certs
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  web_certs:
+  acme_webroot:
+  letsencrypt:
