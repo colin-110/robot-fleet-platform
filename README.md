@@ -4,7 +4,8 @@ Real-time robot fleet monitoring and control: telemetry ingestion, live
 dashboards over WebSocket, and command dispatch, built on FastAPI and
 TimescaleDB.
 
-[Live demo](https://robot-fleet-platform-eight.vercel.app)
+Not hosted at the moment: [run it locally](#run-locally) with Docker in a few
+minutes, with a simulated fleet of 40 robots.
 
 ![Fleet dashboard](docs/images/dashboard-overview.png)
 
@@ -110,7 +111,8 @@ See
 
 ## Testing
 
-Tests cover:
+About 925 tests: 737 for the backend, 70 for the agent and 118 for the
+dashboard. They cover:
 
 - telemetry ingestion, idempotency and fleet-state derivation
 - the MQTT consumer, presence, command push and broker auth, partly against a
@@ -121,16 +123,27 @@ Tests cover:
 - device keys, rotation and revocation
 - command concurrency, idempotency and timeouts
 - WebSocket lifecycle and reconnect behavior
-- authentication and command dispatch
+- authentication and command dispatch, sign-in limits, protected reads, the
+  demo account and refusing placeholder secrets
+- line segments: the error bound on hundreds of random paths, hourly blocks,
+  late data, verification, and raw retention that keeps alarm data
+- alarms, anomalies, the message budget and metrics
 - structured logging
 
-Backend:
+Backend, against a throwaway TimescaleDB and broker (port 5433, since the
+local stack uses 5432). The suite empties the database it runs on, and refuses
+one whose name lacks `test`:
 
 ~~~bash
+docker run -d --rm --name fleet-test-db -p 127.0.0.1:5433:5432 \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=fleet_test_db timescale/timescaledb:2.31.0-pg16
+docker run -d --rm --name fleet-test-mqtt -p 127.0.0.1:1883:1883 \
+  eclipse-mosquitto:2.0.22 mosquitto -c /mosquitto-no-auth.conf
 cd backend
-docker run -d -p 1883:1883 eclipse-mosquitto:2.0.22 mosquitto -c /mosquitto-no-auth.conf
-DATABASE_URL=postgresql://postgres:<password>@localhost:5432/fleet_test_db \
-  MQTT_TEST_HOST=localhost pytest tests/ -v --cov=app
+pip install --require-hashes -r requirements.lock && pip install -r requirements-dev.txt
+DATABASE_URL=postgresql://postgres:test@localhost:5433/fleet_test_db \
+  TELEMETRY_API_KEY=any-test-key MQTT_TEST_HOST=localhost PYTHONPATH=. \
+  pytest tests/ --cov=app
 ~~~
 
 Agent:
@@ -177,13 +190,16 @@ The API itself is at http://localhost:8000 for tools such as the load test. Ever
 - `frontend/robot-fleet-dashboard/` - React dashboard
 - `agent/` - the robot-side package (`fleetops-agent`)
 - `simulator/` - asynchronous robot simulator, each robot sending through its own agent
-- `mosquitto/` - broker configuration
-- `docs/` - architecture, operations, and design decisions (`docs/adr/`)
+- `mosquitto/` - the broker, built from source, and its configuration
+- `timescaledb/` - the database image
+- `tls/` - makes the local certificate authority and certificates on first start
+- `loadtest/` - runs any number of simulated robots and reports where the stack strains
+- `docs/` - architecture, operations, and design decisions (`docs/adr/`); `SECURITY.md` - the security policy
 - `docker-compose.yml` - the full stack; `docker-compose.override.yml` - development settings, loaded automatically
 
 ## Limitations
 
-This is a portfolio-scale system using synthetic robot data, single-node and without high availability. The live demo still runs the previous version.
+This is a portfolio-scale system using synthetic robot data: single-node, without high availability or backups, and with a public demo account. See [SECURITY.md](SECURITY.md#known-limitations) for the full list.
 
 ## License
 
