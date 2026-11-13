@@ -1,169 +1,92 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  FleetOps demo host: one ARM EC2 server running the whole Docker Compose stack
-  (API, dashboard, broker, TimescaleDB, simulator) behind HTTPS on a fixed
-  public IP. Only ports 80 and 443 are open; administration is through Systems
-  Manager Session Manager (no SSH). The stack is started by deploy/deploy.sh.
-  Synthetic data only: the server's disk is deleted with the stack.
+  FleetOps demo host on Amazon Lightsail: one 1 GB server running the whole
+  Docker Compose stack (API, dashboard, broker, TimescaleDB, 20 simulated
+  robots) behind HTTPS on a static IP, for a fixed $7 a month that includes the
+  disk, the public IPv4 address and the traffic. Only ports 80 and 443 are
+  open; deploy/remote.sh opens SSH to the deployer's address only while it
+  runs. Images are built by CI, never on this server. Synthetic data only.
 
 Metadata:
   com.aws.cloudformation.Context:
     why: >-
-      Smallest setup that runs the stack exactly as it runs locally, for a
-      portfolio demo at a predictable monthly cost; everything in one stack so
-      deleting it removes every resource and stops all charges.
+      Cheapest setup that runs the stack as it runs locally, at a predictable
+      monthly cost; everything in one stack so deleting it removes every
+      resource and stops all charges. Lightsail's price includes the disk and
+      public IP that EC2 bills separately ($7 against $11.40 for a t4g.micro).
 
 Parameters:
-  InstanceType:
+  BundleId:
     Type: String
-    Default: t4g.small
-    AllowedValues: [ t4g.micro, t4g.small, t4g.medium ]
-    Description: ARM (Graviton) size. t4g.small (2 GB) runs 40 simulated robots with headroom.
-  AmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
-    Description: Latest Amazon Linux 2023 for ARM, resolved at deploy time.
+    Default: micro_3_0
+    AllowedValues: [ micro_3_0, small_3_0, medium_3_0 ]
+    Description: micro_3_0 is 1 GB at $7 a month; small_3_0 is 2 GB at $12.
   RepoUrl:
     Type: String
     Default: https://github.com/colin-110/robot-fleet-platform.git
     Description: Public Git repository the server clones.
-  DiskSizeGiB:
-    Type: Number
-    Default: 20
-    MinValue: 16
-    MaxValue: 100
 
 Resources:
-  InstanceRole:
-    Type: AWS::IAM::Role
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: Lets Systems Manager reach the server (Session Manager, Run Command) without SSH or open ports.
-        must: Keep to the SSM managed-instance policy only; the server needs no other AWS access.
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal: { Service: ec2.amazonaws.com }
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - { Key: Project, Value: fleetops }
-
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [ !Ref InstanceRole ]
-
-  WebSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: >-
-          A public website has to accept visitors from anywhere, so 80 (only
-          redirects to HTTPS and answers Let's Encrypt's check) and 443 are open
-          to all addresses. Nothing else is: no SSH, and the API, broker and
-          database ports are not reachable from outside.
-        must: Never open 22, 8000, 1883, 8883 or 5432 here; administer through Session Manager.
-    Properties:
-      GroupDescription: FleetOps demo - HTTP and HTTPS only
-      SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP to HTTPS redirect and Lets Encrypt }
-        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: Dashboard over HTTPS }
-        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0", Description: HTTP to HTTPS redirect and Lets Encrypt }
-        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0", Description: Dashboard over HTTPS }
-      Tags:
-        - { Key: Project, Value: fleetops }
-
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Metadata:
-      com.aws.cloudformation.Context:
-        why: >-
-          IMDSv2 only (blocks SSRF credential theft), an encrypted gp3 disk, and
-          standard CPU credits so a busy spell is throttled instead of billed as
-          surplus credits.
-    Properties:
-      LaunchTemplateData:
-        MetadataOptions:
-          HttpTokens: required
-          HttpPutResponseHopLimit: 1
-          HttpEndpoint: enabled
-        CreditSpecification:
-          CpuCredits: standard
-        BlockDeviceMappings:
-          - DeviceName: /dev/xvda
-            Ebs:
-              VolumeSize: !Ref DiskSizeGiB
-              VolumeType: gp3
-              Encrypted: true
-              DeleteOnTermination: true
-        TagSpecifications:
-          - ResourceType: volume
-            Tags:
-              - { Key: Project, Value: fleetops }
-
   Server:
-    Type: AWS::EC2::Instance
+    Type: AWS::Lightsail::Instance
     Metadata:
       com.aws.cloudformation.Context:
         why: >-
-          Installs Docker, the Compose and Buildx plugins, git and 2 GB of swap
-          (building the broker's Go plugin needs more than 2 GB at its peak),
-          then clones the repository. deploy/deploy.sh, run through Session
-          Manager, does the rest.
-        must: Keep UserData free of secrets; deploy/deploy.sh makes them on the server.
+          Installs Docker, the Compose plugin, git and 2 GB of swap (headroom
+          for 1 GB of memory), then clones the repository; deploy/deploy.sh
+          does the rest. A public website has to accept visitors from anywhere,
+          so 80 (only redirects to HTTPS and answers Let's Encrypt's check) and
+          443 are open to all addresses. SSH is closed: deploy/remote.sh opens
+          it to its own address only while it runs.
+        must: >-
+          Never open the API, broker or database ports here, and never leave
+          SSH open; keep UserData free of secrets (deploy/deploy.sh makes them
+          on the server).
     Properties:
-      ImageId: !Ref AmiId
-      InstanceType: !Ref InstanceType
-      IamInstanceProfile: !Ref InstanceProfile
-      SecurityGroupIds: [ !GetAtt WebSecurityGroup.GroupId ]
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      InstanceName: !Sub "${AWS::StackName}-server"
+      AvailabilityZone: !Sub "${AWS::Region}a"
+      BlueprintId: amazon_linux_2023
+      BundleId: !Ref BundleId
+      Networking:
+        Ports:
+          - { FromPort: 80, ToPort: 80, Protocol: tcp, Cidrs: [ 0.0.0.0/0 ], Ipv6Cidrs: [ "::/0" ] }
+          - { FromPort: 443, ToPort: 443, Protocol: tcp, Cidrs: [ 0.0.0.0/0 ], Ipv6Cidrs: [ "::/0" ] }
+      UserData: !Sub |
+        #!/bin/bash
+        set -euxo pipefail
+        dnf install -y docker git
+        systemctl enable --now docker
+        mkdir -p /usr/local/lib/docker/cli-plugins
+        curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+          https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-linux-x86_64
+        chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        if [ ! -f /swapfile ]; then
+          fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
+        swapon -a
+        [ -d /opt/fleetops/.git ] || git clone ${RepoUrl} /opt/fleetops
+        touch /var/lib/fleetops-ready
       Tags:
-        - { Key: Name, Value: !Sub "${AWS::StackName}-server" }
         - { Key: Project, Value: fleetops }
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -euxo pipefail
-          dnf install -y docker git
-          systemctl enable --now docker
-          mkdir -p /usr/local/lib/docker/cli-plugins
-          curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
-            https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-linux-aarch64
-          curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
-            https://github.com/docker/buildx/releases/download/v0.39.0/buildx-v0.39.0.linux-arm64
-          chmod +x /usr/local/lib/docker/cli-plugins/*
-          if [ ! -f /swapfile ]; then
-            fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile
-            echo '/swapfile none swap sw 0 0' >> /etc/fstab
-          fi
-          swapon -a
-          [ -d /opt/fleetops/.git ] || git clone ${RepoUrl} /opt/fleetops
-          touch /var/lib/fleetops-ready
 
-  PublicIp:
-    Type: AWS::EC2::EIP
+  StaticIp:
+    Type: AWS::Lightsail::StaticIp
     Metadata:
       com.aws.cloudformation.Context:
         why: >-
-          A fixed address, so the free hostname built from it (a-b-c-d.sslip.io)
-          and its Let's Encrypt certificate stay valid across server restarts.
+          A fixed address (free while attached), so the free hostname built
+          from it (a-b-c-d.sslip.io) and its Let's Encrypt certificate stay
+          valid across server restarts.
     Properties:
-      Domain: vpc
-      InstanceId: !Ref Server
-      Tags:
-        - { Key: Project, Value: fleetops }
+      StaticIpName: !Sub "${AWS::StackName}-ip"
+      AttachedTo: !Ref Server
 
 Outputs:
-  PublicIp:
-    Value: !Ref PublicIp
-  Hostname:
-    Description: Free hostname that resolves to the public IP (sslip.io).
-    Value: !Join [ "", [ !Join [ "-", !Split [ ".", !Ref PublicIp ] ], ".sslip.io" ] ]
-  InstanceId:
+  InstanceName:
     Value: !Ref Server
+  PublicIp:
+    Value: !GetAtt StaticIp.IpAddress
+  Hostname:
+    Description: Free hostname that resolves to the static IP (sslip.io).
+    Value: !Join [ "", [ !Join [ "-", !Split [ ".", !GetAtt StaticIp.IpAddress ] ], ".sslip.io" ] ]
