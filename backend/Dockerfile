@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.13-slim AS builder
+FROM python:3.15-slim AS builder
 WORKDIR /app
 # Exactly the versions in the lock, each checked against its hash, so every
 # build installs the same packages and a tampered download is refused.
@@ -10,7 +10,7 @@ COPY requirements.lock .
 RUN pip wheel --no-cache-dir --require-hashes --wheel-dir /app/wheels -r requirements.lock
 
 # Runtime stage
-FROM python:3.13-slim
+FROM python:3.15-slim
 WORKDIR /app
 
 # No .pyc files: the image is read-only in practice and every module imported
