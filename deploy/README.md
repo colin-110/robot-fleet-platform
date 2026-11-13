@@ -34,6 +34,22 @@ Docker. The dashboard is then at the stack's `Hostname` output, with the demo
 account filled in on the login screen. The admin password is in
 `/opt/fleetops/backend/.env` on the server.
 
+## The dashboard on Vercel
+
+The dashboard is also deployed to Vercel at `https://robot-fleet-platform.vercel.app`:
+served from Vercel's network close to each visitor, rebuilt on every push to
+`main`, with a preview link for every other branch. It calls the API on the
+Lightsail server directly (`frontend/robot-fleet-dashboard/vercel.json` holds
+the build command with the API's address, and the security headers). The API
+accepts browser requests from it because `remote.sh` passes
+`DASHBOARD_ORIGINS=https://robot-fleet-platform.vercel.app` to `deploy.sh`. The
+server still serves the dashboard on its own address too.
+
+To set it up once, in the Vercel dashboard: **Add New → Project**, import this
+GitHub repository, name it `robot-fleet-platform`, set **Root Directory** to
+`frontend/robot-fleet-dashboard`, and deploy. If the server's address changes,
+update it in `vercel.json` (build command and `connect-src`) and push.
+
 ## Updating
 
 Push to `main`, wait for CI to publish the images (the Publish Images job),

@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 # Actions are pinned to a commit, not a tag: a tag can be moved to different
-# code by whoever controls the action's repository. Dependabot proposes
-# updates (.github/dependabot.yml).
+# code by whoever controls the action's repository. Updating one means
+# changing its commit and version comment here.
 
 jobs:
   # ── CI: Backend Lint & Tests ───────────────────────────────────────

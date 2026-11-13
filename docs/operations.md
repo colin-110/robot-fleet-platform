@@ -102,7 +102,7 @@ On every push and pull request to `main`:
    - **Trivy** on the API, simulator, database, dashboard and broker images as built: fails on any high or critical vulnerability that has a fix available. Ones the distribution has not fixed yet are reported but cannot fail the build, since there is nothing to upgrade to.
    - **govulncheck** on the broker's go-auth plugin, which Trivy cannot read (it is a shared library, not an executable). Fails on any vulnerability in code the plugin calls, except one with no fixed release that only go-auth's unused JWT backend reaches (`mosquitto/go-updates.txt`).
 
-Actions are pinned to commits rather than tags. Dependabot (`.github/dependabot.yml`) proposes weekly updates for npm packages, Docker base images and the actions; Python packages are pinned with hashes in `requirements.lock` files and regenerated with `pip-compile` (command in each Dockerfile).
+Actions are pinned to commits rather than tags. Dependencies are updated by hand: npm packages with `npm update`, Docker base images by their tags in each Dockerfile, the actions by their commits in `ci.yml`, and Python packages by regenerating the `requirements.lock` files with `pip-compile` (command in each Dockerfile). CI fails on any known vulnerability in them, so a needed update shows up as a failing build.
 
 ---
 

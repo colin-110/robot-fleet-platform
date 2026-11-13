@@ -17,7 +17,7 @@ FleetOps is a portfolio project that runs on synthetic data, but it is built as 
 | Credentials | Leaked or default secrets | No default secrets: the API refuses to start with the example's placeholders; `backend/make_env.py` makes random ones; the browser never holds the master key (short-lived tickets); secret scanning over the whole git history in CI |
 | Traffic | Eavesdropping, tampering | TLS for robots (MQTT on 8883) and browsers (HTTPS on 443); every published port listens on localhost unless `BIND_ADDRESS` says otherwise |
 | The dashboard | Script injection, clickjacking | Content-Security-Policy with no inline scripts and no eval, `frame-ancestors 'none'`, nosniff, referrer and permissions policies |
-| The software itself | Vulnerable or tampered dependencies | Hash-checked Python lockfiles; current, patched images; non-root containers; CI fails on known vulnerabilities (pip-audit, npm audit, Trivy, govulncheck) and pins its actions to commits; Dependabot |
+| The software itself | Vulnerable or tampered dependencies | Hash-checked Python lockfiles; current, patched images; non-root containers; CI fails on known vulnerabilities (pip-audit, npm audit, Trivy, govulncheck) and pins its actions to commits |
 
 Details: [docs/operations.md](docs/operations.md#security-posture).
 

@@ -5,7 +5,8 @@
 #   sh /opt/fleetops/deploy/deploy.sh <hostname>
 #
 # <hostname> is the stack's Hostname output (a-b-c-d.sslip.io) or your own
-# domain pointed at its IP. Safe to re-run: it pulls the latest main, keeps the
+# domain pointed at its IP. DASHBOARD_ORIGINS (comma-separated) adds sites the
+# API accepts browser requests from, such as the dashboard on Vercel. Safe to re-run: it pulls the latest main, keeps the
 # secrets it made the first time, and restarts what changed with the images CI
 # published for that commit (the server is too small to build them).
 set -eu
@@ -19,6 +20,11 @@ echo "== Code"
 git fetch --quiet origin main
 git reset --quiet --hard origin/main
 git log --oneline -1
+# This script may itself have just changed, while the shell runs the copy it
+# read before the update. Start again from the new one, once.
+if [ -z "${FLEETOPS_UPDATED:-}" ]; then
+    FLEETOPS_UPDATED=1 exec sh "$0" "$@"
+fi
 
 echo "== Settings"
 # Random secrets on the first run only (make_env.py leaves set ones alone).
@@ -31,7 +37,6 @@ set_env() {  # set_env NAME VALUE: replace or append one line of backend/.env
     fi
 }
 set_env APP_ENV production
-set_env CORS_ORIGINS "https://$HOST"
 # Readable by root only: it holds every credential the stack uses.
 chmod 600 backend/.env
 
@@ -39,7 +44,12 @@ echo "== Images"
 # The images CI built for exactly this commit, kept in .env (next to the
 # compose files) so later commands, such as the renewal timer, use the same.
 TAG=$(git rev-parse HEAD)
-printf 'IMAGE_TAG=%s\n' "$TAG" > .env
+# CORS_ORIGINS goes here too, not in backend/.env: the compose file sets it
+# for the API from this file, which overrides backend/.env.
+{
+    printf 'IMAGE_TAG=%s\n' "$TAG"
+    printf 'CORS_ORIGINS=https://%s%s\n' "$HOST" "${DASHBOARD_ORIGINS:+,$DASHBOARD_ORIGINS}"
+} > .env
 if ! $COMPOSE pull --quiet; then
     echo "No images for $TAG yet: CI publishes them once its tests pass. Try again in a few minutes."
     exit 1

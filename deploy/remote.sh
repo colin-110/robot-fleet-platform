@@ -17,6 +17,8 @@
 set -eu
 STACK=${STACK:-fleetops-web}
 REGION=${REGION:-us-east-1}
+# Sites besides the server itself that the API accepts browser requests from.
+DASHBOARD_ORIGINS=${DASHBOARD_ORIGINS:-https://robot-fleet-platform.vercel.app}
 
 output() {
     aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
@@ -65,4 +67,4 @@ fi
 ssh -i "$TMP/key" -o CertificateFile="$TMP/key-cert.pub" \
     -o UserKnownHostsFile="$KNOWN" -o StrictHostKeyChecking="$CHECK" \
     -o ConnectTimeout=20 -o ServerAliveInterval=30 \
-    "$(cat "$TMP/target")" "sudo sh -c '${1:-sh /opt/fleetops/deploy/deploy.sh $HOST}'"
+    "$(cat "$TMP/target")" "sudo sh -c '${1:-DASHBOARD_ORIGINS=$DASHBOARD_ORIGINS sh /opt/fleetops/deploy/deploy.sh $HOST}'"
