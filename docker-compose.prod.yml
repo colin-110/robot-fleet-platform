@@ -10,9 +10,33 @@
 # - Its certificate comes from Let's Encrypt (the `certbot` service below)
 #   instead of the local CA, so browsers trust it. The broker keeps the local
 #   CA: only the simulator, inside Docker, connects to it.
+# - Images come from the GitHub Container Registry, built by CI for the commit
+#   being deployed (IMAGE_TAG, set by deploy/deploy.sh): a 1 GB server cannot
+#   compile the broker.
+# - Sized for 1 GB: 20 simulated robots (SIMULATED_ROBOTS) and a smaller
+#   database cache.
 
 services:
+  backend:
+    image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-backend:${IMAGE_TAG:-latest}
+    environment:
+      # At most 30 connections, under the database's 60 below.
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=20
+
+  simulator:
+    image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-simulator:${IMAGE_TAG:-latest}
+    command: !override [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "${SIMULATED_ROBOTS:-20}", "--mqtt-host", "mqtt", "--mqtt-port", "8883", "--mqtt-ca", "/certs/ca.crt", "--outbox-dir", "/data" ]
+
+  db:
+    image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-db:${IMAGE_TAG:-latest}
+    command: postgres -c synchronous_commit=off -c max_connections=60 -c shared_buffers=96MB
+
+  mqtt:
+    image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-mqtt:${IMAGE_TAG:-latest}
+
   frontend:
+    image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-frontend:${IMAGE_TAG:-latest}
     ports: !override
       - "80:80"
       - "443:443"

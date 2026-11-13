@@ -177,3 +177,37 @@ jobs:
           print("reachable:", sorted(found) or "none")
           sys.exit(1 if found - allowed else 0)
           PY
+
+  # ── CD: Publish images ─────────────────────────────────────────────
+  # The hosted server is too small to build images (the broker compiles Go),
+  # so CI builds them once the tests and scans pass, and the server pulls the
+  # ones for the commit it deploys (deploy/deploy.sh).
+  publish:
+    name: Publish Images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [ backend-test, frontend-test, security ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build and push to the GitHub Container Registry
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # name:context:dockerfile
+          for spec in \
+            backend:backend:backend/Dockerfile \
+            simulator:.:simulator/Dockerfile \
+            db:timescaledb:timescaledb/Dockerfile \
+            frontend:frontend/robot-fleet-dashboard:frontend/robot-fleet-dashboard/Dockerfile \
+            mqtt:mosquitto:mosquitto/Dockerfile; do
+            name=${spec%%:*}; rest=${spec#*:}; context=${rest%%:*}; file=${rest#*:}
+            image="$REGISTRY/fleetops-$name"
+            docker build --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+              -t "$image:${{ github.sha }}" -t "$image:latest" -f "$file" "$context"
+            docker push --all-tags "$image"
+          done
