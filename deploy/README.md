@@ -1,7 +1,9 @@
 # Hosting on AWS Lightsail
 
 One 1 GB Lightsail server running the same Docker Compose stack as locally,
-with 20 simulated robots, behind HTTPS with a free Let's Encrypt certificate.
+with 20 simulated robots at 4 times real speed (so batteries, charging, wear
+and repairs all show within minutes), behind HTTPS with a free Let's Encrypt
+certificate.
 $7 a month, which includes the 40 GB disk, the public IPv4 address and 2 TB
 of traffic. Deleting the stack removes everything and stops all charges.
 

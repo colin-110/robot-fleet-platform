@@ -15,6 +15,9 @@
 #   compile the broker.
 # - Sized for 1 GB: 20 simulated robots (SIMULATED_ROBOTS) and a smaller
 #   database cache.
+# - The simulation runs 4 times faster than real life (SIMULATION_SPEED), so a
+#   visitor sees batteries drain and charge, components wear out and get
+#   repaired, within minutes rather than hours. Local runs are real time.
 
 services:
   backend:
@@ -26,7 +29,7 @@ services:
 
   simulator:
     image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-simulator:${IMAGE_TAG:-latest}
-    command: !override [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "${SIMULATED_ROBOTS:-20}", "--mqtt-host", "mqtt", "--mqtt-port", "8883", "--mqtt-ca", "/certs/ca.crt", "--outbox-dir", "/data" ]
+    command: !override [ "python", "-u", "robot_sim.py", "--api-url", "http://backend:8000/api/v1/telemetry", "--workers", "1", "--robots", "${SIMULATED_ROBOTS:-20}", "--mqtt-host", "mqtt", "--mqtt-port", "8883", "--mqtt-ca", "/certs/ca.crt", "--outbox-dir", "/data", "--time-scale", "${SIMULATION_SPEED:-4}" ]
 
   db:
     image: ${IMAGE_REGISTRY:-ghcr.io/colin-110}/fleetops-db:${IMAGE_TAG:-latest}
